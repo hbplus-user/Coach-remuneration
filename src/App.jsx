@@ -86,6 +86,7 @@ export default function App() {
   const [evalTrialSessions, setEvalTrialSessions] = useState(0);
   const [evalHalfEvents, setEvalHalfEvents] = useState(0);
   const [evalFullEvents, setEvalFullEvents] = useState(0);
+  const [evalCoachCategory, setEvalCoachCategory] = useState("Fixed");
 
   // 3. Log Violation Form
   const [vioCoachId, setVioCoachId] = useState("");
@@ -329,6 +330,7 @@ export default function App() {
     if (!coach || !evalData) return;
 
     setSelectedCoachId(coachId);
+    setEvalCoachCategory(coach.coach_category);
     setEvalAppearance(evalData.prof_appearance);
     setEvalEngagement(evalData.client_engagement);
     setEvalSafety(evalData.safety);
@@ -459,6 +461,14 @@ export default function App() {
     const coach = coaches.find(c => c.id === selectedCoachId);
     const vConfig = variants.find(v => v.id === coach.variant_id);
 
+    // Update coach category permanently
+    setCoaches(prev => prev.map(c => {
+      if (c.id === selectedCoachId) {
+        return { ...c, coach_category: evalCoachCategory };
+      }
+      return c;
+    }));
+
     setCurrentMonth(prev => prev.map(item => {
       if (item.coach_id === selectedCoachId && item.period_month === "June 2026") {
         const updated = {
@@ -475,19 +485,21 @@ export default function App() {
           five_star_streak: Number(evalStreak),
         };
 
+        const updatedCoach = { ...coach, coach_category: evalCoachCategory };
+
         if (coach.variant_id === 'V5') {
           updated.ooh_sessions_completed = Number(evalOohSessions);
           updated.pt_home_sessions_completed = Number(evalPtHomeSessions);
           updated.performance_credits_points = Number(evalCredits);
         }
 
-        if (coach.coach_category === 'Flexi') {
+        if (evalCoachCategory === 'Flexi') {
           updated.trial_sessions_completed = Number(evalTrialSessions);
           updated.half_day_events = Number(evalHalfEvents);
           updated.full_day_events = Number(evalFullEvents);
         }
 
-        const calc = computeHBPlusScore(coach, updated, vConfig);
+        const calc = computeHBPlusScore(updatedCoach, updated, vConfig);
         updated.hb_score = calc.hbScore;
         updated.band = getPerformanceBand(calc.hbScore).label;
         updated.status = currentRole === 'Super Admin' ? 'HR_REVIEWED' : 'RM_SUBMITTED';
@@ -2482,7 +2494,8 @@ export default function App() {
         };
         const coreTotal = mockData.prof_appearance + mockData.client_engagement + mockData.safety + 
                           mockData.punctuality + mockData.team_conduct + mockData.communication;
-        const calc = computeHBPlusScore(coach, mockData, vConfig);
+        const updatedCoach = coach ? { ...coach, coach_category: evalCoachCategory } : null;
+        const calc = updatedCoach ? computeHBPlusScore(updatedCoach, mockData, vConfig) : { hbScore: 0 };
         const band = getPerformanceBand(calc.hbScore);
 
         return (
@@ -2505,7 +2518,11 @@ export default function App() {
                   </div>
                   <div className="form-group">
                     <label>Category</label>
-                    <input type="text" value={coach?.coach_category || ""} disabled />
+                    <select value={evalCoachCategory} onChange={(e) => setEvalCoachCategory(e.target.value)} required>
+                      <option value="Fixed">Fixed</option>
+                      <option value="Flexi-Fixed">Flexi-Fixed</option>
+                      <option value="Flexi">Flexi</option>
+                    </select>
                   </div>
                   <div className="form-group">
                     <label>Performance Month</label>
@@ -2587,7 +2604,7 @@ export default function App() {
                   )}
 
                   {/* Flexi Special fields */}
-                  {coach?.coach_category === 'Flexi' && (
+                  {evalCoachCategory === 'Flexi' && (
                     <>
                       <div className="form-group">
                         <label>Trial Sessions Completed</label>
