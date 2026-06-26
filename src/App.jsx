@@ -107,6 +107,19 @@ export default function App() {
   // 6. Bulk CSV area
   const [bulkCSV, setBulkCSV] = useState("");
 
+  // 8. Add Certification Form
+  const [newCertAuthority, setNewCertAuthority] = useState("");
+  const [newCertCourseName, setNewCertCourseName] = useState("");
+  const [newCertVariantType, setNewCertVariantType] = useState("S&C");
+  const [newCertLevel, setNewCertLevel] = useState("Gold");
+  const [newCertScore, setNewCertScore] = useState(8.0);
+  const [newCertPdfData, setNewCertPdfData] = useState("");
+  const [newCertPdfName, setNewCertPdfName] = useState("");
+
+  // 9. Add Coach PDF Form
+  const [newCoachPdfData, setNewCoachPdfData] = useState("");
+  const [newCoachPdfName, setNewCoachPdfName] = useState("");
+
   // 7. Payslip Preview Period
   const [payslipPeriod, setPayslipPeriod] = useState("June 2026");
 
@@ -119,6 +132,15 @@ export default function App() {
   const [evalMonthFilter, setEvalMonthFilter] = useState("June 2026");
   const [evalVariantFilter, setEvalVariantFilter] = useState("All");
   const [evalStatusFilter, setEvalStatusFilter] = useState("All");
+
+  const getFileIcon = (fileName) => {
+    if (!fileName) return "bx bx-file text-muted";
+    const ext = fileName.split('.').pop().toLowerCase();
+    if (ext === 'pdf') return "bx bxs-file-pdf text-red";
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return "bx bxs-file-image text-blue";
+    if (['doc', 'docx'].includes(ext)) return "bx bxs-file text-teal";
+    return "bx bx-file text-muted";
+  };
 
   const [vioSearch, setVioSearch] = useState("");
   const [vioTypeFilter, setVioTypeFilter] = useState("All");
@@ -381,6 +403,56 @@ export default function App() {
   // Form submissions
   // ----------------------------------------------------
 
+  const handlePdfUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 500 * 1024) {
+        showToast("Error: File size must be less than 500 KB.", "danger");
+        e.target.value = "";
+        return;
+      }
+      const ext = file.name.split('.').pop().toLowerCase();
+      const allowed = ["pdf", "png", "jpg", "jpeg", "gif", "webp", "doc", "docx"];
+      if (!allowed.includes(ext)) {
+        showToast("Error: Only PDF, Images, and Word files (.doc, .docx) are allowed.", "danger");
+        e.target.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        setNewCertPdfData(reader.result);
+        setNewCertPdfName(file.name);
+        showToast(`Selected File: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleCoachPdfUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 500 * 1024) {
+        showToast("Error: File size must be less than 500 KB.", "danger");
+        e.target.value = "";
+        return;
+      }
+      const ext = file.name.split('.').pop().toLowerCase();
+      const allowed = ["pdf", "png", "jpg", "jpeg", "gif", "webp", "doc", "docx"];
+      if (!allowed.includes(ext)) {
+        showToast("Error: Only PDF, Images, and Word files (.doc, .docx) are allowed.", "danger");
+        e.target.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        setNewCoachPdfData(reader.result);
+        setNewCoachPdfName(file.name);
+        showToast(`Selected File: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   // Create coach
   const handleCreateCoachSubmit = (e) => {
     e.preventDefault();
@@ -411,7 +483,9 @@ export default function App() {
       phone: newCoachPhone,
       email: newCoachEmail,
       certifications: selectedCertsList,
-      five_star_streak: 0
+      five_star_streak: 0,
+      pdfData: newCoachPdfData,
+      pdfName: newCoachPdfName
     };
 
     if (newCoachCategory === 'Flexi-Fixed') {
@@ -448,6 +522,38 @@ export default function App() {
     // reset fields
     setNewCoachName("");
     setNewCoachCerts([]);
+    setNewCoachPdfData("");
+    setNewCoachPdfName("");
+  };
+
+  const handleAddCertification = () => {
+    const prefix = newCertVariantType === "S&C" ? "SC" : "YG";
+    const existingCount = certifications.filter(c => c.id && c.id.startsWith(prefix)).length;
+    const newId = `${prefix}${existingCount + 1}`;
+
+    const newCert = {
+      id: newId,
+      variant_type: newCertVariantType,
+      authority: newCertAuthority,
+      course_name: newCertCourseName,
+      level: newCertLevel,
+      score: Number(newCertScore),
+      pdfData: newCertPdfData,
+      pdfName: newCertPdfName
+    };
+
+    setCertifications(prev => [...prev, newCert]);
+    logAudit("Certification Added", `Added new technical certification: ${newCertCourseName} (${newId}) under ${newCertAuthority} scored ${newCertScore}`);
+    showToast(`Certification ${newCertCourseName} added to master list.`);
+
+    // Reset fields
+    setNewCertAuthority("");
+    setNewCertCourseName("");
+    setNewCertVariantType("S&C");
+    setNewCertLevel("Gold");
+    setNewCertScore(8.0);
+    setNewCertPdfData("");
+    setNewCertPdfName("");
   };
 
   // Submit evaluation scorecard
@@ -827,14 +933,14 @@ export default function App() {
   };
 
   // Save weights settings & recalculate scores
-  const handleSaveWeights = (variantId, newWeights) => {
+  const handleSaveWeights = (discipline, newWeights) => {
     const sum = Object.values(newWeights).reduce((a, b) => a + b, 0);
     if (sum !== 100) {
       showToast(`Warning: Weights sum to ${sum}%. Weights should ideally equal 100% to normalize score out of 100.`, "warning");
     }
 
     setVariants(prev => prev.map(v => {
-      if (v.id === variantId) {
+      if (v.discipline === discipline) {
         return { ...v, weights: newWeights };
       }
       return v;
@@ -843,20 +949,22 @@ export default function App() {
     // Trigger recalculation of current month scorecard values using updated weights
     setCurrentMonth(prev => prev.map(evalRecord => {
       const coach = coaches.find(c => c.id === evalRecord.coach_id);
-      if (coach && coach.variant_id === variantId) {
-        const v = variants.find(x => x.id === variantId);
-        const activeWeightsVariant = { ...v, weights: newWeights };
-        const calc = computeHBPlusScore(coach, evalRecord, activeWeightsVariant);
-        return {
-          ...evalRecord,
-          hb_score: calc.hbScore,
-          band: getPerformanceBand(calc.hbScore).label
-        };
+      if (coach) {
+        const v = variants.find(x => x.id === coach.variant_id);
+        if (v && v.discipline === discipline) {
+          const activeWeightsVariant = { ...v, weights: newWeights };
+          const calc = computeHBPlusScore(coach, evalRecord, activeWeightsVariant);
+          return {
+            ...evalRecord,
+            hb_score: calc.hbScore,
+            band: getPerformanceBand(calc.hbScore).label
+          };
+        }
       }
       return evalRecord;
     }));
 
-    logAudit("Weights Adjusted", `Updated evaluation weights for variant: ${variants.find(x => x.id === variantId)?.name}`);
+    logAudit("Weights Adjusted", `Updated evaluation weights for discipline: ${discipline}`);
     showToast(`Weights updated and scores recalculated.`);
   };
 
@@ -887,7 +995,10 @@ export default function App() {
     dataset.forEach(e => {
       const coach = coaches.find(c => c.id === e.coach_id);
       if (!coach) return;
-      if (payrollVariantFilter !== "All" && coach.variant_id !== payrollVariantFilter) return;
+      const matchesV = payrollVariantFilter === "All" || 
+        (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
+        (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+      if (!matchesV) return;
 
       const vConfig = variants.find(v => v.id === coach.variant_id);
       const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
@@ -1617,11 +1728,8 @@ export default function App() {
                     <label>Filter Variant</label>
                     <select value={coachesVariantFilter} onChange={(e) => setCoachesVariantFilter(e.target.value)}>
                       <option value="All">All Variants</option>
-                      <option value="V1">HB+ Internal S&amp;C</option>
-                      <option value="V2">HB+ External S&amp;C</option>
-                      <option value="V3">HB+ Internal Yoga</option>
-                      <option value="V4">HB+ External Yoga</option>
-                      <option value="V5">HOP Internal S&amp;C</option>
+                      <option value="S&C">S&amp;C</option>
+                      <option value="Yoga">Yoga</option>
                     </select>
                   </div>
                   <div className="filter-item">
@@ -1664,7 +1772,9 @@ export default function App() {
                   <tbody>
                     {coaches.filter(c => {
                       const matchesSearch = c.name.toLowerCase().includes(coachesSearch.toLowerCase()) || c.id.toLowerCase().includes(coachesSearch.toLowerCase());
-                      const matchesVariant = coachesVariantFilter === "All" || c.variant_id === coachesVariantFilter;
+                      const matchesVariant = coachesVariantFilter === "All" || 
+                        (coachesVariantFilter === "S&C" && (c.variant_id === "V1" || c.variant_id === "V2" || c.variant_id === "V5")) ||
+                        (coachesVariantFilter === "Yoga" && (c.variant_id === "V3" || c.variant_id === "V4"));
                       const matchesCategory = coachesCategoryFilter === "All" || c.coach_category === coachesCategoryFilter;
                       const matchesStatus = coachesStatusFilter === "All" || c.status === coachesStatusFilter;
                       return matchesSearch && matchesVariant && matchesCategory && matchesStatus;
@@ -1678,7 +1788,21 @@ export default function App() {
                       return (
                         <tr key={c.id}>
                           <td><strong>{c.id}</strong></td>
-                          <td><strong>{c.name}</strong></td>
+                          <td>
+                            <strong>{c.name}</strong>
+                            {c.pdfData && (
+                              <a 
+                                href={c.pdfData} 
+                                download={c.pdfName || "profile.pdf"} 
+                                title={`Download/View document: ${c.pdfName}`}
+                                style={{ marginLeft: '8px', color: 'var(--primary-color)', textDecoration: 'none' }}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                <i className={getFileIcon(c.pdfName)} style={{ fontSize: '1.15rem', verticalAlign: 'middle' }}></i>
+                              </a>
+                            )}
+                          </td>
                           <td>{vConfig ? vConfig.name : c.variant_id}</td>
                           <td>{c.coach_category}</td>
                           <td>{c.internal_designation || 'Coach'}</td>
@@ -1742,11 +1866,8 @@ export default function App() {
                     <label>Filter Variant</label>
                     <select value={evalVariantFilter} onChange={(e) => setEvalVariantFilter(e.target.value)}>
                       <option value="All">All Variants</option>
-                      <option value="V1">V1 S&amp;C Internal</option>
-                      <option value="V2">V2 S&amp;C External</option>
-                      <option value="V3">V3 Yoga Internal</option>
-                      <option value="V4">V4 Yoga External</option>
-                      <option value="V5">V5 HOP Internal</option>
+                      <option value="S&C">S&amp;C</option>
+                      <option value="Yoga">Yoga</option>
                     </select>
                   </div>
                   <div className="filter-item">
@@ -1785,7 +1906,9 @@ export default function App() {
                       if (!coach) return false;
                       if (currentRole === "Reporting Manager" && coach.reporting_manager_id !== currentRmContext) return false;
 
-                      const matchesVariant = evalVariantFilter === "All" || coach.variant_id === evalVariantFilter;
+                      const matchesVariant = evalVariantFilter === "All" || 
+                        (evalVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
+                        (evalVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
                       const matchesStatus = evalStatusFilter === "All" || e.status === evalStatusFilter;
                       return matchesVariant && matchesStatus;
                     }).map(e => {
@@ -1976,11 +2099,8 @@ export default function App() {
                     <label>Filter Variant</label>
                     <select value={payrollVariantFilter} onChange={(e) => setPayrollVariantFilter(e.target.value)}>
                       <option value="All">All Variants</option>
-                      <option value="V1">V1 S&amp;C Internal</option>
-                      <option value="V2">V2 S&amp;C External</option>
-                      <option value="V3">V3 Yoga Internal</option>
-                      <option value="V4">V4 Yoga External</option>
-                      <option value="V5">V5 HOP Internal</option>
+                      <option value="S&C">S&amp;C</option>
+                      <option value="Yoga">Yoga</option>
                     </select>
                   </div>
                   <div className="filter-item" style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -1997,7 +2117,10 @@ export default function App() {
                 dataset.forEach(e => {
                   const coach = coaches.find(c => c.id === e.coach_id);
                   if (!coach) return;
-                  if (payrollVariantFilter !== "All" && coach.variant_id !== payrollVariantFilter) return;
+                  const matchesV = payrollVariantFilter === "All" || 
+                    (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
+                    (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+                  if (!matchesV) return;
 
                   const vConfig = variants.find(v => v.id === coach.variant_id);
                   const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
@@ -2071,7 +2194,9 @@ export default function App() {
                           {dataset.filter(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
                             if (!coach) return false;
-                            return payrollVariantFilter === "All" || coach.variant_id === payrollVariantFilter;
+                            return payrollVariantFilter === "All" || 
+                              (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
+                              (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
                           }).map(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
                             const vConfig = variants.find(v => v.id === coach.variant_id);
@@ -2224,55 +2349,135 @@ export default function App() {
                   <h3>Policy Variants &amp; Scoring Weights</h3>
                   <p className="subtitle">Modify weights for the five evaluation variants (ideal sum is 100%)</p>
                   <div className="settings-list" id="variants-config-list">
-                    {variants.map(v => (
-                      <div className="settings-list-item" key={v.id}>
-                        <h4>{v.name} ({v.discipline}) — Weights Config</h4>
-                        <div className="settings-weights-grid">
-                          <div className="weight-input-group">
-                            <label>Coaching Exp</label>
-                            <input type="number" defaultValue={v.weights.coaching_exp} id={`wt-coaching-${v.id}`} />
+                    {[
+                      { id: "S&C", name: "S&C (Strength & Conditioning)", discipline: "S&C", defaultId: "V1" },
+                      { id: "Yoga", name: "Yoga", discipline: "Yoga", defaultId: "V3" }
+                    ].map(d => {
+                      const v = variants.find(x => x.id === d.defaultId);
+                      if (!v) return null;
+
+                      const currentTotal = (v.weights.coaching_exp || 0) +
+                                           (v.weights.non_coaching_exp || 0) +
+                                           (v.weights.education || 0) +
+                                           (v.weights.technical_cert || 0) +
+                                           (v.weights.core_performance || 0) +
+                                           (v.weights.tenure || 0) +
+                                           (v.weights.attendance || 0);
+
+                      const handleWeightChange = (field, valStr) => {
+                        let val = parseInt(valStr) || 0;
+                        if (val < 0) val = 0;
+
+                        // Calculate sum of other weights
+                        const otherSum = Object.entries(v.weights)
+                          .filter(([key]) => key !== field)
+                          .reduce((sum, [_, value]) => sum + Number(value || 0), 0);
+
+                        const maxAllowed = Math.max(0, 100 - otherSum);
+                        const capped = Math.min(maxAllowed, val);
+
+                        setVariants(prev => prev.map(item => {
+                          if (item.discipline === d.discipline) {
+                            return {
+                              ...item,
+                              weights: {
+                                ...item.weights,
+                                [field]: capped
+                              }
+                            };
+                          }
+                          return item;
+                        }));
+                      };
+
+                      return (
+                        <div className="settings-list-item" key={d.id}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <h4 style={{ margin: 0 }}>{d.name} — Weights Config</h4>
+                            <span className={`badge ${currentTotal === 100 ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: '0.85rem', padding: '4px 8px' }}>
+                              Total Weight: {currentTotal}%
+                            </span>
                           </div>
-                          <div className="weight-input-group">
-                            <label>Non-Coaching</label>
-                            <input type="number" defaultValue={v.weights.non_coaching_exp} id={`wt-non-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group">
-                            <label>Education</label>
-                            <input type="number" defaultValue={v.weights.education} id={`wt-edu-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group">
-                            <label>Tech Cert</label>
-                            <input type="number" defaultValue={v.weights.technical_cert} id={`wt-cert-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group">
-                            <label>Core Perf</label>
-                            <input type="number" defaultValue={v.weights.core_performance} id={`wt-core-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group">
-                            <label>Tenure</label>
-                            <input type="number" defaultValue={v.weights.tenure} id={`wt-tenure-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group">
-                            <label>Attendance</label>
-                            <input type="number" defaultValue={v.weights.attendance} id={`wt-attendance-${v.id}`} />
-                          </div>
-                          <div className="weight-input-group" style={{ justifyContent: 'flex-end' }}>
-                            <button className="btn btn-primary" onClick={() => {
-                              const newWeights = {
-                                coaching_exp: Number(document.getElementById(`wt-coaching-${v.id}`).value),
-                                non_coaching_exp: Number(document.getElementById(`wt-non-${v.id}`).value),
-                                education: Number(document.getElementById(`wt-edu-${v.id}`).value),
-                                technical_cert: Number(document.getElementById(`wt-cert-${v.id}`).value),
-                                core_performance: Number(document.getElementById(`wt-core-${v.id}`).value),
-                                tenure: Number(document.getElementById(`wt-tenure-${v.id}`).value),
-                                attendance: Number(document.getElementById(`wt-attendance-${v.id}`).value)
-                              };
-                              handleSaveWeights(v.id, newWeights);
-                            }} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Save</button>
+                          <div className="settings-weights-grid">
+                            <div className="weight-input-group">
+                              <label>Coaching Exp</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.coaching_exp} 
+                                onChange={(e) => handleWeightChange('coaching_exp', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Non-Coaching</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.non_coaching_exp} 
+                                onChange={(e) => handleWeightChange('non_coaching_exp', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Education</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.education} 
+                                onChange={(e) => handleWeightChange('education', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Tech Cert</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.technical_cert} 
+                                onChange={(e) => handleWeightChange('technical_cert', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Core Perf</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.core_performance} 
+                                onChange={(e) => handleWeightChange('core_performance', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Tenure</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.tenure} 
+                                onChange={(e) => handleWeightChange('tenure', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group">
+                              <label>Attendance</label>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                max="100"
+                                value={v.weights.attendance} 
+                                onChange={(e) => handleWeightChange('attendance', e.target.value)} 
+                              />
+                            </div>
+                            <div className="weight-input-group" style={{ justifyContent: 'flex-end' }}>
+                              <button className="btn btn-primary" onClick={() => {
+                                handleSaveWeights(d.discipline, v.weights);
+                              }} style={{ padding: '6px 12px', fontSize: '0.75rem' }}>Save Config</button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -2293,13 +2498,68 @@ export default function App() {
                         {certifications.map((c, i) => (
                           <tr key={c.id || i}>
                             <td><strong>{c.authority}</strong></td>
-                            <td>{c.course_name}</td>
+                            <td>
+                              {c.course_name}
+                              {c.pdfData && (
+                                <a 
+                                  href={c.pdfData} 
+                                  download={c.pdfName || "certificate.pdf"} 
+                                  title={`Download/View document: ${c.pdfName}`}
+                                  style={{ marginLeft: '8px', color: 'var(--primary-color)', textDecoration: 'none' }}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <i className={getFileIcon(c.pdfName)} style={{ fontSize: '1.15rem', verticalAlign: 'middle' }}></i>
+                                </a>
+                              )}
+                            </td>
                             <td>{c.level}</td>
                             <td><strong>{c.score.toFixed(1)}</strong></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+
+                  <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                    <h4 style={{ marginBottom: '12px' }}>Add New Certification</h4>
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      handleAddCertification();
+                    }} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'end' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Authority</label>
+                        <input type="text" value={newCertAuthority} onChange={(e) => setNewCertAuthority(e.target.value)} placeholder="e.g. NSCA" required />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Certification Name</label>
+                        <input type="text" value={newCertCourseName} onChange={(e) => setNewCertCourseName(e.target.value)} placeholder="e.g. CSCS" required />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Discipline</label>
+                        <select value={newCertVariantType} onChange={(e) => setNewCertVariantType(e.target.value)} required>
+                          <option value="S&C">S&amp;C</option>
+                          <option value="Yoga">Yoga</option>
+                        </select>
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Tier Level</label>
+                        <select value={newCertLevel} onChange={(e) => setNewCertLevel(e.target.value)} required>
+                          <option value="Gold">Gold</option>
+                          <option value="Silver">Silver</option>
+                          <option value="Bronze">Bronze</option>
+                        </select>
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Score (0-10)</label>
+                        <input type="number" step="0.1" min="0" max="10" value={newCertScore} onChange={(e) => setNewCertScore(Number(e.target.value))} required />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>Certification Attachment (PDF, Image, Word &lt; 500KB)</label>
+                        <input type="file" accept=".pdf,image/*,.doc,.docx" onChange={handlePdfUpload} />
+                      </div>
+                      <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>Add Cert</button>
+                    </form>
                   </div>
                 </div>
               </div>
@@ -2367,18 +2627,14 @@ export default function App() {
                     setNewCoachVariant(e.target.value);
                     setNewCoachCerts([]); // reset selected certs
                   }} required>
-                    <option value="V1">HB+ Internal S&amp;C</option>
-                    <option value="V2">HB+ External S&amp;C</option>
-                    <option value="V3">HB+ Internal Yoga</option>
-                    <option value="V4">HB+ External Yoga</option>
-                    <option value="V5">HOP Internal S&amp;C</option>
+                    <option value="V1">S&amp;C</option>
+                    <option value="V3">Yoga</option>
                   </select>
                 </div>
                 <div className="form-group">
                   <label>Coach Category</label>
                   <select value={newCoachCategory} onChange={(e) => setNewCoachCategory(e.target.value)} required>
                     <option value="Fixed">Fixed</option>
-                    <option value="Flexi-Fixed">Flexi-Fixed</option>
                     <option value="Flexi">Flexi</option>
                   </select>
                 </div>
@@ -2446,6 +2702,10 @@ export default function App() {
                 <div className="form-group">
                   <label>Email Address</label>
                   <input type="email" value={newCoachEmail} onChange={(e) => setNewCoachEmail(e.target.value)} required />
+                </div>
+                <div className="form-group">
+                  <label>Upload Profile / Certs (PDF, Image, Word &lt; 500KB)</label>
+                  <input type="file" accept=".pdf,image/*,.doc,.docx" onChange={handleCoachPdfUpload} />
                 </div>
               </div>
 
@@ -2520,7 +2780,6 @@ export default function App() {
                     <label>Category</label>
                     <select value={evalCoachCategory} onChange={(e) => setEvalCoachCategory(e.target.value)} required>
                       <option value="Fixed">Fixed</option>
-                      <option value="Flexi-Fixed">Flexi-Fixed</option>
                       <option value="Flexi">Flexi</option>
                     </select>
                   </div>

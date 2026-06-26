@@ -5,7 +5,7 @@
 export const INITIAL_VARIANTS = [
   {
     id: "V1",
-    name: "HB+ Internal S&C",
+    name: "S&C",
     discipline: "S&C",
     audience: "Internal",
     property: "HB+ Studio",
@@ -67,7 +67,7 @@ export const INITIAL_VARIANTS = [
   },
   {
     id: "V2",
-    name: "HB+ External S&C",
+    name: "S&C",
     discipline: "S&C",
     audience: "External",
     property: "HB+ Studio / Partner",
@@ -129,7 +129,7 @@ export const INITIAL_VARIANTS = [
   },
   {
     id: "V3",
-    name: "HB+ Internal Yoga",
+    name: "Yoga",
     discipline: "Yoga",
     audience: "Internal",
     property: "HB+ Studio / Online",
@@ -183,7 +183,7 @@ export const INITIAL_VARIANTS = [
   },
   {
     id: "V4",
-    name: "HB+ External Yoga",
+    name: "Yoga",
     discipline: "Yoga",
     audience: "External",
     property: "HB+ Studio / Online",
@@ -237,7 +237,7 @@ export const INITIAL_VARIANTS = [
   },
   {
     id: "V5",
-    name: "HOP Internal S&C",
+    name: "S&C",
     discipline: "S&C",
     audience: "Internal",
     property: "HOP Studio / Home Visit",
