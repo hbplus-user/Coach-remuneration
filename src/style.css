@@ -228,6 +228,7 @@ button, input, select, textarea {
 /* Main Content Area */
 .main-content {
   flex: 1;
+  min-width: 0;
   margin-left: var(--sidebar-width);
   min-height: 100vh;
   display: flex;
@@ -307,6 +308,7 @@ button, input, select, textarea {
 .view-content-wrapper {
   padding: 2rem;
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2rem;
@@ -316,6 +318,7 @@ button, input, select, textarea {
 .content-view {
   display: none;
   flex-direction: column;
+  min-width: 0;
   gap: 1.5rem;
   animation: fadeIn 0.25s ease-out;
 }
@@ -622,6 +625,662 @@ button, input, select, textarea {
   font-weight: 700;
   padding: 4px 10px;
 }
+/* Monthly Score Records tracker — grouped, colour-banded, horizontally scrollable */
+.tracker-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+.tracker-toolbar-title h2 {
+  font-family: var(--font-title);
+  font-size: 1.35rem;
+}
+.tracker-toolbar-title p {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+.tracker-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.tracker-toolbar-controls select {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+.tracker-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.tracker-search i {
+  position: absolute;
+  left: 10px;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+.tracker-search input {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 8px 12px 8px 32px;
+  min-width: 260px;
+  font-size: 0.82rem;
+}
+.tracker-search input:focus,
+.tracker-toolbar-controls select:focus {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px var(--accent-teal-glow);
+  outline: none;
+}
+
+.score-tracker-card {
+  padding: 0;
+  overflow: hidden;
+}
+.score-tracker-container {
+  overflow: auto;
+  max-height: 64vh;
+}
+.score-tracker-table {
+  min-width: 2600px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.82rem;
+}
+.score-tracker-table th,
+.score-tracker-table td {
+  padding: 0.65rem 0.8rem;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-color);
+}
+.score-tracker-table thead th {
+  position: sticky;
+  background-clip: padding-box;
+  z-index: 3;
+}
+.score-tracker-table thead .group-header-row th {
+  top: 0;
+  height: 36px;
+  z-index: 4;
+}
+.score-tracker-table thead .column-header-row th {
+  top: 36px;
+  height: 62px;
+}
+
+/* Group banner row */
+.score-tracker-table .group-head {
+  text-align: center;
+  font-family: var(--font-title);
+  font-size: 0.76rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #fff;
+  border-right: 2px solid var(--bg-surface);
+  padding: 0 0.8rem;
+}
+.score-tracker-table .group-weight {
+  font-weight: 500;
+  opacity: 0.85;
+  margin-left: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.score-tracker-table th.group-slate  { background-color: #1e2a45; }
+.score-tracker-table th.group-blue   { background-color: #1d4ed8; }
+.score-tracker-table th.group-amber  { background-color: #c2410c; }
+.score-tracker-table th.group-violet { background-color: #6d28d9; }
+.score-tracker-table th.group-teal   { background-color: #0f766e; }
+.score-tracker-table th.group-indigo { background-color: #4338ca; }
+.score-tracker-table th.group-red    { background-color: #b91c1c; }
+.score-tracker-table th.group-green  { background-color: #15803d; }
+
+/* Column header row picks up a tint of its group colour */
+.score-tracker-table .column-header-row th {
+  font-size: 0.66rem;
+  white-space: normal;
+  min-width: 118px;
+  max-width: 150px;
+  vertical-align: bottom;
+  line-height: 1.3;
+  padding: 0.4rem 0.8rem 0.5rem;
+}
+.score-tracker-table th.group-tint-slate  { background-color: #16203a; }
+.score-tracker-table th.group-tint-blue   { background-color: #17224b; }
+.score-tracker-table th.group-tint-amber  { background-color: #33210f; }
+.score-tracker-table th.group-tint-violet { background-color: #221a44; }
+.score-tracker-table th.group-tint-teal   { background-color: #102c35; }
+.score-tracker-table th.group-tint-indigo { background-color: #1c1c47; }
+.score-tracker-table th.group-tint-red    { background-color: #341720; }
+.score-tracker-table th.group-tint-green  { background-color: #122c1e; }
+.score-tracker-table .col-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.score-tracker-table .col-weight {
+  display: block;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-top: 3px;
+}
+.score-tracker-table .sortable-col {
+  cursor: pointer;
+  user-select: none;
+}
+.score-tracker-table .sortable-col:hover {
+  color: var(--text-primary);
+}
+.score-tracker-table .sort-icon {
+  font-size: 1rem;
+  opacity: 0.35;
+}
+.score-tracker-table .sort-icon.sort-active {
+  opacity: 1;
+  color: var(--accent-teal);
+}
+
+/* Numeric alignment, and roll-up columns tinted like the sheet's total columns */
+.score-tracker-table .num-col {
+  text-align: right;
+}
+.score-tracker-table td.emphasis-col {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.score-tracker-table th.emphasis-col {
+  color: #fff;
+}
+.score-tracker-table td.emphasis-blue   { background-color: rgba(29, 78, 216, 0.14); }
+.score-tracker-table td.emphasis-amber  { background-color: rgba(194, 65, 12, 0.14); }
+.score-tracker-table td.emphasis-teal   { background-color: rgba(15, 118, 110, 0.18); color: var(--accent-teal); }
+.score-tracker-table td.emphasis-indigo { background-color: rgba(67, 56, 202, 0.14); }
+
+/* Frozen identity columns */
+.score-tracker-table .sticky-col {
+  position: sticky;
+  z-index: 2;
+  background-color: var(--bg-surface);
+}
+.score-tracker-table thead .sticky-col {
+  z-index: 5;
+}
+.score-tracker-table .sticky-coach_id {
+  left: 0;
+  min-width: 112px;
+}
+.score-tracker-table .sticky-coach_name {
+  left: 112px;
+  min-width: 190px;
+  border-right: 2px solid var(--border-color);
+}
+.score-tracker-table tbody tr:hover .sticky-col {
+  background-color: #1a2438;
+}
+
+/* Footer: record count on the left, page size and pager on the right */
+.tracker-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.8rem;
+}
+.tracker-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tracker-pagination label {
+  color: var(--text-secondary);
+}
+.tracker-pagination select {
+  background-color: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+}
+.tracker-pagination .btn-table-icon:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.tracker-pagination .page-indicator {
+  min-width: 28px;
+  text-align: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background-color: var(--accent-teal);
+  color: #04201d;
+  font-weight: 700;
+}
+.score-tracker-footnote {
+  font-size: 0.78rem;
+  margin-top: 1rem;
+  line-height: 1.6;
+}
+
+/* Score Management card on the coach profile — reuses the tracker's grouped table */
+.scorecard-container {
+  max-height: none;
+  margin: 0 -1.5rem -1.5rem;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.scorecard-container .score-tracker-table {
+  min-width: 3900px;
+}
+
+/* Manual vs dynamic entry tags, mirroring the Calculator sheet's annotation rows */
+.entry-tag {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.entry-manual {
+  background-color: rgba(245, 158, 11, 0.16);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.entry-profile {
+  background-color: rgba(245, 158, 11, 0.16);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.entry-derived {
+  background-color: rgba(148, 163, 184, 0.12);
+  color: var(--text-muted);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+/* Inline row editing */
+.scorecard-editing-row td {
+  background-color: rgba(20, 184, 166, 0.05);
+}
+.scorecard-editing-row .sticky-col {
+  background-color: #142a33;
+}
+.score-tracker-table td.editable-cell {
+  padding: 0.35rem 0.5rem;
+}
+.scorecard-input {
+  width: 100%;
+  min-width: 72px;
+  background-color: var(--bg-main);
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 8px;
+  text-align: right;
+  font-size: 0.82rem;
+}
+/* Dynamic cells opened for override read as calculated until touched */
+.scorecard-input-dynamic {
+  border-style: dashed;
+  border-color: var(--border-color);
+  color: var(--text-secondary);
+}
+.score-tracker-table td.overridden-cell {
+  box-shadow: inset 3px 0 0 var(--accent-amber);
+}
+.score-tracker-table td.overridden-cell::after {
+  content: "";
+}
+/* A calculated cell in an open row: click to be asked before taking it over */
+.dynamic-lock-btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+  min-width: 72px;
+  padding: 5px 8px;
+  background-color: transparent;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.dynamic-lock-btn:hover {
+  border-color: var(--accent-amber);
+  color: var(--text-primary);
+  background-color: rgba(245, 158, 11, 0.06);
+}
+.dynamic-lock-btn i {
+  font-size: 0.85rem;
+  opacity: 0.6;
+}
+.dynamic-lock-btn:hover i {
+  opacity: 1;
+  color: var(--accent-amber);
+}
+.score-tracker-table td.locked-cell {
+  padding: 0.35rem 0.5rem;
+}
+
+.scorecard-input-invalid,
+.scorecard-input-invalid:focus {
+  border-color: var(--accent-red) !important;
+  box-shadow: 0 0 0 2px var(--accent-red-glow);
+}
+.score-tracker-table td.invalid-cell {
+  box-shadow: inset 3px 0 0 var(--accent-red);
+}
+.override-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent-amber);
+  background-color: rgba(245, 158, 11, 0.08);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.override-warning i {
+  color: var(--accent-amber);
+  font-size: 1.15rem;
+  flex-shrink: 0;
+}
+.override-warning span {
+  color: var(--text-secondary);
+}
+.scorecard-input:focus {
+  outline: none;
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px var(--accent-teal-glow);
+}
+.btn-compact {
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+/* Actions stay pinned to the right edge — the table is far wider than the screen,
+   so an unpinned Edit button would sit thousands of pixels off-screen. */
+.score-tracker-table .actions-col {
+  position: sticky;
+  right: 0;
+  min-width: 180px;
+  text-align: right;
+  background-color: var(--bg-surface);
+  border-left: 2px solid var(--border-color);
+  z-index: 2;
+}
+.score-tracker-table thead .actions-col {
+  z-index: 5;
+}
+.score-tracker-table tbody tr:hover .actions-col {
+  background-color: #1a2438;
+}
+.score-tracker-table .scorecard-editing-row .actions-col {
+  background-color: #142a33;
+}
+.scorecard-legend {
+  font-size: 0.78rem;
+  line-height: 2;
+  margin-top: 1rem;
+}
+.scorecard-legend .entry-tag {
+  margin: 0 4px;
+}
+.score-tracker-table .sticky-month {
+  left: 0;
+  min-width: 150px;
+  border-right: 2px solid var(--border-color);
+}
+
+/* Monthly Pay Calculator — yellow input side, computed breakdown side */
+.pay-calc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+.pay-calc-col {
+  min-width: 0;
+}
+.calc-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-family: var(--font-title);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #fff;
+  padding: 0.55rem 0.9rem;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.calc-section-title span {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.85;
+}
+.calc-section-input { background-color: #b45309; }
+.calc-section-output { background-color: #0f766e; }
+
+.calc-table {
+  font-size: 0.84rem;
+  border: 1px solid var(--border-color);
+  border-top: none;
+}
+.calc-table td {
+  padding: 0.5rem 0.9rem;
+  vertical-align: middle;
+}
+.calc-table .calc-label {
+  color: var(--text-secondary);
+  width: 58%;
+}
+.calc-table .calc-hint {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.calc-input-cell {
+  background-color: rgba(245, 158, 11, 0.06);
+}
+.calc-input {
+  width: 100%;
+  background-color: var(--bg-main);
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 9px;
+  text-align: right;
+  font-size: 0.84rem;
+}
+.calc-input-text,
+.calc-table select.calc-input {
+  text-align: left;
+}
+.calc-input:focus {
+  outline: none;
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px var(--accent-teal-glow);
+}
+.calc-output-cell {
+  text-align: right;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.calc-table .calc-total-row td {
+  background-color: rgba(20, 184, 166, 0.1);
+  border-top: 2px solid var(--accent-teal);
+  font-size: 1rem;
+}
+.calc-table .calc-total-row .calc-label {
+  color: var(--text-primary);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.8rem;
+}
+.calc-table .calc-total-row .calc-output-cell {
+  color: var(--accent-teal);
+  font-weight: 700;
+}
+.calc-notes {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.7;
+  margin-top: 0.9rem;
+}
+.calc-seed-note {
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+.payroll-run-container .score-tracker-table {
+  min-width: 2100px;
+}
+.payroll-run-container .payroll-total-row td {
+  position: sticky;
+  bottom: 0;
+  background-color: var(--bg-surface-header);
+  border-top: 2px solid var(--accent-teal);
+  font-weight: 700;
+  z-index: 2;
+}
+.payroll-run-container .payroll-total-row .sticky-col {
+  background-color: var(--bg-surface-header);
+  z-index: 3;
+}
+.payroll-run-container .payroll-total-row .emphasis-col {
+  color: var(--accent-teal);
+}
+.reference-table {
+  font-size: 0.83rem;
+}
+.reference-table th,
+.reference-table td {
+  padding: 0.6rem 0.9rem;
+  white-space: nowrap;
+}
+.reference-table .num-col {
+  text-align: right;
+}
+
+@media (max-width: 1100px) {
+  .pay-calc-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Coach Master drill-down */
+.row-clickable {
+  cursor: pointer;
+}
+.row-clickable:hover {
+  background-color: rgba(20, 184, 166, 0.06);
+}
+.back-link-btn {
+  margin-bottom: 1.25rem;
+}
+.coach-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+.coach-detail-identity {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.coach-detail-avatar {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-teal), var(--accent-violet));
+  color: #fff;
+  font-family: var(--font-title);
+  font-weight: 700;
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.coach-detail-identity h2 {
+  font-family: var(--font-title);
+  font-size: 1.4rem;
+}
+.coach-detail-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.25rem;
+}
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.detail-item label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.detail-item span {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.detail-cert-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.detail-cert-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-main);
+  font-size: 0.85rem;
+}
+
 .band-0-30 { background-color: #3b1319; color: #ef4444; border: 1px solid #ef4444; }
 .band-30-40 { background-color: #3b2313; color: #f59e0b; border: 1px solid #f59e0b; }
 .band-40-50 { background-color: #3b3613; color: #eab308; border: 1px solid #eab308; }
@@ -669,6 +1328,11 @@ button, input, select, textarea {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.modal-header h3 i {
+  margin-right: 8px;
+  vertical-align: -2px;
+  color: var(--accent-teal);
 }
 .modal-close-btn {
   font-size: 1.5rem;
@@ -756,6 +1420,26 @@ form {
 .input-hint {
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+/* Inline required-field validation inside forms */
+.required-star {
+  color: var(--accent-red);
+}
+.form-group .field-error {
+  font-size: 0.78rem;
+  color: var(--accent-red);
+}
+.form-group input.input-invalid,
+.form-group select.input-invalid,
+.form-group textarea.input-invalid {
+  border-color: var(--accent-red);
+}
+.form-group input.input-invalid:focus,
+.form-group select.input-invalid:focus,
+.form-group textarea.input-invalid:focus {
+  border-color: var(--accent-red);
+  box-shadow: 0 0 0 2px var(--accent-red-glow);
 }
 .checkbox-group-grid {
   display: grid;
@@ -1220,6 +1904,12 @@ form {
   }
   .form-grid {
     grid-template-columns: 1fr;
+  }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .coach-detail-header {
+    align-items: flex-start;
   }
   .form-group.w-full {
     grid-column: span 1;

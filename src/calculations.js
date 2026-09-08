@@ -381,3 +381,43 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     grossPay: Math.round(grossPay * 100) / 100
   };
 }
+
+/**
+ * Performance periods run the 16th to the 15th and are named after the month
+ * they end in — 16 May to 15 Jun is "June 2026".
+ */
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+const pad = (n) => String(n).padStart(2, '0');
+
+export function buildPeriod(year, monthIndex) {
+  const startDate = new Date(Date.UTC(year, monthIndex - 1, 16));
+  return {
+    period_month: `${MONTH_NAMES[monthIndex]} ${year}`,
+    period_start: `${startDate.getUTCFullYear()}-${pad(startDate.getUTCMonth() + 1)}-16`,
+    period_end: `${year}-${pad(monthIndex + 1)}-15`
+  };
+}
+
+/** The period that the given date falls inside. */
+export function getPeriodForDate(date) {
+  const d = new Date(date);
+  const day = d.getDate();
+  let monthIndex = d.getMonth();
+  let year = d.getFullYear();
+  if (day >= 16) {
+    monthIndex += 1;
+    if (monthIndex > 11) { monthIndex = 0; year += 1; }
+  }
+  return buildPeriod(year, monthIndex);
+}
+
+/** The period immediately after the one ending on `periodEnd`. */
+export function getNextPeriod(periodEnd) {
+  const end = new Date(periodEnd);
+  let monthIndex = end.getMonth() + 1;
+  let year = end.getFullYear();
+  if (monthIndex > 11) { monthIndex = 0; year += 1; }
+  return buildPeriod(year, monthIndex);
+}
