@@ -903,6 +903,26 @@ export default function App() {
     }
   }, [variants, certifications, coaches, historicMonths, currentMonth, orgWork, violations, appeals, auditLog, payrollLocked, isStateLoaded]);
 
+  // Helper to match coach type across filters
+  const matchesCoachType = (coach, filterValue) => {
+    if (!filterValue || filterValue === "All") return true;
+    const vConfig = variants.find(v => v.id === coach?.variant_id);
+    const coachType = coach?.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : 'Strength');
+    if (filterValue === "Strength" || filterValue === "S&C") {
+      return coachType === "Strength" || coachType === "S&C" || ["V1", "V2", "V5"].includes(coach?.variant_id);
+    }
+    if (filterValue === "Yoga") {
+      return coachType === "Yoga" || ["V3", "V4"].includes(coach?.variant_id);
+    }
+    if (filterValue === "Pilates") {
+      return coachType === "Pilates";
+    }
+    if (filterValue === "Physio") {
+      return coachType === "Physio";
+    }
+    return coachType === filterValue;
+  };
+
   // Setup Mathematical verification suite on window for testing
   useEffect(() => {
     if (isStateLoaded) {
@@ -1888,6 +1908,7 @@ export default function App() {
           attendance: calc.breakdown.attendanceScore,
           hb_score: hbScore,
           band,
+          coach_type: coach.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : 'Strength'),
           sessions: Number(record.sessions_completed) || 0,
           threshold,
           extra_sessions: pay.extraSessions,
@@ -1903,9 +1924,7 @@ export default function App() {
         const matchesSearch = !query || row.coach_name.toLowerCase().includes(query) || row.coach_id.toLowerCase().includes(query);
         const matchesMonth = scoreMonthFilter === "All" || row.month === scoreMonthFilter;
         const matchesCategory = scoreCategoryFilter === "All" || row.category === scoreCategoryFilter;
-        const matchesVariant = scoreVariantFilter === "All" ||
-          (scoreVariantFilter === "S&C" && ["V1", "V2", "V5"].includes(row.variantId)) ||
-          (scoreVariantFilter === "Yoga" && ["V3", "V4"].includes(row.variantId));
+        const matchesVariant = matchesCoachType({ variant_id: row.variantId, coach_type: row.coach_type }, scoreVariantFilter);
         return matchesSearch && matchesMonth && matchesCategory && matchesVariant;
       })
       .sort((a, b) => {
@@ -2012,9 +2031,7 @@ export default function App() {
     dataset.forEach(e => {
       const coach = coaches.find(c => c.id === e.coach_id);
       if (!coach) return;
-      const matchesV = payrollVariantFilter === "All" || 
-        (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
-        (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+      const matchesV = matchesCoachType(coach, payrollVariantFilter);
       if (!matchesV) return;
 
       const vConfig = variants.find(v => v.id === coach.variant_id);
@@ -3405,11 +3422,13 @@ export default function App() {
                     <input type="text" placeholder="Search by name, ID..." value={coachesSearch} onChange={(e) => setCoachesSearch(e.target.value)} />
                   </div>
                   <div className="filter-item">
-                    <label>Filter Variant</label>
+                    <label>Filter Type</label>
                     <select value={coachesVariantFilter} onChange={(e) => setCoachesVariantFilter(e.target.value)}>
-                      <option value="All">All Variants</option>
-                      <option value="S&C">S&amp;C</option>
+                      <option value="All">All Types</option>
+                      <option value="Strength">Strength</option>
                       <option value="Yoga">Yoga</option>
+                      <option value="Pilates">Pilates</option>
+                      <option value="Physio">Physio</option>
                     </select>
                   </div>
                   <div className="filter-item">
@@ -3440,7 +3459,7 @@ export default function App() {
                     <tr>
                       <th>Coach ID</th>
                       <th>Name</th>
-                      <th>Variant</th>
+                      <th>Type</th>
                       <th>Category</th>
                       <th>Designation</th>
                       <th>DOJ</th>
@@ -3452,9 +3471,7 @@ export default function App() {
                   <tbody>
                     {coaches.filter(c => {
                       const matchesSearch = c.name.toLowerCase().includes(coachesSearch.toLowerCase()) || c.id.toLowerCase().includes(coachesSearch.toLowerCase());
-                      const matchesVariant = coachesVariantFilter === "All" || 
-                        (coachesVariantFilter === "S&C" && (c.variant_id === "V1" || c.variant_id === "V2" || c.variant_id === "V5")) ||
-                        (coachesVariantFilter === "Yoga" && (c.variant_id === "V3" || c.variant_id === "V4"));
+                      const matchesVariant = matchesCoachType(c, coachesVariantFilter);
                       const matchesCategory = coachesCategoryFilter === "All" || c.coach_category === coachesCategoryFilter;
                       const matchesStatus = coachesStatusFilter === "All" || c.status === coachesStatusFilter;
                       return matchesSearch && matchesVariant && matchesCategory && matchesStatus;
@@ -3489,7 +3506,7 @@ export default function App() {
                               </a>
                             )}
                           </td>
-                          <td>{vConfig ? vConfig.name : c.variant_id}</td>
+                          <td>{c.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : c.variant_id)}</td>
                           <td>{c.coach_category}</td>
                           <td>{c.internal_designation || 'Coach'}</td>
                           <td>{new Date(c.date_of_joining).toLocaleDateString('en-IN')}</td>
@@ -3558,9 +3575,11 @@ export default function App() {
                       />
                     </div>
                     <select value={scoreVariantFilter} onChange={(e) => { setScoreVariantFilter(e.target.value); setScorePage(1); }}>
-                      <option value="All">All Coaches</option>
-                      <option value="S&C">S&amp;C</option>
+                      <option value="All">All Types</option>
+                      <option value="Strength">Strength</option>
                       <option value="Yoga">Yoga</option>
+                      <option value="Pilates">Pilates</option>
+                      <option value="Physio">Physio</option>
                     </select>
                     <select value={scoreCategoryFilter} onChange={(e) => { setScoreCategoryFilter(e.target.value); setScorePage(1); }}>
                       <option value="All">All Categories</option>
@@ -3948,11 +3967,13 @@ export default function App() {
                     </select>
                   </div>
                   <div className="filter-item">
-                    <label>Filter Variant</label>
+                    <label>Filter Type</label>
                     <select value={evalVariantFilter} onChange={(e) => setEvalVariantFilter(e.target.value)}>
-                      <option value="All">All Variants</option>
-                      <option value="S&C">S&amp;C</option>
+                      <option value="All">All Types</option>
+                      <option value="Strength">Strength</option>
                       <option value="Yoga">Yoga</option>
+                      <option value="Pilates">Pilates</option>
+                      <option value="Physio">Physio</option>
                     </select>
                   </div>
                   <div className="filter-item">
@@ -3974,7 +3995,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th>Coach</th>
-                      <th>Variant</th>
+                      <th>Type</th>
                       <th>Category</th>
                       <th>Attendance %</th>
                       <th>Sessions Done</th>
@@ -3991,9 +4012,7 @@ export default function App() {
                       if (!coach) return false;
                       if (currentRole === "Reporting Manager" && coach.reporting_manager_id !== currentRmContext) return false;
 
-                      const matchesVariant = evalVariantFilter === "All" || 
-                        (evalVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
-                        (evalVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+                      const matchesVariant = matchesCoachType(coach, evalVariantFilter);
                       const matchesStatus = evalStatusFilter === "All" || e.status === evalStatusFilter;
                       return matchesVariant && matchesStatus;
                     }).map(e => {
@@ -4181,11 +4200,13 @@ export default function App() {
                     </select>
                   </div>
                   <div className="filter-item">
-                    <label>Filter Variant</label>
+                    <label>Filter Type</label>
                     <select value={payrollVariantFilter} onChange={(e) => setPayrollVariantFilter(e.target.value)}>
-                      <option value="All">All Variants</option>
-                      <option value="S&C">S&amp;C</option>
+                      <option value="All">All Types</option>
+                      <option value="Strength">Strength</option>
                       <option value="Yoga">Yoga</option>
+                      <option value="Pilates">Pilates</option>
+                      <option value="Physio">Physio</option>
                     </select>
                   </div>
                   <div className="filter-item" style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -4202,9 +4223,7 @@ export default function App() {
                 dataset.forEach(e => {
                   const coach = coaches.find(c => c.id === e.coach_id);
                   if (!coach) return;
-                  const matchesV = payrollVariantFilter === "All" || 
-                    (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
-                    (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+                  const matchesV = matchesCoachType(coach, payrollVariantFilter);
                   if (!matchesV) return;
 
                   const vConfig = variants.find(v => v.id === coach.variant_id);
@@ -4279,9 +4298,7 @@ export default function App() {
                           {dataset.filter(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
                             if (!coach) return false;
-                            return payrollVariantFilter === "All" || 
-                              (payrollVariantFilter === "S&C" && (coach.variant_id === "V1" || coach.variant_id === "V2" || coach.variant_id === "V5")) ||
-                              (payrollVariantFilter === "Yoga" && (coach.variant_id === "V3" || coach.variant_id === "V4"));
+                            return matchesCoachType(coach, payrollVariantFilter);
                           }).map(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
                             const vConfig = variants.find(v => v.id === coach.variant_id);
