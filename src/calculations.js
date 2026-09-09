@@ -80,7 +80,7 @@ export function computeHBPlusScore(coach, periodData, variant) {
                    (nonCoachingExpYears * weights.non_coaching_exp / 10);
 
   // 2. Technical Score (Max 10 for education and max 10 for highest cert, then weighted)
-  const eduScore = coach.education_score_override !== undefined ? Number(coach.education_score_override) : Math.min(10, getEducationScore(coach.education_qualification, coach.education_type));
+  const eduScore = coach.education_score_override != null ? Number(coach.education_score_override) : Math.min(10, getEducationScore(coach.education_qualification, coach.education_type));
   
   // Highest single certification score
   let maxCertScore = 0;

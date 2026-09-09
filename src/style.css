@@ -2,51 +2,112 @@
    HB+ Coach Remuneration & Performance Management - Main Stylesheet
    ========================================================================== */
 
-/* Design Tokens & Theme Variables (Premium Dark Mode) */
+/* --------------------------------------------------------------------------
+   Design Tokens — HB+ Brand Guidelines
+   --------------------------------------------------------------------------
+   Primary palette   #9f4022 rust · #747440 olive · #53372b brown
+                     #a9674d terracotta · #ede0d0 cream
+   Grey scale        #c6c6c6 · #f5f2e9 bone · #1a1a1a ink
+   Secondary palette #344161 navy · #d27440 orange · #6f8e7c sage · #c99d5d tan
+
+   The guideline asks for lighter neutral tones: #f5f2e9 and #ede0d0 carry
+   30–60% of the surface, with no more than two or three primaries layered
+   over them at 10/30/60. So the canvas is bone, cards are near-white, and
+   the primaries appear only on actions, accents and the sidebar.
+   -------------------------------------------------------------------------- */
 :root {
   --font-title: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
-  /* Theme Palette */
-  --bg-main: #0b0f19;
-  --bg-surface: #141c2f;
-  --bg-surface-header: #1b2640;
-  --bg-sidebar: #0e1526;
-  --border-color: #22304d;
-  
-  /* Text colors */
-  --text-primary: #f3f4f6;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
+  /* Brand palette, named as the guidelines name it */
+  --brand-rust: #9f4022;
+  --brand-olive: #747440;
+  --brand-brown: #53372b;
+  --brand-terracotta: #a9674d;
+  --brand-cream: #ede0d0;
+  --brand-bone: #f5f2e9;
+  --brand-grey: #c6c6c6;
+  --brand-ink: #1a1a1a;
+  --brand-navy: #344161;
+  --brand-orange: #d27440;
+  --brand-sage: #6f8e7c;
+  --brand-tan: #c99d5d;
 
-  /* Primary colors */
-  --accent-teal: #14b8a6;
-  --accent-teal-glow: rgba(20, 184, 166, 0.15);
-  
-  --accent-violet: #8b5cf6;
-  --accent-violet-glow: rgba(139, 92, 246, 0.15);
+  /* Surfaces — bone canvas, near-white cards, cream for header bands */
+  --bg-main: var(--brand-bone);
+  --bg-surface: #fffdf9;
+  --bg-surface-header: var(--brand-cream);
+  --bg-sidebar: var(--brand-brown);
+  --border-color: #e3d7c6;
+  --border-strong: #d3c3ad;
 
-  --accent-amber: #f59e0b;
-  --accent-amber-glow: rgba(245, 158, 11, 0.15);
+  /* Text — ink on bone, with warm greys rather than neutral ones so the
+     type sits in the same family as the surfaces */
+  --text-primary: var(--brand-ink);
+  --text-secondary: #6f6257;
+  --text-muted: #94867a;
 
-  --accent-red: #ef4444;
-  --accent-red-glow: rgba(239, 68, 68, 0.15);
+  /* Neutral washes. On a light canvas these tint with ink, not white;
+     every hover state reads through these two so the theme stays coherent. */
+  --wash: rgba(26, 26, 26, 0.04);
+  --wash-strong: rgba(26, 26, 26, 0.08);
 
-  --accent-blue: #3b82f6;
-  --accent-blue-glow: rgba(59, 130, 246, 0.15);
-  
+  /* Semantic accents, mapped onto the brand palette.
+     olive = primary action · sage = positive · tan = caution
+     rust = danger · navy = information · terracotta = secondary accent */
+  --accent-teal: var(--brand-olive);
+  --accent-teal-glow: rgba(116, 116, 64, 0.16);
+
+  --accent-violet: var(--brand-terracotta);
+  --accent-violet-glow: rgba(169, 103, 77, 0.16);
+
+  --accent-amber: var(--brand-tan);
+  --accent-amber-glow: rgba(201, 157, 93, 0.18);
+
+  --accent-red: var(--brand-rust);
+  --accent-red-glow: rgba(159, 64, 34, 0.16);
+
+  --accent-blue: var(--brand-navy);
+  --accent-blue-glow: rgba(52, 65, 97, 0.14);
+
+  --accent-green: var(--brand-sage);
+  --accent-green-glow: rgba(111, 142, 124, 0.18);
+
+  /* Hover shades — a step darker than each accent */
+  --accent-teal-hover: #5f5f34;
+  --accent-red-hover: #843420;
+  --accent-amber-hover: #b8874a;
+
   /* Utilities */
   --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 2px 0 rgba(83, 55, 43, 0.06);
+  --shadow-md: 0 4px 10px -2px rgba(83, 55, 43, 0.10), 0 2px 4px -2px rgba(83, 55, 43, 0.06);
+  --shadow-lg: 0 16px 32px -8px rgba(83, 55, 43, 0.18), 0 4px 10px -4px rgba(83, 55, 43, 0.10);
   --glass-blur: blur(12px);
   --sidebar-width: 260px;
   --header-height: 70px;
+}
+
+/* The sidebar is the one dark surface — brand brown carrying the 10% of the
+   layout that the guideline allows a primary to occupy. Re-pointing the text
+   and border tokens inside it lets every nested rule keep using the same
+   variable names and come out legible on brown. */
+.sidebar {
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.78);
+  --text-muted: rgba(255, 255, 255, 0.56);
+  --border-color: rgba(255, 255, 255, 0.15);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --wash: rgba(255, 255, 255, 0.08);
+  --wash-strong: rgba(255, 255, 255, 0.14);
+  /* Olive on brown is too close in value to read as the active state, so the
+     sidebar's accent steps up to tan — still a brand colour, legible here. */
+  --accent-teal: var(--brand-tan);
+  --accent-teal-glow: rgba(201, 157, 93, 0.22);
 }
 
 /* Base Styles & Reset */
@@ -181,7 +242,7 @@ button, input, select, textarea {
   transition: var(--transition-fast);
 }
 .nav-item a:hover {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: var(--wash);
   color: var(--text-primary);
 }
 .nav-item.active a {
@@ -197,7 +258,7 @@ button, input, select, textarea {
 .sidebar-footer {
   padding: 1rem;
   border-top: 1px solid var(--border-color);
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: rgba(26, 26, 26, 0.18);
 }
 .user-info {
   display: flex;
@@ -452,19 +513,19 @@ button, input, select, textarea {
 }
 .btn-primary {
   background-color: var(--accent-teal);
-  color: var(--bg-main);
+  color: var(--brand-bone);
 }
 .btn-primary:hover {
-  background-color: #11a393;
-  box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);
+  background-color: var(--accent-teal-hover);
+  box-shadow: var(--shadow-md);
 }
 .btn-secondary {
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: var(--wash);
   border: 1px solid var(--border-color);
   color: var(--text-primary);
 }
 .btn-secondary:hover {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--wash-strong);
   border-color: var(--text-muted);
 }
 .btn-danger {
@@ -472,26 +533,26 @@ button, input, select, textarea {
   color: white;
 }
 .btn-danger:hover {
-  background-color: #dc2626;
-  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+  background-color: var(--accent-red-hover);
+  box-shadow: var(--shadow-md);
 }
 .btn-teal {
-  background-color: rgba(20, 184, 166, 0.1);
+  background-color: var(--accent-teal-glow);
   border-color: var(--accent-teal);
   color: var(--accent-teal);
 }
 .btn-teal:hover {
   background-color: var(--accent-teal);
-  color: var(--bg-main);
+  color: var(--brand-bone);
 }
 .btn-warning {
-  background-color: rgba(245, 158, 11, 0.1);
+  background-color: var(--accent-amber-glow);
   border-color: var(--accent-amber);
   color: var(--accent-amber);
 }
 .btn-warning:hover {
   background-color: var(--accent-amber);
-  color: var(--bg-main);
+  color: var(--brand-ink);
 }
 .btn:disabled {
   opacity: 0.4;
@@ -577,7 +638,7 @@ button, input, select, textarea {
   transition: var(--transition-fast);
 }
 .data-table tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.02);
+  background-color: var(--wash);
 }
 .actions-col {
   text-align: right;
@@ -598,7 +659,7 @@ button, input, select, textarea {
 }
 .btn-table-icon:hover {
   color: var(--accent-teal);
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: var(--wash);
 }
 .btn-table-icon.btn-delete-item:hover {
   color: var(--accent-red);
@@ -614,11 +675,11 @@ button, input, select, textarea {
   font-weight: 600;
   text-transform: uppercase;
 }
-.badge-success { background-color: rgba(20, 184, 166, 0.1); color: var(--accent-teal); border: 1px solid var(--accent-teal); }
-.badge-warning { background-color: rgba(245, 158, 11, 0.1); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
-.badge-danger { background-color: rgba(239, 68, 68, 0.1); color: var(--accent-red); border: 1px solid var(--accent-red); }
-.badge-info { background-color: rgba(59, 130, 246, 0.1); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
-.badge-muted { background-color: rgba(255, 255, 255, 0.05); color: var(--text-secondary); border: 1px solid var(--border-color); }
+.badge-success { background-color: rgba(116, 116, 64, 0.12); color: #57572f; border: 1px solid rgba(116, 116, 64, 0.45); }
+.badge-warning { background-color: rgba(201, 157, 93, 0.16); color: #8a6427; border: 1px solid rgba(201, 157, 93, 0.55); }
+.badge-danger { background-color: rgba(159, 64, 34, 0.11); color: var(--brand-rust); border: 1px solid rgba(159, 64, 34, 0.42); }
+.badge-info { background-color: rgba(52, 65, 97, 0.10); color: var(--brand-navy); border: 1px solid rgba(52, 65, 97, 0.38); }
+.badge-muted { background-color: var(--wash); color: var(--text-secondary); border: 1px solid var(--border-color); }
 
 /* Band Colors Specifically */
 .band-badge {
@@ -738,14 +799,14 @@ button, input, select, textarea {
   text-transform: none;
   letter-spacing: 0;
 }
-.score-tracker-table th.group-slate  { background-color: #1e2a45; }
-.score-tracker-table th.group-blue   { background-color: #1d4ed8; }
-.score-tracker-table th.group-amber  { background-color: #c2410c; }
-.score-tracker-table th.group-violet { background-color: #6d28d9; }
-.score-tracker-table th.group-teal   { background-color: #0f766e; }
-.score-tracker-table th.group-indigo { background-color: #4338ca; }
-.score-tracker-table th.group-red    { background-color: #b91c1c; }
-.score-tracker-table th.group-green  { background-color: #15803d; }
+.score-tracker-table th.group-slate  { background-color: #6b5d52; }
+.score-tracker-table th.group-blue   { background-color: var(--brand-navy); }
+.score-tracker-table th.group-amber  { background-color: var(--brand-terracotta); }
+.score-tracker-table th.group-violet { background-color: var(--brand-brown); }
+.score-tracker-table th.group-teal   { background-color: var(--brand-olive); }
+.score-tracker-table th.group-indigo { background-color: #414e6d; }
+.score-tracker-table th.group-red    { background-color: var(--brand-rust); }
+.score-tracker-table th.group-green  { background-color: #5c7a68; }
 
 /* Column header row picks up a tint of its group colour */
 .score-tracker-table .column-header-row th {
@@ -757,14 +818,14 @@ button, input, select, textarea {
   line-height: 1.3;
   padding: 0.4rem 0.8rem 0.5rem;
 }
-.score-tracker-table th.group-tint-slate  { background-color: #16203a; }
-.score-tracker-table th.group-tint-blue   { background-color: #17224b; }
-.score-tracker-table th.group-tint-amber  { background-color: #33210f; }
-.score-tracker-table th.group-tint-violet { background-color: #221a44; }
-.score-tracker-table th.group-tint-teal   { background-color: #102c35; }
-.score-tracker-table th.group-tint-indigo { background-color: #1c1c47; }
-.score-tracker-table th.group-tint-red    { background-color: #341720; }
-.score-tracker-table th.group-tint-green  { background-color: #122c1e; }
+.score-tracker-table th.group-tint-slate  { background-color: #ece5dc; }
+.score-tracker-table th.group-tint-blue   { background-color: #e2e5ec; }
+.score-tracker-table th.group-tint-amber  { background-color: #f0e2d8; }
+.score-tracker-table th.group-tint-violet { background-color: #e9e0d9; }
+.score-tracker-table th.group-tint-teal   { background-color: #e8e9dc; }
+.score-tracker-table th.group-tint-indigo { background-color: #e4e6ec; }
+.score-tracker-table th.group-tint-red    { background-color: #f1e0da; }
+.score-tracker-table th.group-tint-green  { background-color: #e3ebe5; }
 .score-tracker-table .col-label {
   display: inline-flex;
   align-items: center;
@@ -829,7 +890,7 @@ button, input, select, textarea {
   border-right: 2px solid var(--border-color);
 }
 .score-tracker-table tbody tr:hover .sticky-col {
-  background-color: #1a2438;
+  background-color: var(--brand-cream);
 }
 
 /* Footer: record count on the left, page size and pager on the right */
@@ -868,7 +929,7 @@ button, input, select, textarea {
   padding: 2px 8px;
   border-radius: var(--radius-sm);
   background-color: var(--accent-teal);
-  color: #04201d;
+  color: var(--brand-bone);
   font-weight: 700;
 }
 .score-tracker-footnote {
@@ -883,8 +944,138 @@ button, input, select, textarea {
   margin: 0 -1.5rem -1.5rem;
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
+/* One column group at a time, so a row fits without a long sideways scroll */
+.scorecard-tabs {
+  position: relative;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* A single highlight that flows between tabs and morphs colour on the way */
+.scorecard-tab-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.6);
+  transition:
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.35s ease,
+    background-color 0.55s ease;
+}
+/* A slow sheen travelling across the highlight, like light on moving water */
+.scorecard-tab-pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 20%,
+    rgba(255, 255, 255, 0.22) 45%,
+    rgba(255, 255, 255, 0) 70%
+  );
+  transform: translateX(-100%);
+  animation: tabSheen 3.4s cubic-bezier(0.45, 0, 0.35, 1) infinite;
+}
+@keyframes tabSheen {
+  0%   { transform: translateX(-100%); }
+  55%  { transform: translateX(100%); }
+  100% { transform: translateX(100%); }
+}
+
+.scorecard-tab {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0.5rem 0.9rem;
+  background-color: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.35s ease, border-color 0.35s ease, transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.scorecard-tab:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  transform: translateY(-1px);
+}
+.scorecard-tab-weight {
+  font-weight: 500;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  transition: color 0.35s ease;
+}
+.scorecard-tab.active {
+  color: #fff;
+  border-color: transparent;
+}
+.scorecard-tab.active .scorecard-tab-weight {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+/* Fade the new group in rather than snapping between column sets */
+.scorecard-pane {
+  animation: scorecardPaneIn 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes scorecardPaneIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.scorecard-pane .score-tracker-table tbody tr {
+  animation: scorecardRowIn 0.32s cubic-bezier(0.4, 0, 0.2, 1) backwards;
+}
+.scorecard-pane .score-tracker-table tbody tr:nth-child(1) { animation-delay: 0.02s; }
+.scorecard-pane .score-tracker-table tbody tr:nth-child(2) { animation-delay: 0.05s; }
+.scorecard-pane .score-tracker-table tbody tr:nth-child(3) { animation-delay: 0.08s; }
+.scorecard-pane .score-tracker-table tbody tr:nth-child(4) { animation-delay: 0.11s; }
+.scorecard-pane .score-tracker-table tbody tr:nth-child(n+5) { animation-delay: 0.14s; }
+@keyframes scorecardRowIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scorecard-pane,
+  .scorecard-pane .score-tracker-table tbody tr { animation: none; }
+  .scorecard-tab:hover { transform: none; }
+  .scorecard-tab-pill { transition: background-color 0.2s ease; }
+  .scorecard-tab-pill::after { animation: none; }
+}
+
 .scorecard-container .score-tracker-table {
-  min-width: 3900px;
+  min-width: 1180px;
+}
+/* The Final Score tab carries the most columns; tighten them so the band still
+   clears the pinned Actions column instead of sliding under it. */
+.scorecard-container .column-header-row th {
+  min-width: 96px;
+  max-width: none;
+}
+.scorecard-container .sticky-month {
+  min-width: 128px;
+}
+.scorecard-container td,
+.scorecard-container .column-header-row th {
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
+}
+.scorecard-container .score-tracker-table td:not(.num-col) {
+  white-space: normal;
 }
 
 /* Manual vs dynamic entry tags, mirroring the Calculator sheet's annotation rows */
@@ -917,10 +1108,10 @@ button, input, select, textarea {
 
 /* Inline row editing */
 .scorecard-editing-row td {
-  background-color: rgba(20, 184, 166, 0.05);
+  background-color: rgba(116, 116, 64, 0.07);
 }
 .scorecard-editing-row .sticky-col {
-  background-color: #142a33;
+  background-color: #eceadb;
 }
 .score-tracker-table td.editable-cell {
   padding: 0.35rem 0.5rem;
@@ -943,7 +1134,7 @@ button, input, select, textarea {
   color: var(--text-secondary);
 }
 .score-tracker-table td.overridden-cell {
-  box-shadow: inset 3px 0 0 var(--accent-amber);
+  box-shadow: inset 3px 0 0 var(--brand-tan);
 }
 .score-tracker-table td.overridden-cell::after {
   content: "";
@@ -1016,6 +1207,73 @@ button, input, select, textarea {
   border-color: var(--accent-teal);
   box-shadow: 0 0 0 2px var(--accent-teal-glow);
 }
+/* Row actions are icon-only so the pinned column stays narrow */
+.btn-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.btn-row-icon:hover {
+  transform: translateY(-1px);
+}
+.btn-row-icon.icon-edit:hover {
+  color: var(--accent-teal);
+  border-color: var(--accent-teal);
+  background-color: var(--accent-teal-glow);
+}
+.btn-row-icon.icon-record {
+  color: var(--accent-teal);
+  border-color: var(--accent-teal);
+  background-color: var(--accent-teal-glow);
+}
+.btn-row-icon.icon-record:hover {
+  background-color: var(--accent-teal);
+  color: var(--brand-bone);
+}
+.btn-row-icon.icon-save {
+  color: var(--brand-bone);
+  background-color: var(--accent-teal);
+  border-color: var(--accent-teal);
+}
+.btn-row-icon.icon-save:hover {
+  filter: brightness(1.12);
+}
+.btn-row-icon.icon-cancel:hover {
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+  background-color: var(--accent-red-glow);
+}
+.btn-row-icon.icon-reset:hover {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+  background-color: var(--accent-amber-glow);
+}
+.btn-row-icon.icon-locked {
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: default;
+}
+.btn-row-icon.icon-locked:hover {
+  transform: none;
+}
+.score-tracker-table .actions-col .table-btn-group {
+  gap: 0.35rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-row-icon:hover { transform: none; }
+}
+
 .btn-compact {
   padding: 5px 10px;
   font-size: 0.78rem;
@@ -1025,7 +1283,7 @@ button, input, select, textarea {
 .score-tracker-table .actions-col {
   position: sticky;
   right: 0;
-  min-width: 180px;
+  min-width: 88px;
   text-align: right;
   background-color: var(--bg-surface);
   border-left: 2px solid var(--border-color);
@@ -1035,10 +1293,10 @@ button, input, select, textarea {
   z-index: 5;
 }
 .score-tracker-table tbody tr:hover .actions-col {
-  background-color: #1a2438;
+  background-color: var(--brand-cream);
 }
 .score-tracker-table .scorecard-editing-row .actions-col {
-  background-color: #142a33;
+  background-color: #eceadb;
 }
 .scorecard-legend {
   font-size: 0.78rem;
@@ -1083,8 +1341,8 @@ button, input, select, textarea {
   letter-spacing: 0;
   opacity: 0.85;
 }
-.calc-section-input { background-color: #b45309; }
-.calc-section-output { background-color: #0f766e; }
+.calc-section-input { background-color: var(--brand-terracotta); }
+.calc-section-output { background-color: var(--brand-olive); }
 
 .calc-table {
   font-size: 0.84rem;
@@ -1263,6 +1521,43 @@ button, input, select, textarea {
   color: var(--text-primary);
   word-break: break-word;
 }
+/* Inline editing of the profile / experience cards */
+.detail-input {
+  width: 100%;
+  background-color: var(--bg-main);
+  border: 1px solid var(--accent-amber);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 9px;
+  font-size: 0.86rem;
+  font-family: inherit;
+  transition: var(--transition-fast);
+}
+.detail-input:focus {
+  outline: none;
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px var(--accent-teal-glow);
+}
+.detail-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+.detail-readonly small {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.detail-edit-note {
+  font-size: 0.76rem;
+  line-height: 1.6;
+  margin-top: 1rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--accent-amber);
+}
+
 .detail-cert-list {
   list-style: none;
   display: flex;
@@ -1281,13 +1576,16 @@ button, input, select, textarea {
   font-size: 0.85rem;
 }
 
-.band-0-30 { background-color: #3b1319; color: #ef4444; border: 1px solid #ef4444; }
-.band-30-40 { background-color: #3b2313; color: #f59e0b; border: 1px solid #f59e0b; }
-.band-40-50 { background-color: #3b3613; color: #eab308; border: 1px solid #eab308; }
-.band-50-60 { background-color: #133b32; color: #14b8a6; border: 1px solid #14b8a6; }
-.band-60-70 { background-color: #13263b; color: #3b82f6; border: 1px solid #3b82f6; }
-.band-70-80 { background-color: #2c133b; color: #a855f7; border: 1px solid #a855f7; }
-.band-80-90 { background-color: #3b132c; color: #ec4899; border: 1px solid #ec4899; }
+/* Performance bands run warm-to-cool across the brand palette: rust for
+   non-functional, through orange and tan, into olive and sage, ending on navy
+   for exceptional. Tinted grounds so the chips stay legible on bone. */
+.band-0-30  { background-color: #f3e2dc; color: #8a3620; border: 1px solid rgba(159, 64, 34, 0.45); }
+.band-30-40 { background-color: #f8e7da; color: #a8552a; border: 1px solid rgba(210, 116, 64, 0.45); }
+.band-40-50 { background-color: #f7edd9; color: #8a6427; border: 1px solid rgba(201, 157, 93, 0.55); }
+.band-50-60 { background-color: #eef0dd; color: #6a6a3a; border: 1px solid rgba(138, 138, 80, 0.50); }
+.band-60-70 { background-color: #e9ebd8; color: #5f5f34; border: 1px solid rgba(116, 116, 64, 0.50); }
+.band-70-80 { background-color: #e3ebe5; color: #4c6a58; border: 1px solid rgba(111, 142, 124, 0.55); }
+.band-80-90 { background-color: #e2e5ec; color: #344161; border: 1px solid rgba(52, 65, 97, 0.45); }
 
 /* Modals */
 .modal-backdrop {
@@ -1296,7 +1594,7 @@ button, input, select, textarea {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(43, 28, 22, 0.45);
   backdrop-filter: var(--glass-blur);
   z-index: 1000;
   display: none;
@@ -1344,7 +1642,7 @@ button, input, select, textarea {
 }
 .modal-close-btn:hover {
   color: var(--accent-red);
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: var(--wash);
 }
 .modal-body-content {
   padding: 1.5rem;
@@ -1355,7 +1653,7 @@ button, input, select, textarea {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 10px;
-  color: #a7f3d0;
+  color: var(--text-primary);
   font-family: monospace;
   resize: vertical;
 }
@@ -1465,7 +1763,7 @@ form {
 }
 
 .live-score-preview-bar {
-  background: linear-gradient(135deg, rgba(20, 28, 47, 0.95), rgba(30, 41, 59, 0.95));
+  background: linear-gradient(135deg, var(--brand-cream), #f7efe3);
   border: 1px solid var(--border-color);
   padding: 1rem;
   border-radius: var(--radius-md);
@@ -1673,7 +1971,7 @@ form {
 }
 @keyframes pulseFlame {
   from { filter: drop-shadow(0 0 2px var(--accent-amber)); }
-  to { filter: drop-shadow(0 0 8px #f59e0b); }
+  to { filter: drop-shadow(0 0 8px var(--brand-tan)); }
 }
 
 /* Custom Visual Chart Components */
@@ -1866,7 +2164,7 @@ form {
   font-size: 1.1rem;
 }
 .payslip-net-box h1 {
-  color: #059669;
+  color: #5c7a68;
   font-size: 2rem;
   font-weight: 800;
   font-family: var(--font-title);
@@ -1950,5 +2248,281 @@ form {
   .payslip-print-layout {
     padding: 0 !important;
     margin: 0 !important;
+  }
+}
+
+/* ===================================================================
+   Supabase auth screen + connection status
+   =================================================================== */
+
+.auth-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  /* Cream washing into bone, the two base tones the guideline asks to carry
+     30–60% of a surface. */
+  background: radial-gradient(120% 90% at 50% 0%, var(--brand-cream), var(--brand-bone) 65%);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 2.25rem;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-card-centered { text-align: center; }
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: .9rem;
+  margin-bottom: 1.75rem;
+}
+
+.auth-logo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-blue));
+}
+
+.auth-brand h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  color: var(--text-primary);
+}
+
+.auth-brand p {
+  margin: .15rem 0 0;
+  font-size: .8rem;
+  color: var(--text-secondary);
+}
+
+.auth-submit {
+  width: 100%;
+  padding: .75rem;
+  border: none;
+  border-radius: 8px;
+  font-size: .95rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-blue));
+}
+
+.auth-submit:disabled { opacity: .6; cursor: not-allowed; }
+
+.auth-error {
+  padding: .65rem .8rem;
+  margin-bottom: 1rem;
+  border-radius: 8px;
+  font-size: .85rem;
+  color: var(--brand-rust);
+  background: rgba(159, 64, 34, .10);
+  border: 1px solid rgba(159, 64, 34, .35);
+}
+
+.auth-foot {
+  margin: 1.1rem 0 0;
+  font-size: .78rem;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.header-role-fixed {
+  padding: .35rem .7rem;
+  border-radius: 6px;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+
+.header-signout {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .35rem .7rem;
+  border-radius: 6px;
+  font-size: .85rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+
+.header-signout:hover { border-color: var(--accent-blue); }
+
+.sync-banner {
+  position: sticky;
+  top: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .6rem 1rem;
+  font-size: .85rem;
+  color: var(--brand-rust);
+  background: rgba(159, 64, 34, .10);
+  border-bottom: 1px solid rgba(159, 64, 34, .35);
+}
+
+.sync-banner span { flex: 1; }
+
+.sync-banner button {
+  padding: .25rem .6rem;
+  border-radius: 6px;
+  font-size: .78rem;
+  cursor: pointer;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+.auth-google {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .6rem;
+  padding: .7rem;
+  border-radius: 8px;
+  font-size: .92rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.auth-google:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  background: var(--wash);
+}
+
+.auth-google:disabled { opacity: .6; cursor: not-allowed; }
+
+/* ===================================================================
+   User Access screen
+   =================================================================== */
+
+.user-cell {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+}
+
+.user-cell-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.user-cell-initials {
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: .85rem;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-blue));
+}
+
+/* An account still waiting on a role is the whole point of this screen —
+   make it findable in a long list. */
+.row-pending {
+  background: rgba(201, 157, 93, .16);
+}
+
+.row-pending td {
+  border-left: 0;
+}
+
+.row-pending td:first-child {
+  box-shadow: inset 3px 0 0 var(--brand-tan);
+}
+
+.nav-pill {
+  min-width: 20px;
+  margin-left: auto;
+  padding: .05rem .4rem;
+  border-radius: 999px;
+  font-size: .7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  color: #fff;
+  background: var(--brand-terracotta);
+}
+
+/* ===================================================================
+   Editable technical certifications (coach profile)
+   =================================================================== */
+
+.cert-edit-list {
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+}
+
+.cert-edit-row {
+  display: flex;
+  align-items: flex-end;
+  gap: .5rem;
+  padding: .65rem;
+  border-radius: 8px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+
+.cert-edit-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) 90px;
+  gap: .5rem;
+}
+
+.cert-edit-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  min-width: 0;
+}
+
+.cert-edit-fields label span {
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.cert-edit-fields .detail-input {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .cert-edit-fields {
+    grid-template-columns: minmax(0, 1fr) 90px;
+  }
+  .cert-edit-fields label:nth-child(2) {
+    grid-column: 1 / -1;
+    order: -1;
   }
 }
