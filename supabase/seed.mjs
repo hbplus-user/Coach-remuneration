@@ -16,7 +16,9 @@ import {
   INITIAL_CURRENT_MONTH,
   INITIAL_ORG_WORK,
   INITIAL_VIOLATIONS,
-  PENALTY_MATRIX
+  PENALTY_MATRIX,
+  INITIAL_EDUCATION_LEVELS,
+  INITIAL_EDUCATION_FORMATS
 } from '../src/data.js';
 
 const url = process.env.SUPABASE_URL;
@@ -59,6 +61,14 @@ await push('certifications', INITIAL_CERTIFICATIONS.map(c => ({
   id: c.id, variant_type: c.variant_type, authority: c.authority,
   course_name: c.course_name, level: c.level, score: c.score,
   pdf_name: c.pdfName ?? null, pdf_data: c.pdfData ?? null
+})), 'id');
+
+await push('education_formats', INITIAL_EDUCATION_FORMATS.map(f => ({
+  id: f.value, label: f.label
+})), 'id');
+
+await push('education_levels', INITIAL_EDUCATION_LEVELS.map(l => ({
+  id: l.id, qualification: l.qualification, format: l.format, score: l.score
 })), 'id');
 
 await push('coaches', INITIAL_COACHES.map(c => ({

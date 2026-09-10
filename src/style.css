@@ -864,7 +864,9 @@ button, input, select, textarea {
   color: var(--text-primary);
 }
 .score-tracker-table th.emphasis-col {
-  color: #fff;
+  /* This header sits on the light group tint, not on the dark group banner,
+     so it takes the body ink rather than white. */
+  color: var(--text-primary);
 }
 .score-tracker-table td.emphasis-blue   { background-color: rgba(29, 78, 216, 0.14); }
 .score-tracker-table td.emphasis-amber  { background-color: rgba(194, 65, 12, 0.14); }
@@ -941,8 +943,11 @@ button, input, select, textarea {
 /* Score Management card on the coach profile — reuses the tracker's grouped table */
 .scorecard-container {
   max-height: none;
-  margin: 0 -1.5rem -1.5rem;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  /* Bleed to the card's edges sideways only. There are two of these stacked in
+     the card now, so a negative bottom margin would pull whatever follows —
+     the Volume & Conduct heading, then the legend — up over the table. */
+  margin: 0 -1.5rem;
+  border-radius: 0;
 }
 /* One column group at a time, so a row fits without a long sideways scroll */
 .scorecard-tabs {
@@ -1298,10 +1303,21 @@ button, input, select, textarea {
 .score-tracker-table .scorecard-editing-row .actions-col {
   background-color: #eceadb;
 }
+/* Volume & Conduct renders as its own table below the tabbed score card, so it
+   needs a heading of its own — the tab strip no longer names it. */
+.scorecard-subhead {
+  font-family: var(--font-title);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #5c7a68;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+}
 .scorecard-legend {
   font-size: 0.78rem;
   line-height: 2;
-  margin-top: 1rem;
+  margin-top: 1.5rem;
 }
 .scorecard-legend .entry-tag {
   margin: 0 4px;
@@ -2368,9 +2384,8 @@ form {
 .header-signout:hover { border-color: var(--accent-blue); }
 
 .sync-banner {
-  position: sticky;
-  top: 0;
-  z-index: 900;
+  /* Sits at the top of the content column, above the header. Not sticky: the
+     header is already sticky at top 0, and two stuck bars would overlap. */
   display: flex;
   align-items: center;
   gap: .6rem;

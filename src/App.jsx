@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { 
   INITIAL_VARIANTS, 
   INITIAL_CERTIFICATIONS, 
@@ -7,6 +7,8 @@ import {
   INITIAL_HISTORIC_MONTHS, 
   INITIAL_CURRENT_MONTH, 
   INITIAL_ORG_WORK, 
+  INITIAL_EDUCATION_LEVELS,
+  INITIAL_EDUCATION_FORMATS,
   PENALTY_MATRIX 
 } from './data.js';
 
@@ -24,13 +26,14 @@ import {
   getQuarterLabel,
   calculateTenureYears,
   getEducationScore,
+  setEducationScores,
   getPeriodForDate,
   getNextPeriod
 } from './calculations.js';
 
 // Phase 1 scope: only these modules are exposed in the UI.
 // Add a view key back to this list to re-enable its nav item and its view section.
-const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "user-access"];
+const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "certifications", "user-access"];
 const isViewEnabled = (view) => ENABLED_VIEWS.includes(view);
 
 // Coach disciplines offered on the Add Coach form, mapped to the policy variant
@@ -47,18 +50,6 @@ const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 const COACH_STATUSES = ["Active", "Suspended", "Exited"];
 const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
-const EDUCATION_QUALIFICATIONS = [
-  "None",
-  "3-Year Bachelor's",
-  "4/5-Year Professional Bachelor's",
-  "Post-Grad / Master's / CA / CS",
-  "PhD (Doctorate)"
-];
-const EDUCATION_FORMATS = [
-  { value: "offline_india", label: "Offline — India" },
-  { value: "online_global", label: "Online — Global / India" },
-  { value: "offline_outside", label: "Offline — Outside India" }
-];
 
 // Pay structures; each maps to a rates/milestones table on the policy variant.
 const COACH_CATEGORIES = ["Fixed", "Flexi-Fixed", "Flexi"];
@@ -780,6 +771,8 @@ const NEW_COACH_DEFAULTS = {
 const seedSnapshot = () => ({
   variants: JSON.parse(JSON.stringify(INITIAL_VARIANTS)),
   certifications: JSON.parse(JSON.stringify(INITIAL_CERTIFICATIONS)),
+  educationLevels: JSON.parse(JSON.stringify(INITIAL_EDUCATION_LEVELS)),
+  educationFormats: JSON.parse(JSON.stringify(INITIAL_EDUCATION_FORMATS)),
   coaches: JSON.parse(JSON.stringify(INITIAL_COACHES)),
   historicMonths: JSON.parse(JSON.stringify(INITIAL_HISTORIC_MONTHS)),
   currentMonth: JSON.parse(JSON.stringify(INITIAL_CURRENT_MONTH)),
@@ -803,6 +796,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // App States
   const [variants, setVariants] = useState([]);
   const [certifications, setCertifications] = useState([]);
+  // The education scoring matrix, owned by HR/Admin rather than the engine.
+  const [educationLevels, setEducationLevels] = useState([]);
+  // Study formats, also HR/Admin-owned. `value` is what coach records store.
+  const [educationFormats, setEducationFormats] = useState([]);
   const [coaches, setCoaches] = useState([]);
   const [historicMonths, setHistoricMonths] = useState([]);
   const [currentMonth, setCurrentMonth] = useState([]);
@@ -893,6 +890,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [newCertCourseName, setNewCertCourseName] = useState("");
   const [newCertVariantType, setNewCertVariantType] = useState("S&C");
   const [newCertLevel, setNewCertLevel] = useState("Gold");
+  const [newEduQualification, setNewEduQualification] = useState("");
+  const [newEduFormat, setNewEduFormat] = useState("offline_india");
+  const [newEduScore, setNewEduScore] = useState(3.0);
+  const [newEduFormatLabel, setNewEduFormatLabel] = useState("");
   const [newCertScore, setNewCertScore] = useState(8.0);
   const [newCertPdfData, setNewCertPdfData] = useState("");
   const [newCertPdfName, setNewCertPdfName] = useState("");
@@ -912,6 +913,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [coachDetailId, setCoachDetailId] = useState(null);
   // Score Management inline editing: which period is open, and its draft values.
   const [editingScorePeriod, setEditingScorePeriod] = useState(null);
+  // The score card renders as two tables (the tabbed one and Volume & Conduct).
+  // Both list the same periods, so the open period alone is not enough to say
+  // which table the user clicked edit on — this pins it to one of them.
+  const [editingScorePane, setEditingScorePane] = useState(null);
   const [scoreDraft, setScoreDraft] = useState({});
   // Dynamic columns the user has explicitly confirmed they want to hand-enter.
   const [unlockedDynamicKeys, setUnlockedDynamicKeys] = useState([]);
@@ -961,6 +966,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const applyState = (next) => {
     setVariants(next.variants || []);
     setCertifications(next.certifications || []);
+    setEducationLevels(next.educationLevels?.length ? next.educationLevels : INITIAL_EDUCATION_LEVELS);
+    setEducationFormats(next.educationFormats?.length ? next.educationFormats : INITIAL_EDUCATION_FORMATS);
     setCoaches(next.coaches || []);
     setHistoricMonths(next.historicMonths || []);
     setCurrentMonth(next.currentMonth || []);
@@ -1082,6 +1089,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`New performance period opened: ${livePeriod.period_month}.`, "info");
   }, [isStateLoaded, coaches.length]);
 
+  // The scoring engine keeps the education matrix in module scope, so it has to
+  // be handed the master rows. useMemo runs during render, which means an edit
+  // to the points is reflected in the same pass rather than one render later.
+  useMemo(() => setEducationScores(educationLevels), [educationLevels]);
+
+  // The qualifications offered on the coach profile are whatever the education
+  // master defines, so adding one there makes it selectable here. "None" always
+  // stays on the list and scores nothing.
+  const educationQualifications = [...new Set(educationLevels.map(l => l.qualification))];
+  const educationQualificationOptions = ["None", ...educationQualifications];
+
   // Write-through. Supabase gets a debounced diff of whatever changed;
   // localStorage keeps a mirror so a dropped connection is not data loss.
   useEffect(() => {
@@ -1090,6 +1108,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const STATE = {
       variants,
       certifications,
+      educationLevels,
+      educationFormats,
       coaches,
       historicMonths,
       currentMonth,
@@ -1122,7 +1142,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }, 700);
 
     return () => clearTimeout(timer);
-  }, [variants, certifications, coaches, historicMonths, currentMonth, orgWork, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
+  }, [variants, certifications, educationLevels, educationFormats, coaches, historicMonths, currentMonth, orgWork, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
@@ -1385,6 +1405,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Certifications are an array on the coach record, so they need their own
   // add/edit/remove rather than the single-field setter above. Rows carry a
   // local id only so React can key them; it is kept on save.
+  // Certifications are an array on the coach record, so they need their own
+  // add/edit/remove rather than the single-field setter above. Rows carry a
+  // local id only so React can key them; it is kept on save.
   const setCertField = (index, key, value) =>
     setCoachDraft(prev => ({
       ...prev,
@@ -1462,8 +1485,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Score Management: open one period's row for editing, seeded from the record
   // plus the coach's one-time profile entries.
-  const beginScoreRowEdit = (coach, run) => {
+  const beginScoreRowEdit = (coach, run, pane = 'main') => {
     setEditingScorePeriod(run.period_month);
+    setEditingScorePane(pane);
     setScoreDraft({
       prof_appearance: run.prof_appearance ?? 0,
       client_engagement: run.client_engagement ?? 0,
@@ -1531,6 +1555,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   const cancelScoreRowEdit = () => {
     setEditingScorePeriod(null);
+    setEditingScorePane(null);
     setScoreDraft({});
     setUnlockedDynamicKeys([]);
   };
@@ -1686,7 +1711,133 @@ export default function App({ session = null, profile = null, onSignOut = null }
     resetAddCoachForm();
   };
 
+  const handleAddEducationFormat = () => {
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can add study formats.", "error");
+      return;
+    }
+    const label = newEduFormatLabel.trim();
+    if (!label) return;
+
+    // Coach records store the value, so it is derived once from the label and
+    // then left alone — renaming a format later must not orphan those records.
+    const value = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!value) {
+      showToast("That name has no letters or numbers to build a key from.", "error");
+      return;
+    }
+
+    const clash = educationFormats.find(f => f.value === value);
+    if (clash) {
+      showToast(`"${clash.label}" already uses that key.`, "error");
+      return;
+    }
+
+    setEducationFormats(prev => [...prev, { value, label }]);
+    logAudit("Education Format Added", `Added study format "${label}" (${value}) to the education master`);
+    showToast(`Study format "${label}" added.`);
+    setNewEduFormatLabel("");
+  };
+
+  const handleRemoveEducationFormat = (format) => {
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can change study formats.", "error");
+      return;
+    }
+    // A format still carrying points or coaches cannot go — removing it would
+    // strand those rows on a format that no longer exists.
+    const pairings = educationLevels.filter(l => l.format === format.value).length;
+    const holders = coaches.filter(c => c.education_type === format.value).length;
+    if (pairings || holders) {
+      const parts = [];
+      if (pairings) parts.push(`${pairings} scoring row${pairings > 1 ? 's' : ''}`);
+      if (holders) parts.push(`${holders} coach${holders > 1 ? 'es' : ''}`);
+      showToast(`"${format.label}" is still used by ${parts.join(' and ')}.`, "error");
+      return;
+    }
+    if (!window.confirm(`Remove the study format "${format.label}"?`)) return;
+
+    setEducationFormats(prev => prev.filter(f => f.value !== format.value));
+    logAudit("Education Format Removed", `Removed study format "${format.label}" (${format.value})`);
+    showToast(`Study format "${format.label}" removed.`);
+  };
+
+  const handleAddEducationLevel = () => {
+    // Same rule as the certifications master: these points feed every coach's
+    // score, so only the roles that own scoring policy may set them.
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can set education points.", "error");
+      return;
+    }
+    const qualification = newEduQualification.trim();
+    if (!qualification) return;
+
+    const clash = educationLevels.find(
+      l => l.qualification.toLowerCase() === qualification.toLowerCase() && l.format === newEduFormat
+    );
+    const formatLabel = educationFormats.find(f => f.value === newEduFormat)?.label || newEduFormat;
+
+    if (clash) {
+      // One pair can only carry one score, so a repeat is an edit, not a second row.
+      setEducationLevels(prev => prev.map(l =>
+        l.id === clash.id ? { ...l, score: Number(newEduScore) } : l));
+      logAudit("Education Points Updated",
+        `${qualification} (${formatLabel}) repointed from ${clash.score} to ${newEduScore}`);
+      showToast(`${qualification} — ${formatLabel} updated to ${newEduScore} pts.`);
+    } else {
+      const nextNum = educationLevels.reduce((max, l) => {
+        const n = Number(String(l.id).replace(/\D/g, ""));
+        return Number.isFinite(n) && n > max ? n : max;
+      }, 0) + 1;
+      const row = {
+        id: `ED${String(nextNum).padStart(2, "0")}`,
+        qualification,
+        format: newEduFormat,
+        score: Number(newEduScore)
+      };
+      setEducationLevels(prev => [...prev, row]);
+      logAudit("Education Level Added",
+        `Added ${qualification} (${formatLabel}) scoring ${newEduScore} to the education master`);
+      showToast(`${qualification} — ${formatLabel} added at ${newEduScore} pts.`);
+    }
+
+    setNewEduQualification("");
+    setNewEduFormat("offline_india");
+    setNewEduScore(3.0);
+  };
+
+  const handleRemoveEducationLevel = (row) => {
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can change education points.", "error");
+      return;
+    }
+    // Coaches already carrying this qualification would silently drop to zero,
+    // so say how many before the row goes.
+    const affected = coaches.filter(
+      c => c.education_qualification === row.qualification && c.education_type === row.format
+    ).length;
+    const formatLabel = educationFormats.find(f => f.value === row.format)?.label || row.format;
+    const warning = affected
+      ? `\n\n${affected} coach${affected > 1 ? 'es' : ''} currently score on this pairing and would fall to 0.`
+      : '';
+    if (!window.confirm(`Remove "${row.qualification} — ${formatLabel}" from the education master?${warning}`)) return;
+
+    setEducationLevels(prev => prev.filter(l => l.id !== row.id));
+    logAudit("Education Level Removed", `Removed ${row.qualification} (${formatLabel}) from the education master`);
+    showToast(`${row.qualification} — ${formatLabel} removed.`);
+  };
+
   const handleAddCertification = () => {
+    // Defining a certification sets the points every coach holding it will
+    // score, so it stays with the roles that own scoring policy. Settings is
+    // already gated to these two — this is the second lock on the action.
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can add certifications.", "error");
+      return;
+    }
     const prefix = newCertVariantType === "S&C" ? "SC" : "YG";
     const existingCount = certifications.filter(c => c.id && c.id.startsWith(prefix)).length;
     const newId = `${prefix}${existingCount + 1}`;
@@ -2447,6 +2598,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       { view: "violations", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Auditor" },
       { view: "payroll", roles: "Super Admin,HR Manager,Finance,Auditor" },
       { view: "appeals", roles: "Super Admin,HR Manager,Reporting Manager,Coach,Auditor" },
+      { view: "certifications", roles: "Super Admin,HR Manager" },
       { view: "settings", roles: "Super Admin,HR Manager" },
       { view: "audit", roles: "Super Admin,Auditor" }
     ];
@@ -2481,16 +2633,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   return (
     <div className="app-container">
-      {/* A failed write means the screen and the database disagree — say so
-          loudly rather than letting the user keep typing into a void. */}
-      {syncError && (
-        <div className="sync-banner">
-          <i className="bx bx-cloud-off"></i>
-          <span><strong>Not saved to Supabase:</strong> {syncError}</span>
-          <button type="button" onClick={() => setSyncError("")}>Dismiss</button>
-        </div>
-      )}
-
       {/* Toast Notification Mount */}
       <div id="toast-container">
         {toasts.map(t => (
@@ -2561,6 +2703,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </a>
               </li>
             )}
+            {isViewEnabled('certifications') && verifyAccess("Super Admin,HR Manager") && (
+              <li className={`nav-item ${activeView === 'certifications' ? 'active' : ''}`} onClick={() => handleNavClick('certifications', "Super Admin,HR Manager")}>
+                <a href="#certifications"><i className="bx bxs-medal nav-icon"></i><span>Certifications</span></a>
+              </li>
+            )}
             {isViewEnabled('settings') && verifyAccess("Super Admin,HR Manager") && (
               <li className={`nav-item ${activeView === 'settings' ? 'active' : ''}`} onClick={() => handleNavClick('settings', "Super Admin,HR Manager")}>
                 <a href="#settings"><i className="bx bxs-cog nav-icon"></i><span>Settings &amp; Variants</span></a>
@@ -2617,6 +2764,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
       {/* Main Panel Content */}
       <main className="main-content">
+        {/* A failed write means the screen and the database disagree — say so
+            loudly rather than letting the user keep typing into a void. Lives
+            inside the content column: .app-container is a row, so a banner
+            placed there would sit beside the page rather than above it. */}
+        {syncError && (
+          <div className="sync-banner">
+            <i className="bx bx-cloud-off"></i>
+            <span><strong>Not saved to Supabase:</strong> {syncError}</span>
+            <button type="button" onClick={() => setSyncError("")}>Dismiss</button>
+          </div>
+        )}
         <header className="top-header">
           <div className="header-left">
             <div className="menu-toggle" onClick={() => setSidebarActive(!sidebarActive)}>
@@ -3370,10 +3528,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
               };
             };
 
+            // Volume & Conduct is recorded per period but carries no weight in the
+            // HB+ score, so it leaves the tab strip for its own table below. That
+            // table repeats only the month — the period range and record status
+            // are already stated once, in the table above.
             const periodGroup = COACH_SCORECARD_GROUPS.find(g => g.key === 'period');
-            const activeGroup = COACH_SCORECARD_GROUPS.find(g => g.key === scorecardTab)
-              || COACH_SCORECARD_GROUPS.find(g => g.key !== 'period');
+            const volumeGroup = COACH_SCORECARD_GROUPS.find(g => g.key === 'volume');
+            const tabGroups = COACH_SCORECARD_GROUPS.filter(g => g.key !== 'period' && g.key !== 'volume');
+            const activeGroup = tabGroups.find(g => g.key === scorecardTab) || tabGroups[0];
             const visibleScorecardGroups = [periodGroup, activeGroup];
+            const volumeScorecardGroups = [
+              { ...periodGroup, columns: periodGroup.columns.filter(c => c.key === 'month') },
+              volumeGroup
+            ];
 
             const scoreCellValue = (col, row) => {
               const value = row[col.key];
@@ -3381,6 +3548,162 @@ export default function App({ session = null, profile = null, onSignOut = null }
               if (col.decimals !== undefined) return Number(value).toFixed(col.decimals);
               return value;
             };
+
+            const renderScorecardTable = (groups, paneKey, paneId) => (
+              <div key={paneKey} className="table-container score-tracker-container scorecard-container scorecard-pane">
+                <table className="data-table score-tracker-table">
+                  <thead>
+                    <tr className="group-header-row">
+                      {groups.map(group => {
+                        const gw = group.weightKeys
+                          ? group.weightKeys.reduce((sum, k) => sum + (vConfig.weights[k] || 0), 0)
+                          : null;
+                        return (
+                          <th key={group.key} colSpan={group.columns.length} className={`group-head group-${group.tone}`}>
+                            {group.label}{gw !== null && <span className="group-weight">(Wt {gw}%)</span>}
+                          </th>
+                        );
+                      })}
+                      <th className="group-head group-slate actions-col">Actions</th>
+                    </tr>
+                    <tr className="column-header-row">
+                      {groups.flatMap(group => group.columns.map(col => {
+                        const weight = col.weightKeys
+                          ? `${col.weightKeys.reduce((sum, k) => sum + (vConfig.weights[k] || 0), 0)}%`
+                          : col.scale || (col.max && col.max <= 20 ? `Max ${col.max}` : null);
+                        return (
+                          <th
+                            key={col.key}
+                            className={[
+                              `group-tint-${group.tone}`,
+                              col.sticky ? 'sticky-col sticky-month' : '',
+                              col.decimals !== undefined ? 'num-col' : '',
+                              col.emphasis ? 'emphasis-col' : ''
+                            ].join(' ')}
+                          >
+                            <span className="col-label">{col.label}</span>
+                            {weight && <span className="col-weight">{weight}</span>}
+                            {col.entry && (
+                              <span className={`entry-tag entry-${col.entry}`}>
+                                {col.entry === 'derived' ? 'Dynamic' : 'Manual'}
+                                {col.source ? ` · ${col.source}` : ''}
+                                {col.note ? ` · ${col.note}` : ''}
+                              </span>
+                            )}
+                          </th>
+                        );
+                      }))}
+                      <th className="group-tint-slate actions-col" title="Edit row"><i className="bx bx-pencil"></i></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allRuns.map(run => {
+                      const isEditing = editingScorePeriod === run.period_month && editingScorePane === paneId;
+                      const source = isEditing ? draftFor(run) : { coach, run };
+                      const row = buildScoreRow(source.coach, source.run);
+                      const isLocked = run.status === 'FINANCE_LOCKED';
+                      const mayEdit = canManage && (!isLocked || currentRole === 'Super Admin');
+
+                      return (
+                        <tr key={run.period_month} className={isEditing ? 'scorecard-editing-row' : ''}>
+                          {groups.flatMap(group => group.columns.map(col => {
+                            const isKeyed = col.entry === 'manual' || col.entry === 'profile';
+                            const canOverride = OVERRIDABLE_KEYS.includes(col.key);
+                            const isOverridden = (run.overrides || {})[col.key] !== undefined && (run.overrides || {})[col.key] !== null;
+                            const isUnlocked = unlockedDynamicKeys.includes(col.key);
+                            const editable = isEditing && (isKeyed || (canOverride && isUnlocked));
+                            const lockedDynamic = isEditing && canOverride && !isUnlocked;
+                            const ceiling = canOverride ? overrideCeiling(col, vConfig.weights) : null;
+                            const draftValue = (scoreDraft.overrides || {})[col.key];
+                            const outOfRange = isEditing && canOverride && draftValue !== undefined && draftValue !== '' &&
+                              (Number.isNaN(Number(draftValue)) || Number(draftValue) < 0 ||
+                                (ceiling !== null && Number(draftValue) > ceiling));
+                            return (
+                              <td
+                                key={col.key}
+                                title={isOverridden ? 'Hand-entered — overrides the calculated value' : undefined}
+                                className={[
+                                  col.sticky ? 'sticky-col sticky-month' : '',
+                                  col.decimals !== undefined ? 'num-col' : '',
+                                  col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
+                                  editable ? 'editable-cell' : '',
+                                  isOverridden ? 'overridden-cell' : '',
+                                  outOfRange ? 'invalid-cell' : '',
+                                  lockedDynamic ? 'locked-cell' : ''
+                                ].join(' ')}
+                              >
+                                {lockedDynamic ? (
+                                  <button
+                                    type="button"
+                                    className="dynamic-lock-btn"
+                                    title={`Calculated field — click to edit${ceiling !== null ? ` (max ${ceiling})` : ''}`}
+                                    onClick={() => requestDynamicEdit(col, ceiling)}
+                                  >
+                                    <span>{scoreCellValue(col, row)}</span>
+                                    <i className="bx bx-lock-alt"></i>
+                                  </button>
+                                ) : editable ? (
+                                  <input
+                                    type="number"
+                                    className={`scorecard-input ${isKeyed ? '' : 'scorecard-input-dynamic'} ${outOfRange ? 'scorecard-input-invalid' : ''}`}
+                                    min="0"
+                                    max={isKeyed ? col.max : (ceiling ?? undefined)}
+                                    step={col.step || (col.decimals === 0 ? 1 : 0.01)}
+                                    placeholder={isKeyed ? '—' : undefined}
+                                    title={isKeyed ? undefined : `Hand-entered — overrides the calculated value${ceiling !== null ? ` (max ${ceiling})` : ''}.`}
+                                    autoFocus={!isKeyed && isUnlocked && draftValue === undefined}
+                                    value={isKeyed
+                                      ? (scoreDraft[col.key] ?? '')
+                                      : (draftValue ?? scoreCellValue(col, row))}
+                                    onChange={(e) => isKeyed
+                                      ? setScoreDraft(prev => ({ ...prev, [col.key]: e.target.value }))
+                                      : applyScoreOverride(col, e.target.value, ceiling)}
+                                  />
+                                ) : col.key === 'status' ? (
+                                  <span className={`badge ${isLocked ? 'badge-success' : 'badge-warning'}`}>{run.status}</span>
+                                ) : (
+                                  scoreCellValue(col, row)
+                                )}
+                              </td>
+                            );
+                          }))}
+                          <td className="actions-col">
+                            {isEditing ? (
+                              <div className="table-btn-group">
+                                <button className="btn-row-icon icon-save" title="Save this score card" aria-label="Save" onClick={() => saveScoreRowEdit(coach, run)}>
+                                  <i className="bx bx-check"></i>
+                                </button>
+                                {Object.keys(scoreDraft.overrides || {}).length > 0 && (
+                                  <button className="btn-row-icon icon-reset" title="Return every dynamic cell to its calculated value" aria-label="Reset overrides" onClick={clearScoreRowOverrides}>
+                                    <i className="bx bx-reset"></i>
+                                  </button>
+                                )}
+                                <button className="btn-row-icon icon-cancel" title="Discard changes" aria-label="Cancel" onClick={cancelScoreRowEdit}>
+                                  <i className="bx bx-x"></i>
+                                </button>
+                              </div>
+                            ) : mayEdit ? (
+                              <button
+                                className={`btn-row-icon ${row.isBlank ? 'icon-record' : 'icon-edit'}`}
+                                title={row.isBlank ? `Record the ${run.period_month} score card` : `Edit the ${run.period_month} score card`}
+                                aria-label={row.isBlank ? 'Record score card' : 'Edit score card'}
+                                onClick={() => beginScoreRowEdit(coach, run, paneId)}
+                              >
+                                <i className={row.isBlank ? 'bx bx-plus' : 'bx bx-edit'}></i>
+                              </button>
+                            ) : (
+                              <span className="btn-row-icon icon-locked" title={isLocked ? 'Period is finance-locked' : 'Read-only for your role'}>
+                                <i className="bx bx-lock-alt"></i>
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
 
             let statusClass = "badge-muted";
             if (coach.status === "Active") statusClass = "badge-success";
@@ -3586,10 +3909,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Coaching Exp (Undocumented)", numField("freelance_past_exp_without_document"))}
                           {editItem("Non-Coaching Exp", numField("non_coaching_exp_years"))}
                           {editItem("Highest Education", selectField("education_qualification",
-                            EDUCATION_QUALIFICATIONS.includes(coach.education_qualification)
-                              ? EDUCATION_QUALIFICATIONS
-                              : [coach.education_qualification, ...EDUCATION_QUALIFICATIONS]))}
-                          {editItem("Education Format", selectField("education_type", EDUCATION_FORMATS))}
+                            educationQualificationOptions.includes(coach.education_qualification)
+                              ? educationQualificationOptions
+                              : [coach.education_qualification, ...educationQualificationOptions]))}
+                          {editItem("Education Format", selectField("education_type", educationFormats))}
                         </>
                       ) : (
                         <>
@@ -3597,7 +3920,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {detailRow("Coaching Exp (Undocumented)", `${coach.freelance_past_exp_without_document ?? 0} yrs`)}
                       {detailRow("Non-Coaching Exp", `${coach.non_coaching_exp_years ?? 0} yrs`)}
                       {detailRow("Highest Education", coach.education_qualification)}
-                      {detailRow("Education Format", EDUCATION_FORMATS.find(f => f.value === coach.education_type)?.label || coach.education_type)}
+                      {detailRow("Education Format", educationFormats.find(f => f.value === coach.education_type)?.label || coach.education_type)}
                       {coach.flexi_fixed_base_salary != null && detailRow("Flexi-Fixed Base", `₹${Number(coach.flexi_fixed_base_salary).toLocaleString('en-IN')}`)}
                       {coach.offer_letter_fixed_salary != null && detailRow("Offer Letter Salary", `₹${Number(coach.offer_letter_fixed_salary).toLocaleString('en-IN')}`)}
                         </>
@@ -3742,165 +4065,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     ) : (
                       <>
                       <ScorecardTabs
-                        groups={COACH_SCORECARD_GROUPS.filter(g => g.key !== 'period')}
+                        groups={tabGroups}
                         active={scorecardTab}
                         onChange={setScorecardTab}
                         weights={vConfig.weights}
                       />
 
-                      <div key={scorecardTab} className="table-container score-tracker-container scorecard-container scorecard-pane">
-                        <table className="data-table score-tracker-table">
-                          <thead>
-                            <tr className="group-header-row">
-                              {visibleScorecardGroups.map(group => {
-                                const gw = group.weightKeys
-                                  ? group.weightKeys.reduce((sum, k) => sum + (vConfig.weights[k] || 0), 0)
-                                  : null;
-                                return (
-                                  <th key={group.key} colSpan={group.columns.length} className={`group-head group-${group.tone}`}>
-                                    {group.label}{gw !== null && <span className="group-weight">(Wt {gw}%)</span>}
-                                  </th>
-                                );
-                              })}
-                              <th className="group-head group-slate actions-col">Actions</th>
-                            </tr>
-                            <tr className="column-header-row">
-                              {visibleScorecardGroups.flatMap(group => group.columns.map(col => {
-                                const weight = col.weightKeys
-                                  ? `${col.weightKeys.reduce((sum, k) => sum + (vConfig.weights[k] || 0), 0)}%`
-                                  : col.scale || (col.max && col.max <= 20 ? `Max ${col.max}` : null);
-                                return (
-                                  <th
-                                    key={col.key}
-                                    className={[
-                                      `group-tint-${group.tone}`,
-                                      col.sticky ? 'sticky-col sticky-month' : '',
-                                      col.decimals !== undefined ? 'num-col' : '',
-                                      col.emphasis ? 'emphasis-col' : ''
-                                    ].join(' ')}
-                                  >
-                                    <span className="col-label">{col.label}</span>
-                                    {weight && <span className="col-weight">{weight}</span>}
-                                    {col.entry && (
-                                      <span className={`entry-tag entry-${col.entry}`}>
-                                        {col.entry === 'derived' ? 'Dynamic' : 'Manual'}
-                                        {col.source ? ` · ${col.source}` : ''}
-                                        {col.note ? ` · ${col.note}` : ''}
-                                      </span>
-                                    )}
-                                  </th>
-                                );
-                              }))}
-                              <th className="group-tint-slate actions-col" title="Edit row"><i className="bx bx-pencil"></i></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {allRuns.map(run => {
-                              const isEditing = editingScorePeriod === run.period_month;
-                              const source = isEditing ? draftFor(run) : { coach, run };
-                              const row = buildScoreRow(source.coach, source.run);
-                              const isLocked = run.status === 'FINANCE_LOCKED';
-                              const mayEdit = canManage && (!isLocked || currentRole === 'Super Admin');
+                      {renderScorecardTable(visibleScorecardGroups, scorecardTab, 'main')}
 
-                              return (
-                                <tr key={run.period_month} className={isEditing ? 'scorecard-editing-row' : ''}>
-                                  {visibleScorecardGroups.flatMap(group => group.columns.map(col => {
-                                    const isKeyed = col.entry === 'manual' || col.entry === 'profile';
-                                    const canOverride = OVERRIDABLE_KEYS.includes(col.key);
-                                    const isOverridden = (run.overrides || {})[col.key] !== undefined && (run.overrides || {})[col.key] !== null;
-                                    const isUnlocked = unlockedDynamicKeys.includes(col.key);
-                                    const editable = isEditing && (isKeyed || (canOverride && isUnlocked));
-                                    const lockedDynamic = isEditing && canOverride && !isUnlocked;
-                                    const ceiling = canOverride ? overrideCeiling(col, vConfig.weights) : null;
-                                    const draftValue = (scoreDraft.overrides || {})[col.key];
-                                    const outOfRange = isEditing && canOverride && draftValue !== undefined && draftValue !== '' &&
-                                      (Number.isNaN(Number(draftValue)) || Number(draftValue) < 0 ||
-                                        (ceiling !== null && Number(draftValue) > ceiling));
-                                    return (
-                                      <td
-                                        key={col.key}
-                                        title={isOverridden ? 'Hand-entered — overrides the calculated value' : undefined}
-                                        className={[
-                                          col.sticky ? 'sticky-col sticky-month' : '',
-                                          col.decimals !== undefined ? 'num-col' : '',
-                                          col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
-                                          editable ? 'editable-cell' : '',
-                                          isOverridden ? 'overridden-cell' : '',
-                                          outOfRange ? 'invalid-cell' : '',
-                                          lockedDynamic ? 'locked-cell' : ''
-                                        ].join(' ')}
-                                      >
-                                        {lockedDynamic ? (
-                                          <button
-                                            type="button"
-                                            className="dynamic-lock-btn"
-                                            title={`Calculated field — click to edit${ceiling !== null ? ` (max ${ceiling})` : ''}`}
-                                            onClick={() => requestDynamicEdit(col, ceiling)}
-                                          >
-                                            <span>{scoreCellValue(col, row)}</span>
-                                            <i className="bx bx-lock-alt"></i>
-                                          </button>
-                                        ) : editable ? (
-                                          <input
-                                            type="number"
-                                            className={`scorecard-input ${isKeyed ? '' : 'scorecard-input-dynamic'} ${outOfRange ? 'scorecard-input-invalid' : ''}`}
-                                            min="0"
-                                            max={isKeyed ? col.max : (ceiling ?? undefined)}
-                                            step={col.step || (col.decimals === 0 ? 1 : 0.01)}
-                                            placeholder={isKeyed ? '—' : undefined}
-                                            title={isKeyed ? undefined : `Hand-entered — overrides the calculated value${ceiling !== null ? ` (max ${ceiling})` : ''}.`}
-                                            autoFocus={!isKeyed && isUnlocked && draftValue === undefined}
-                                            value={isKeyed
-                                              ? (scoreDraft[col.key] ?? '')
-                                              : (draftValue ?? scoreCellValue(col, row))}
-                                            onChange={(e) => isKeyed
-                                              ? setScoreDraft(prev => ({ ...prev, [col.key]: e.target.value }))
-                                              : applyScoreOverride(col, e.target.value, ceiling)}
-                                          />
-                                        ) : col.key === 'status' ? (
-                                          <span className={`badge ${isLocked ? 'badge-success' : 'badge-warning'}`}>{run.status}</span>
-                                        ) : (
-                                          scoreCellValue(col, row)
-                                        )}
-                                      </td>
-                                    );
-                                  }))}
-                                  <td className="actions-col">
-                                    {isEditing ? (
-                                      <div className="table-btn-group">
-                                        <button className="btn-row-icon icon-save" title="Save this score card" aria-label="Save" onClick={() => saveScoreRowEdit(coach, run)}>
-                                          <i className="bx bx-check"></i>
-                                        </button>
-                                        {Object.keys(scoreDraft.overrides || {}).length > 0 && (
-                                          <button className="btn-row-icon icon-reset" title="Return every dynamic cell to its calculated value" aria-label="Reset overrides" onClick={clearScoreRowOverrides}>
-                                            <i className="bx bx-reset"></i>
-                                          </button>
-                                        )}
-                                        <button className="btn-row-icon icon-cancel" title="Discard changes" aria-label="Cancel" onClick={cancelScoreRowEdit}>
-                                          <i className="bx bx-x"></i>
-                                        </button>
-                                      </div>
-                                    ) : mayEdit ? (
-                                      <button
-                                        className={`btn-row-icon ${row.isBlank ? 'icon-record' : 'icon-edit'}`}
-                                        title={row.isBlank ? `Record the ${run.period_month} score card` : `Edit the ${run.period_month} score card`}
-                                        aria-label={row.isBlank ? 'Record score card' : 'Edit score card'}
-                                        onClick={() => beginScoreRowEdit(coach, run)}
-                                      >
-                                        <i className={row.isBlank ? 'bx bx-plus' : 'bx bx-edit'}></i>
-                                      </button>
-                                    ) : (
-                                      <span className="btn-row-icon icon-locked" title={isLocked ? 'Period is finance-locked' : 'Read-only for your role'}>
-                                        <i className="bx bx-lock-alt"></i>
-                                      </span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                      <h4 className="scorecard-subhead">{volumeGroup.label}</h4>
+                      {renderScorecardTable(volumeScorecardGroups, 'volume', 'volume')}
                       </>
                     )}
 
@@ -5247,86 +5421,280 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                 </div>
 
-                <div className="card settings-section">
-                  <h3>Technical Certifications Master</h3>
-                  <p className="subtitle">Assign base scoring values to certificates</p>
-                  <div className="settings-scroll-container">
-                    <table className="data-table small-table">
-                      <thead>
-                        <tr>
-                          <th>Authority</th>
-                          <th>Certification Name</th>
-                          <th>Tier</th>
-                          <th>Score</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {certifications.map((c, i) => (
-                          <tr key={c.id || i}>
-                            <td><strong>{c.authority}</strong></td>
-                            <td>
-                              {c.course_name}
-                              {c.pdfData && (
-                                <a 
-                                  href={c.pdfData} 
-                                  download={c.pdfName || "certificate.pdf"} 
-                                  title={`Download/View document: ${c.pdfName}`}
-                                  style={{ marginLeft: '8px', color: 'var(--primary-color)', textDecoration: 'none' }}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  <i className={getFileIcon(c.pdfName)} style={{ fontSize: '1.15rem', verticalAlign: 'middle' }}></i>
-                                </a>
-                              )}
-                            </td>
-                            <td>{c.level}</td>
-                            <td><strong>{c.score.toFixed(1)}</strong></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+              </div>
+            </section>
+          )}
 
-                  <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
-                    <h4 style={{ marginBottom: '12px' }}>Add New Certification</h4>
-                    <form onSubmit={(e) => {
-                      e.preventDefault();
-                      handleAddCertification();
-                    }} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'end' }}>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Authority</label>
-                        <input type="text" value={newCertAuthority} onChange={(e) => setNewCertAuthority(e.target.value)} placeholder="e.g. NSCA" required />
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Certification Name</label>
-                        <input type="text" value={newCertCourseName} onChange={(e) => setNewCertCourseName(e.target.value)} placeholder="e.g. CSCS" required />
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Discipline</label>
-                        <select value={newCertVariantType} onChange={(e) => setNewCertVariantType(e.target.value)} required>
-                          <option value="S&C">S&amp;C</option>
-                          <option value="Yoga">Yoga</option>
-                        </select>
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Tier Level</label>
-                        <select value={newCertLevel} onChange={(e) => setNewCertLevel(e.target.value)} required>
-                          <option value="Gold">Gold</option>
-                          <option value="Silver">Silver</option>
-                          <option value="Bronze">Bronze</option>
-                        </select>
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Score (0-10)</label>
-                        <input type="number" step="0.1" min="0" max="10" value={newCertScore} onChange={(e) => setNewCertScore(Number(e.target.value))} required />
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label>Certification Attachment (PDF, Image, Word &lt; 500KB)</label>
-                        <input type="file" accept=".pdf,image/*,.doc,.docx" onChange={handlePdfUpload} />
-                      </div>
-                      <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>Add Cert</button>
-                    </form>
-                  </div>
+          {/* Certifications — the master list every coach's technical score reads
+              from, so defining an entry here sets the points for everyone who
+              holds it. Super Admin and HR only. */}
+          {isViewEnabled('certifications') && activeView === 'certifications' && verifyAccess("Super Admin,HR Manager") && (
+            <section id="view-certifications" className="content-view active-view">
+              <div className="page-header-row">
+                <div>
+                  <h2>Certifications</h2>
+                  <p>Master list of technical certifications and the points each one carries</p>
+                </div>
+              </div>
+
+              <div className="card settings-section">
+                <h3>Technical Certifications Master</h3>
+                <p className="subtitle">Assign base scoring values to certificates</p>
+                <div className="settings-scroll-container">
+                  <table className="data-table small-table">
+                    <thead>
+                      <tr>
+                        <th>Authority</th>
+                        <th>Certification Name</th>
+                        <th>Tier</th>
+                        <th>Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {certifications.map((c, i) => (
+                        <tr key={c.id || i}>
+                          <td><strong>{c.authority}</strong></td>
+                          <td>
+                            {c.course_name}
+                            {c.pdfData && (
+                              <a 
+                                href={c.pdfData} 
+                                download={c.pdfName || "certificate.pdf"} 
+                                title={`Download/View document: ${c.pdfName}`}
+                                style={{ marginLeft: '8px', color: 'var(--primary-color)', textDecoration: 'none' }}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                <i className={getFileIcon(c.pdfName)} style={{ fontSize: '1.15rem', verticalAlign: 'middle' }}></i>
+                              </a>
+                            )}
+                          </td>
+                          <td>{c.level}</td>
+                          <td><strong>{c.score.toFixed(1)}</strong></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                  <h4 style={{ marginBottom: '12px' }}>Add New Certification</h4>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddCertification();
+                  }} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'end' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Authority</label>
+                      <input type="text" value={newCertAuthority} onChange={(e) => setNewCertAuthority(e.target.value)} placeholder="e.g. NSCA" required />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Certification Name</label>
+                      <input type="text" value={newCertCourseName} onChange={(e) => setNewCertCourseName(e.target.value)} placeholder="e.g. CSCS" required />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Discipline</label>
+                      <select value={newCertVariantType} onChange={(e) => setNewCertVariantType(e.target.value)} required>
+                        <option value="S&C">S&amp;C</option>
+                        <option value="Yoga">Yoga</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Tier Level</label>
+                      <select value={newCertLevel} onChange={(e) => setNewCertLevel(e.target.value)} required>
+                        <option value="Gold">Gold</option>
+                        <option value="Silver">Silver</option>
+                        <option value="Bronze">Bronze</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Score (0-10)</label>
+                      <input type="number" step="0.1" min="0" max="10" value={newCertScore} onChange={(e) => setNewCertScore(Number(e.target.value))} required />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Certification Attachment (PDF, Image, Word &lt; 500KB)</label>
+                      <input type="file" accept=".pdf,image/*,.doc,.docx" onChange={handlePdfUpload} />
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>Add Cert</button>
+                  </form>
+                </div>
+              </div>
+
+              <div className="card settings-section">
+                <h3>Study Formats</h3>
+                <p className="subtitle">
+                  How a qualification was studied. Each format pairs with a
+                  qualification in the Education Master below to carry a score.
+                </p>
+                <div className="settings-scroll-container">
+                  <table className="data-table small-table">
+                    <thead>
+                      <tr>
+                        <th>Format</th>
+                        <th>Stored Key</th>
+                        <th style={{ textAlign: 'right' }}>Scoring Rows</th>
+                        <th style={{ textAlign: 'right' }}>Coaches</th>
+                        <th style={{ textAlign: 'right' }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {educationFormats.length === 0 && (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '1.5rem' }}>
+                            <span className="text-muted">No study formats defined yet.</span>
+                          </td>
+                        </tr>
+                      )}
+                      {educationFormats.map(format => {
+                        const pairings = educationLevels.filter(l => l.format === format.value).length;
+                        const holders = coaches.filter(c => c.education_type === format.value).length;
+                        const inUse = pairings > 0 || holders > 0;
+                        return (
+                          <tr key={format.value}>
+                            <td><strong>{format.label}</strong></td>
+                            <td><code style={{ fontSize: '0.78rem' }}>{format.value}</code></td>
+                            <td style={{ textAlign: 'right' }}>
+                              <span className="text-muted">{pairings || '—'}</span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <span className="text-muted">{holders || '—'}</span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn-row-icon icon-cancel"
+                                title={inUse ? 'Still in use — clear its scoring rows and coaches first' : 'Remove this format'}
+                                aria-label="Remove"
+                                onClick={() => handleRemoveEducationFormat(format)}
+                              >
+                                <i className="bx bx-trash"></i>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                  <h4 style={{ marginBottom: '12px' }}>Add Study Format</h4>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddEducationFormat();
+                  }} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'end' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Format Name</label>
+                      <input
+                        type="text" required
+                        placeholder="e.g. Distance — India"
+                        value={newEduFormatLabel}
+                        onChange={(e) => setNewEduFormatLabel(e.target.value)}
+                      />
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>Add Format</button>
+                  </form>
+                  <p className="text-muted" style={{ fontSize: '0.78rem', marginTop: '10px' }}>
+                    A new format starts with no points against any qualification — set
+                    those in the Education Master below. The stored key is derived from
+                    the name once and never changes, so coach records stay intact.
+                  </p>
+                </div>
+              </div>
+
+              <div className="card settings-section">
+                <h3>Education Master</h3>
+                <p className="subtitle">
+                  Points for each qualification and study format. A coach's Non-Tech
+                  Educational Score is read straight from this table.
+                </p>
+                <div className="settings-scroll-container">
+                  <table className="data-table small-table">
+                    <thead>
+                      <tr>
+                        <th>Qualification</th>
+                        <th>Study Format</th>
+                        <th style={{ textAlign: 'right' }}>Points</th>
+                        <th style={{ textAlign: 'right' }}>Coaches</th>
+                        <th style={{ textAlign: 'right' }}>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {educationLevels.length === 0 && (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '1.5rem' }}>
+                            <span className="text-muted">No education levels defined yet.</span>
+                          </td>
+                        </tr>
+                      )}
+                      {educationLevels.map(level => {
+                        const formatLabel = educationFormats.find(f => f.value === level.format)?.label || level.format;
+                        const holders = coaches.filter(
+                          c => c.education_qualification === level.qualification && c.education_type === level.format
+                        ).length;
+                        return (
+                          <tr key={level.id}>
+                            <td><strong>{level.qualification}</strong></td>
+                            <td>{formatLabel}</td>
+                            <td style={{ textAlign: 'right' }}><strong>{Number(level.score).toFixed(1)}</strong></td>
+                            <td style={{ textAlign: 'right' }}>
+                              <span className="text-muted">{holders || '—'}</span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn-row-icon icon-cancel"
+                                title="Remove this pairing" aria-label="Remove"
+                                onClick={() => handleRemoveEducationLevel(level)}
+                              >
+                                <i className="bx bx-trash"></i>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                  <h4 style={{ marginBottom: '12px' }}>Add / Update Education Points</h4>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddEducationLevel();
+                  }} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', alignItems: 'end' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Qualification</label>
+                      <input
+                        type="text" list="edu-qualification-options" required
+                        placeholder="e.g. PhD (Doctorate)"
+                        value={newEduQualification}
+                        onChange={(e) => setNewEduQualification(e.target.value)}
+                      />
+                      <datalist id="edu-qualification-options">
+                        {educationQualifications.map(q => <option key={q} value={q} />)}
+                      </datalist>
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Study Format</label>
+                      <select value={newEduFormat} onChange={(e) => setNewEduFormat(e.target.value)} required>
+                        {educationFormats.map(f => (
+                          <option key={f.value} value={f.value}>{f.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label>Points (0–10)</label>
+                      <input
+                        type="number" step="0.1" min="0" max="10" required
+                        value={newEduScore}
+                        onChange={(e) => setNewEduScore(Number(e.target.value))}
+                      />
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>Save Points</button>
+                  </form>
+                  <p className="text-muted" style={{ fontSize: '0.78rem', marginTop: '10px' }}>
+                    A qualification and format pair carries one score, so re-entering an
+                    existing pair updates its points rather than adding a second row.
+                    Qualifications listed here are the ones offered on the coach profile.
+                  </p>
                 </div>
               </div>
             </section>

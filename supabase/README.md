@@ -10,6 +10,8 @@ Tables created:
 |---|---|
 | `variants` | `INITIAL_VARIANTS` — weights / rates / milestones as JSONB |
 | `certifications` | `INITIAL_CERTIFICATIONS` |
+| `education_formats` | `INITIAL_EDUCATION_FORMATS` |
+| `education_levels` | `INITIAL_EDUCATION_LEVELS` |
 | `coaches` | `INITIAL_COACHES` |
 | `performance_records` | `INITIAL_HISTORIC_MONTHS` + `INITIAL_CURRENT_MONTH` (split by `record_type`) |
 | `org_work` | `INITIAL_ORG_WORK` |
@@ -110,7 +112,7 @@ so in a toast. To load it up front instead:
 ```bash
 SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node supabase/seed.mjs
 ```
-Expected: 5 variants, 14 certifications, 18 coaches, 21 performance records,
+Expected: 5 variants, 14 certifications, 3 study formats, 12 education levels, 18 coaches, 21 performance records,
 1 org-work row, 2 violations, 164 penalty-matrix rows, 1 payroll cycle.
 
 ## 5. Row Level Security

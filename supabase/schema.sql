@@ -70,6 +70,38 @@ create index if not exists certifications_variant_type_idx
   on public.certifications (variant_type);
 
 -- ---------------------------------------------------------------------
+-- 2a. EDUCATION_FORMATS  (INITIAL_EDUCATION_FORMATS)
+--     How a qualification was studied. HR/Super Admin add to this in the
+--     app; `id` is the value coach records store, so it never changes
+--     once rows exist — only the label does.
+-- ---------------------------------------------------------------------
+create table if not exists public.education_formats (
+  id          text primary key,                        -- "offline_india"
+  label       text not null,                           -- "Offline — India"
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------
+-- 2b. EDUCATION_LEVELS  (INITIAL_EDUCATION_LEVELS)
+--     The education scoring matrix, one row per qualification + study
+--     format. Owned by HR/Super Admin in the app rather than hardcoded, so
+--     the points can move without a deploy.
+-- ---------------------------------------------------------------------
+create table if not exists public.education_levels (
+  id             text primary key,                     -- "ED07"
+  qualification  text not null,                        -- "PhD (Doctorate)"
+  format         text not null
+                 references public.education_formats(id)
+                 on update cascade on delete restrict,
+  score          numeric(4,2) not null check (score >= 0 and score <= 10),
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  -- a qualification/format pair carries exactly one score
+  unique (qualification, format)
+);
+
+-- ---------------------------------------------------------------------
 -- 3. COACHES  (INITIAL_COACHES)
 -- ---------------------------------------------------------------------
 create table if not exists public.coaches (
@@ -400,7 +432,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'variants','certifications','coaches','performance_records','org_work',
+    'variants','certifications','education_formats','education_levels','coaches','performance_records','org_work',
     'penalty_matrix','violations','appeals','audit_log','payroll_cycles','app_users'
   ]
   loop

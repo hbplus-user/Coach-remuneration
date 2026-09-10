@@ -291,6 +291,35 @@ export const INITIAL_CERTIFICATIONS = [
   { id: "YG4", variant_type: "Yoga", authority: "The Yoga Institute", course_name: "1 Month TTC", level: "Bronze", score: 5.0 }
 ];
 
+// The education scoring matrix — one row per qualification and study format,
+// mirroring the certifications master so HR/Admin own the points rather than
+// having them hardcoded in the scoring engine.
+// Study formats, editable by HR/Admin the same way certifications are. `value`
+// is what a coach record stores, so it stays put once rows exist; `label` is
+// only what the UI shows.
+export const INITIAL_EDUCATION_FORMATS = [
+  { value: "offline_india", label: "Offline — India" },
+  { value: "online_global", label: "Online — Global / India" },
+  { value: "offline_outside", label: "Offline — Outside India" }
+];
+
+export const INITIAL_EDUCATION_LEVELS = [
+  { id: "ED01", qualification: "3-Year Bachelor's", format: "online_global", score: 1.0 },
+  { id: "ED02", qualification: "3-Year Bachelor's", format: "offline_india", score: 3.0 },
+  { id: "ED03", qualification: "3-Year Bachelor's", format: "offline_outside", score: 5.0 },
+  { id: "ED04", qualification: "4/5-Year Professional Bachelor's", format: "online_global", score: 1.5 },
+  { id: "ED05", qualification: "4/5-Year Professional Bachelor's", format: "offline_india", score: 3.5 },
+  { id: "ED06", qualification: "4/5-Year Professional Bachelor's", format: "offline_outside", score: 5.5 },
+  { id: "ED07", qualification: "Post-Grad / Master's / CA / CS", format: "online_global", score: 3.0 },
+  { id: "ED08", qualification: "Post-Grad / Master's / CA / CS", format: "offline_india", score: 6.0 },
+  { id: "ED09", qualification: "Post-Grad / Master's / CA / CS", format: "offline_outside", score: 8.0 },
+  { id: "ED10", qualification: "PhD (Doctorate)", format: "online_global", score: 4.0 },
+  { id: "ED11", qualification: "PhD (Doctorate)", format: "offline_india", score: 8.0 },
+  { id: "ED12", qualification: "PhD (Doctorate)", format: "offline_outside", score: 10.0 },
+];
+
+
+
 export const INITIAL_COACHES = [
   // 1. Ankush Chettri (HB+_023)
   {

@@ -102,6 +102,27 @@ const MAPPERS = {
       return { ...rest, pdfName: pdf_name ?? '', pdfData: pdf_data ?? '' };
     }
   },
+  educationFormats: {
+    table: 'education_formats',
+    // The app carries { value, label }; the table keys on the stored value.
+    key: f => f.value,
+    toRow: f => ({ id: f.value, label: f.label }),
+    fromRow: r => ({ value: r.id, label: r.label })
+  },
+  educationLevels: {
+    table: 'education_levels',
+    key: l => l.id,
+    toRow: l => ({
+      id: l.id,
+      qualification: l.qualification,
+      format: l.format,
+      score: Number(l.score) || 0
+    }),
+    fromRow: r => {
+      const { created_at, updated_at, ...rest } = r;
+      return rest;
+    }
+  },
   coaches: {
     table: 'coaches',
     key: c => c.id,
@@ -286,10 +307,12 @@ export async function setUserAccess({ id, role, coachId = null, rmId = null }) {
 export async function loadState() {
   if (!supabase) return null;
 
-  const [variants, certifications, coaches, periods, orgWork, violations, appeals, auditLog, cycles] =
+  const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork, violations, appeals, auditLog, cycles] =
     await Promise.all([
       supabase.from('variants').select('*').order('id'),
       supabase.from('certifications').select('*').order('id'),
+      supabase.from('education_formats').select('*').order('id'),
+      supabase.from('education_levels').select('*').order('id'),
       supabase.from('coaches').select('*').order('id'),
       supabase.from('performance_records').select('*'),
       supabase.from('org_work').select('*'),
@@ -299,7 +322,7 @@ export async function loadState() {
       supabase.from('payroll_cycles').select('*')
     ]);
 
-  const failed = [variants, certifications, coaches, periods, orgWork, violations, appeals, auditLog, cycles]
+  const failed = [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork, violations, appeals, auditLog, cycles]
     .find(r => r.error);
   if (failed) throw failed.error;
 
@@ -309,6 +332,8 @@ export async function loadState() {
   return {
     variants: (variants.data ?? []).map(MAPPERS.variants.fromRow),
     certifications: (certifications.data ?? []).map(MAPPERS.certifications.fromRow),
+    educationFormats: (educationFormats.data ?? []).map(MAPPERS.educationFormats.fromRow),
+    educationLevels: (educationLevels.data ?? []).map(MAPPERS.educationLevels.fromRow),
     coaches: (coaches.data ?? []).map(MAPPERS.coaches.fromRow),
     historicMonths: rows.filter(r => r.record_type === 'historic'),
     currentMonth: rows.filter(r => r.record_type === 'current'),

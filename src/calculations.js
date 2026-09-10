@@ -4,12 +4,35 @@
 
 // Educational Score Table Lookup
 // Education: 3-Year Bachelor's (1/3/5), 4/5-Year (1.5/3.5/5.5), Post-Grad (3/6/8), PhD (4/8/10)
-const EDUCATION_SCORES = {
+const DEFAULT_EDUCATION_SCORES = {
   "3-Year Bachelor's": { online_global: 1.0, offline_india: 3.0, offline_outside: 5.0 },
   "4/5-Year Professional Bachelor's": { online_global: 1.5, offline_india: 3.5, offline_outside: 5.5 },
   "Post-Grad / Master's / CA / CS": { online_global: 3.0, offline_india: 6.0, offline_outside: 8.0 },
   "PhD (Doctorate)": { online_global: 4.0, offline_india: 8.0, offline_outside: 10.0 }
 };
+
+// The live matrix. HR/Admin edit the education master in the app, which calls
+// setEducationScores() with the result — the defaults above are only the shape
+// the app ships with, and the fallback when nothing has been loaded yet.
+let EDUCATION_SCORES = DEFAULT_EDUCATION_SCORES;
+
+/**
+ * Replace the education scoring matrix from the education master rows
+ * ({ qualification, format, score }). Passing an empty list keeps the defaults,
+ * so a failed load can never silently zero every coach's education score.
+ */
+export function setEducationScores(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    EDUCATION_SCORES = DEFAULT_EDUCATION_SCORES;
+    return;
+  }
+  EDUCATION_SCORES = rows.reduce((matrix, row) => {
+    if (!row || !row.qualification || !row.format) return matrix;
+    if (!matrix[row.qualification]) matrix[row.qualification] = {};
+    matrix[row.qualification][row.format] = Number(row.score) || 0;
+    return matrix;
+  }, {});
+}
 
 /**
  * Get the score for a qualification
