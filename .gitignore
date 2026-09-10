@@ -1,7 +1,15 @@
 node_modules
 dist
 .DS_Store
-.env
 .gemini
 .agents
 *.log
+
+# Database schema and migrations are kept out of the repo — apply them from
+# your local copy via the Supabase SQL editor.
+*.sql
+
+# Local environment, including the seed script's service-role key
+.env
+.env.*
+!.env.example
