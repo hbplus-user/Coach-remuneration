@@ -2444,11 +2444,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   const handleExportPayrollRun = (periodMonth) => {
     const rows = buildPayrollRun(periodMonth);
-    const header = ["Coach ID", "Coach Name", "Category", "HB+ Score", "Band", "Per-Session Rate",
+    const header = ["Coach ID", "Coach Name", "Category", "Score Card", "HB+ Score", "Band", "Per-Session Rate",
       "Base Pay", "Extra Sessions", "Extra Session Pay", "Session Pay", "Night Premium",
       "Milestone", "Consistency", "Streak Bonus", "Org Work", "Deductions", "Gross Pay"];
     const body = rows.map(r => [
-      r.coach.id, r.coach.name, r.coach.coach_category, r.score, r.band, r.pay.perSessionRate,
+      r.coach.id, r.coach.name, r.coach.coach_category,
+      r.recorded ? "Recorded" : "NOT RECORDED — fixed points only",
+      r.score, r.recorded ? r.band : "Awaiting entry", r.pay.perSessionRate,
       r.pay.basePay, r.pay.extraSessions, r.pay.extraSessionPay, r.pay.sessionPay, r.pay.nightSessionPay,
       r.pay.milestoneIncentive, r.pay.consistencyBonus, r.pay.streakBonusPay, r.pay.orgWorkPay,
       r.pay.penaltyDeductions, r.pay.grossPay
@@ -2462,7 +2464,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     link.click();
     document.body.removeChild(link);
 
-    logAudit("Payroll Run Exported", `Exported the ${periodMonth} payroll run (${rows.length} coaches) to CSV`);
+    const unrecorded = rows.filter(r => !r.recorded).length;
+    logAudit(
+      "Payroll Run Exported",
+      `Exported the ${periodMonth} payroll run (${rows.length} coaches) to CSV` +
+      (unrecorded ? ` — ${unrecorded} score card${unrecorded > 1 ? 's' : ''} not recorded, paid on fixed points only` : '')
+    );
     showToast(`${periodMonth} payroll run downloaded.`);
   };
 
@@ -3605,7 +3612,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       const mayEdit = canManage && (!isLocked || currentRole === 'Super Admin');
 
                       return (
-                        <tr key={run.period_month} className={isEditing ? 'scorecard-editing-row' : ''}>
+                        <tr
+                          key={run.period_month}
+                          className={[
+                            isEditing ? 'scorecard-editing-row' : '',
+                            // The period currently open for recording.
+                            run.period_month === currentPeriodMonth ? 'scorecard-current-row' : ''
+                          ].filter(Boolean).join(' ')}
+                        >
                           {groups.flatMap(group => group.columns.map(col => {
                             const isKeyed = col.entry === 'manual' || col.entry === 'profile';
                             const canOverride = OVERRIDABLE_KEYS.includes(col.key);
@@ -4643,6 +4657,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
 
                 <div className="card score-tracker-card">
+                  {/* The run still pays out on an unrecorded month, but Finance
+                      needs to see that those lines rest on the fixed points
+                      alone — the manual half has not been entered yet. */}
+                  {run.some(r => !r.recorded) && (
+                    <div className="payroll-incomplete-note">
+                      <i className="bx bx-error"></i>
+                      <div>
+                        <strong>
+                          {run.filter(r => !r.recorded).length} score card
+                          {run.filter(r => !r.recorded).length > 1 ? 's have' : ' has'} not been recorded for {period}.
+                        </strong>
+                        <span>
+                          {' '}Those lines are computed from the fixed points only — experience,
+                          technical and tenure — with nothing for core performance or attendance,
+                          so they band low and pay low. They are marked in the table below and in
+                          the CSV export.
+                        </span>
+                      </div>
+                    </div>
+                  )}
                   <div className="table-container score-tracker-container payroll-run-container">
                     <table className="data-table score-tracker-table">
                       <thead>
@@ -4678,7 +4712,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <tr><td colSpan={17} className="text-muted">No score records for {period}.</td></tr>
                         )}
                         {run.map(r => (
-                          <tr key={r.coach.id} className="row-clickable" title="Open coach page" onClick={() => { setCoachDetailId(r.coach.id); setActiveView('coaches'); }}>
+                          <tr
+                            key={r.coach.id}
+                            className={`row-clickable${r.recorded ? '' : ' row-unrecorded'}`}
+                            title={r.recorded
+                              ? "Open coach page"
+                              : "Score card not recorded for this period — pay is computed on the fixed points alone"}
+                            onClick={() => { setCoachDetailId(r.coach.id); setActiveView('coaches'); }}
+                          >
                             <td className="sticky-col sticky-month"><strong>{r.coach.name}</strong></td>
                             <td>{r.coach.id}</td>
                             <td>{r.coach.coach_category}</td>

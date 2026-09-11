@@ -1111,11 +1111,24 @@ button, input, select, textarea {
   border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
-/* Inline row editing */
-.scorecard-editing-row td {
+/* The open performance period — the month being recorded into right now. */
+.score-tracker-table .scorecard-current-row > td {
+  background-color: rgba(116, 116, 64, 0.10);
+}
+.score-tracker-table .scorecard-current-row .sticky-col {
+  background-color: #e9e9da;
+}
+.score-tracker-table .scorecard-current-row .sticky-month {
+  box-shadow: inset 3px 0 0 var(--accent-teal);
+  font-weight: 700;
+}
+
+/* Inline row editing. Carries the same specificity as the open-period rules
+   above and sits after them, so an open row being edited reads as edited. */
+.score-tracker-table .scorecard-editing-row > td {
   background-color: rgba(116, 116, 64, 0.07);
 }
-.scorecard-editing-row .sticky-col {
+.score-tracker-table .scorecard-editing-row .sticky-col {
   background-color: #eceadb;
 }
 .score-tracker-table td.editable-cell {
@@ -1447,6 +1460,31 @@ button, input, select, textarea {
 .payroll-run-container .payroll-total-row .sticky-col {
   background-color: var(--bg-surface-header);
   z-index: 3;
+}
+/* A payroll line resting on fixed points alone: the month's manual scores are
+   not in yet, so the band and the pay below it are provisional. */
+.score-tracker-table tbody tr.row-unrecorded > td {
+  background-color: rgba(210, 116, 64, 0.08);
+}
+.score-tracker-table tbody tr.row-unrecorded > td:first-child {
+  box-shadow: inset 3px 0 0 var(--brand-orange);
+}
+.payroll-incomplete-note {
+  display: flex;
+  align-items: flex-start;
+  gap: .6rem;
+  margin-bottom: 1rem;
+  padding: .75rem .9rem;
+  border-radius: 8px;
+  font-size: .82rem;
+  line-height: 1.5;
+  color: var(--brand-rust);
+  background: rgba(159, 64, 34, .08);
+  border: 1px solid rgba(159, 64, 34, .28);
+}
+.payroll-incomplete-note i {
+  font-size: 1.1rem;
+  flex-shrink: 0;
 }
 .payroll-run-container .payroll-total-row .emphasis-col {
   color: var(--accent-teal);
