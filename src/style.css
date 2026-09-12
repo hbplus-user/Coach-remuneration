@@ -949,6 +949,34 @@ button, input, select, textarea {
   margin: 0 -1.5rem;
   border-radius: 0;
 }
+/* Which pay cycles the score card shows. Sits above the tab strip, since it
+   narrows every tab rather than belonging to any one of them. */
+.scorecard-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: .9rem;
+}
+.scorecard-range-label {
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.scorecard-range-to {
+  font-size: .78rem;
+  color: var(--text-muted);
+}
+.scorecard-range-count {
+  font-size: .75rem;
+}
+.scorecard-range-reset {
+  padding: .25rem .6rem;
+  font-size: .75rem;
+}
+
 /* One column group at a time, so a row fits without a long sideways scroll */
 .scorecard-tabs {
   position: relative;
@@ -1070,17 +1098,52 @@ button, input, select, textarea {
 /* Core Performance carries the most columns, so these widths decide how far
    the score card scrolls. Keep them tight enough that it usually does not. */
 .scorecard-container .column-header-row th {
-  min-width: 84px;
+  min-width: 76px;
   /* A preferred width, not a cap: without one the table hands each column its
      full unwrapped width, and the longest entry tag ends up setting it. With
      it, long labels and tags wrap instead of stretching the column. Numeric
      cells stay nowrap, so figures still set a sensible floor. */
-  width: 84px;
+  width: 76px;
   max-width: none;
+  /* Without this a column can never be narrower than its longest single word —
+     "DOCUMENTATION" and "RESPONSIVENESS" were each holding a column at ~100px
+     on their own, which is what pushed the table into sideways scrolling. */
+  overflow-wrap: anywhere;
 }
-.scorecard-container .sticky-month {
-  min-width: 112px;
+.scorecard-container .score-tracker-table .sticky-month {
+  /* "Performance Month" wraps over two lines the way the other headers do, and
+     "September 2026" wraps under it, so the column no longer has to be as wide
+     as the longest month name written on one line.
+
+     Carries .score-tracker-table so it outranks the generic 150px rule further
+     down the file, which otherwise wins on ordering at equal specificity. */
+  min-width: 88px;
+  width: 88px;
 }
+/* Fitting the score card on a laptop without sideways scrolling.
+   The table keeps overflow-x as a safety net, but at these widths it should
+   not need it: the annotation tags go first (the legend below the table says
+   the same thing), then the period range, which the month already identifies. */
+@media (max-width: 1500px) {
+  .scorecard-container .entry-tag { display: none; }
+}
+@media (max-width: 1280px) {
+  .scorecard-container .col-range { display: none; }
+}
+@media (max-width: 1150px) {
+  .scorecard-container .column-header-row th {
+    min-width: 66px;
+    width: 66px;
+    font-size: 0.6rem;
+  }
+  .scorecard-container td,
+  .scorecard-container .column-header-row th {
+    padding-left: 0.3rem;
+    padding-right: 0.3rem;
+  }
+  .scorecard-container .score-tracker-table .sticky-month { min-width: 76px; width: 76px; }
+}
+
 /* Status holds a single padlock, so it needs far less room than a column of
    figures. Narrower than the shared floor, and centred on the icon. */
 .scorecard-container .col-status {
@@ -2634,7 +2697,9 @@ form {
 .edu-edit-fields {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr) 72px minmax(0, 1fr);
+  /* Stage, institution, qualification, format, points, certificate. */
+  grid-template-columns:
+    minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr) 68px minmax(0, 1fr);
   gap: .5rem;
 }
 .edu-edit-fields label {
@@ -2700,9 +2765,28 @@ form {
 
 @media (max-width: 1100px) {
   .edu-edit-fields {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 68px;
   }
   .edu-edit-fields .edu-edit-doc { grid-column: 1 / -1; }
+}
+
+/* Which stage an entry belongs to, and which of them is the one that counts. */
+.edu-tier-badge {
+  margin-right: .5rem;
+  font-size: .62rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.edu-highest-tag {
+  margin-left: .5rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: .62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #fff;
+  background: var(--accent-teal);
 }
 
 .cert-edit-fields {
@@ -2730,6 +2814,15 @@ form {
 
 .cert-edit-fields .detail-input {
   width: 100%;
+}
+/* Points are set on the master, so the field reads as output, not input —
+   matching the education rows above it. */
+.cert-edit-fields .detail-input[readonly] {
+  background: var(--bg-surface-header);
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-align: right;
+  cursor: not-allowed;
 }
 
 @media (max-width: 900px) {

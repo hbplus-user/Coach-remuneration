@@ -27,6 +27,8 @@ import {
   calculateTenureYears,
   getEducationScore,
   setEducationScores,
+  EDUCATION_TIERS,
+  getHighestEducationEntry,
   getPeriodForDate,
   getNextPeriod
 } from './calculations.js';
@@ -1006,6 +1008,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [unlockedDynamicKeys, setUnlockedDynamicKeys] = useState([]);
   // Score Management shows one column group at a time so the row stays readable.
   const [scorecardTab, setScorecardTab] = useState("core");
+  // Which pay cycles the score card tables show. Blank means the full span,
+  // so a coach with only a few periods needs no filtering at all.
+  const [scorecardFrom, setScorecardFrom] = useState("");
+  const [scorecardTo, setScorecardTo] = useState("");
   // Inline editing of the coach's profile and experience cards.
   const [editingCoachCard, setEditingCoachCard] = useState(null); // 'profile' | 'experience'
   const [coachDraft, setCoachDraft] = useState({});
@@ -1497,6 +1503,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       );
       draft.education = [{
         id: `EDU_${coach.id}_1`,
+        level: "higher",
         institution: "",
         qualification: coach.education_qualification,
         format: coach.education_type || "",
@@ -1561,7 +1568,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       ...prev,
       education: [
         ...(prev.education || []),
-        { id: `EDU_${Date.now()}${Math.floor(Math.random() * 100)}`, institution: "", qualification: "", format: "", score: "", pdfName: "", pdfData: "" }
+        { id: `EDU_${Date.now()}${Math.floor(Math.random() * 100)}`, level: "", institution: "", qualification: "", format: "", score: "", pdfName: "", pdfData: "" }
       ]
     }));
 
@@ -1621,7 +1628,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         }));
       // Keep the legacy single pair in step with the best row, so anything
       // still reading those two fields stays correct.
-      const best = [...updated.education].sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0];
+      const best = getHighestEducationEntry(updated);
       if (best) {
         updated.education_qualification = best.qualification;
         updated.education_type = best.format;
@@ -3607,6 +3614,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const allRuns = [...histList, curr].filter(Boolean)
               .sort((a, b) => new Date(a.period_end) - new Date(b.period_end));
 
+            // The tables show the chosen span of pay cycles; everything else on
+            // the page — the header stats, the calculator — still sees them all.
+            const runIndex = (month) => allRuns.findIndex(r => r.period_month === month);
+            const fromIdx = scorecardFrom && runIndex(scorecardFrom) >= 0 ? runIndex(scorecardFrom) : 0;
+            const toIdx = scorecardTo && runIndex(scorecardTo) >= 0 ? runIndex(scorecardTo) : allRuns.length - 1;
+            // Picking them the wrong way round reads as a range, not an error.
+            const visibleRuns = allRuns.slice(Math.min(fromIdx, toIdx), Math.max(fromIdx, toIdx) + 1);
+
             // The open period is usually blank until an RM records it, so the
             // header stats report the newest period that actually has entries.
             const isRecorded = (r) => MANUAL_PERIOD_FIELDS.some(f => r[f] !== null && r[f] !== undefined);
@@ -3835,7 +3850,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </tr>
                   </thead>
                   <tbody>
-                    {allRuns.map(run => {
+                    {visibleRuns.map(run => {
                       const isEditing = editingScorePeriod === run.period_month && editingScorePane === paneId;
                       const source = isEditing ? draftFor(run) : { coach, run };
                       const row = buildScoreRow(source.coach, source.run);
@@ -4232,6 +4247,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <div className="cert-edit-row edu-edit-row" key={row.id || i}>
                               <div className="edu-edit-fields">
                                 <label>
+                                  <span>Stage</span>
+                                  <select
+                                    className="detail-input"
+                                    value={row.level ?? ""}
+                                    onChange={(e) => setEduField(i, 'level', e.target.value)}
+                                  >
+                                    <option value="">Select…</option>
+                                    {EDUCATION_TIERS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                                  </select>
+                                </label>
+                                <label>
                                   <span>Institution</span>
                                   <input
                                     type="text" className="detail-input"
@@ -4312,17 +4338,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <i className="bx bx-plus"></i> Add Education Certificate
                         </button>
                         <p className="text-muted detail-edit-note">
-                          Points come from the qualification and format pairing on the
-                          Education Master and cannot be typed here. Scoring takes the
-                          highest, so adding a lesser qualification never lowers the HB+
-                          Score. Rows without a qualification are discarded on save.
+                          Record everything from school upward. The stage says which is
+                          which, and the highest stage is the one that scores — so listing
+                          school or intermediate alongside a degree never lowers the HB+
+                          Score. Points come from the qualification and format pairing on
+                          the Education Master and cannot be typed here. Rows without a
+                          qualification are discarded on save.
                         </p>
                       </>
                     ) : coach.education && coach.education.length > 0 ? (
                       <ul className="detail-cert-list">
-                        {coach.education.map((row, i) => (
+                        {/* Listed school upward, the way it was recorded, with the
+                            entry that counts as the highest marked. */}
+                        {[...coach.education]
+                          .sort((a, b) => {
+                            const rank = (l) => EDUCATION_TIERS.find(t => t.value === l)?.rank ?? 0;
+                            return rank(a.level) - rank(b.level);
+                          })
+                          .map((row, i) => {
+                          const highest = getHighestEducationEntry(coach);
+                          const isHighest = highest && (highest.id ? highest.id === row.id : highest === row);
+                          const tier = EDUCATION_TIERS.find(t => t.value === row.level);
+                          return (
                           <li key={row.id || i}>
                             <span>
+                              {tier && <span className="badge badge-muted edu-tier-badge">{tier.label}</span>}
                               <strong>{row.qualification}</strong>
                               {row.institution ? ` — ${row.institution}` : ''}
                               {row.format ? ` · ${educationFormats.find(f => f.value === row.format)?.label || row.format}` : ''}
@@ -4336,10 +4376,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   <i className={getFileIcon(row.pdfName)}></i>
                                 </a>
                               )}
+                              {isHighest && <span className="edu-highest-tag">highest</span>}
                             </span>
                             <span className="badge badge-info">{Number(row.score || 0).toFixed(1)} pts</span>
                           </li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     ) : (
                       <p className="text-muted" style={{ fontSize: '0.85rem' }}>No education recorded for this coach.</p>
@@ -4414,12 +4456,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   </select>
                                 </label>
                                 <label className="cert-edit-score">
-                                  <span>Score</span>
+                                  <span>Points</span>
                                   <input
-                                    type="number" step="0.1" min="0" max="10" className="detail-input"
-                                    placeholder="0–10"
-                                    value={cert.score ?? ""}
-                                    onChange={(e) => setCertField(i, 'score', e.target.value)}
+                                    type="text" className="detail-input" readOnly tabIndex={-1}
+                                    title="Set on the Technical Certifications Master, in the Certifications tab"
+                                    value={cert.score === "" || cert.score == null ? "—" : Number(cert.score).toFixed(1)}
                                   />
                                 </label>
                               </div>
@@ -4438,8 +4479,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <i className="bx bx-plus"></i> Add Certification
                         </button>
                         <p className="text-muted detail-edit-note">
-                          Scoring takes the highest certification score, so adding a
-                          weaker one never lowers the HB+ Score. Blank rows are discarded on save.
+                          Points come from the Technical Certifications Master and cannot be
+                          edited here — choosing a course from the suggestions fills them in.
+                          A course that is not on the master carries no points until it is added
+                          there. Scoring takes the highest, so a weaker certification never lowers
+                          the HB+ Score. Blank rows are discarded on save.
                         </p>
                       </>
                     ) : coach.certifications && coach.certifications.length > 0 ? (
@@ -4495,6 +4539,38 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <p className="text-muted" style={{ fontSize: '0.85rem' }}>No score cards recorded for this coach yet.</p>
                     ) : (
                       <>
+                      {allRuns.length > 1 && (
+                        <div className="scorecard-range">
+                          <span className="scorecard-range-label">Pay cycles</span>
+                          <select
+                            className="header-select"
+                            value={allRuns[fromIdx]?.period_month ?? ''}
+                            onChange={(e) => setScorecardFrom(e.target.value)}
+                          >
+                            {allRuns.map(r => <option key={r.period_month} value={r.period_month}>{r.period_month}</option>)}
+                          </select>
+                          <span className="scorecard-range-to">to</span>
+                          <select
+                            className="header-select"
+                            value={allRuns[toIdx]?.period_month ?? ''}
+                            onChange={(e) => setScorecardTo(e.target.value)}
+                          >
+                            {allRuns.map(r => <option key={r.period_month} value={r.period_month}>{r.period_month}</option>)}
+                          </select>
+                          <span className="text-muted scorecard-range-count">
+                            {visibleRuns.length} of {allRuns.length}
+                          </span>
+                          {(scorecardFrom || scorecardTo) && (
+                            <button
+                              type="button" className="btn btn-secondary scorecard-range-reset"
+                              onClick={() => { setScorecardFrom(""); setScorecardTo(""); }}
+                            >
+                              Show all
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       <ScorecardTabs
                         groups={tabGroups}
                         active={scorecardTab}

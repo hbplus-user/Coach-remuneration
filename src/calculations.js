@@ -46,12 +46,50 @@ export function getEducationScore(qualification, type) {
 }
 
 /**
- * The education score a coach actually earns: the best of their education
- * certificates, the way the technical score takes the highest certification.
+ * The stages a coach's education is recorded in, lowest first. A coach lists
+ * everything from school upward; the stage says which is which, so the highest
+ * is a fact about the record rather than a guess from the points.
+ */
+export const EDUCATION_TIERS = [
+  { value: 'basic',        label: 'Basic (School)', rank: 1 },
+  { value: 'intermediate', label: 'Intermediate',   rank: 2 },
+  { value: 'higher',       label: 'Higher',         rank: 3 }
+];
+
+const tierRank = (level) => EDUCATION_TIERS.find(t => t.value === level)?.rank ?? 0;
+
+/** A row's points: what the master gave it, or a live lookup if it stored none. */
+const educationRowScore = (row) => {
+  const stored = row?.score;
+  const value = (stored !== undefined && stored !== null && stored !== "")
+    ? Number(stored)
+    : getEducationScore(row?.qualification, row?.format);
+  return Number.isFinite(value) ? value : 0;
+};
+
+/**
+ * The coach's highest education entry.
  *
- * A row's score is whatever the Education Master gave it when it was added;
- * if that is missing the pairing is looked up live, so repointing a
- * qualification in the master still reaches rows that never stored one.
+ * Stage decides it — Higher beats Intermediate beats Basic — so a school
+ * record sitting alongside a degree never wins. Entries sharing a stage are
+ * separated by points. When no entry carries a stage, which is every record
+ * written before stages existed, the best-scoring one wins as it always did.
+ */
+export function getHighestEducationEntry(coach) {
+  const list = Array.isArray(coach?.education) ? coach.education : [];
+  if (list.length === 0) return null;
+  const staged = list.some(row => tierRank(row?.level) > 0);
+  return [...list].sort((a, b) => {
+    if (staged) {
+      const byTier = tierRank(b?.level) - tierRank(a?.level);
+      if (byTier !== 0) return byTier;
+    }
+    return educationRowScore(b) - educationRowScore(a);
+  })[0] ?? null;
+}
+
+/**
+ * The education score a coach actually earns, taken from their highest entry.
  *
  * Coaches recorded before the list existed keep scoring from the single
  * qualification/format pair on their profile.
@@ -61,13 +99,8 @@ export function getHighestEducationScore(coach) {
   if (list.length === 0) {
     return getEducationScore(coach?.education_qualification, coach?.education_type);
   }
-  return list.reduce((best, row) => {
-    const stored = row?.score;
-    const value = (stored !== undefined && stored !== null && stored !== "")
-      ? Number(stored)
-      : getEducationScore(row?.qualification, row?.format);
-    return Number.isFinite(value) && value > best ? value : best;
-  }, 0);
+  const best = getHighestEducationEntry(coach);
+  return best ? educationRowScore(best) : 0;
 }
 
 /**
