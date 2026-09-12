@@ -51,6 +51,7 @@ const COACH_TYPES = [
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 const COACH_STATUSES = ["Active", "Suspended", "Exited"];
+const BANK_ACCOUNT_TYPES = ["Savings", "Current"];
 const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 
 // Pay structures; each maps to a rates/milestones table on the policy variant.
@@ -1614,6 +1615,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const changedEducation = updated.education_qualification !== coach.education_qualification
         || updated.education_type !== coach.education_type;
       if (changedEducation) delete updated.education_score_override;
+    }
+
+    if (card === 'bank') {
+      // IFSC codes are upper case by convention and are matched exactly by
+      // banks, so store them that way rather than however they were typed.
+      updated.bank_ifsc = (updated.bank_ifsc || "").trim().toUpperCase();
+      for (const key of ['bank_holder_name', 'bank_name', 'bank_account', 'bank_branch', 'bank_upi']) {
+        updated[key] = (updated[key] || "").trim();
+      }
     }
 
     if (card === 'education') {
@@ -4009,6 +4019,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const editingProfile = editingCoachCard === 'profile';
             const editingExperience = editingCoachCard === 'experience';
             const editingCerts = editingCoachCard === 'certifications';
+            const editingBank = editingCoachCard === 'bank';
             const editingEducation = editingCoachCard === 'education';
 
             const editItem = (label, control) => (
@@ -4165,7 +4176,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("First Certification", textField("date_of_first_relevant_certification", "date"))}
                           {editItem("Phone", textField("phone"))}
                           {editItem("Email", textField("email", "email"))}
-                          {editItem("Bank Account", textField("bank_account"))}
                           {editItem("Status", selectField("status", COACH_STATUSES))}
                         </>
                       ) : (
@@ -4182,7 +4192,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {detailRow("First Certification", formatDate(coach.date_of_first_relevant_certification))}
                           {detailRow("Phone", coach.phone)}
                           {detailRow("Email", coach.email)}
-                          {detailRow("Bank Account", coach.bank_account)}
                           {detailRow("Status", coach.status)}
                         </>
                       )}
@@ -4190,6 +4199,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     {editingProfile && (
                       <p className="text-muted detail-edit-note">
                         Changing Date of Joining or Type of Coach re-scores every period, since tenure and the policy variant feed the HB+ Score.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Payment details are their own card: they are the one part of
+                      the profile that goes to a bank rather than to scoring. */}
+                  <div className="card grid-span-6">
+                    <div className="card-header-row">
+                      <h3>Bank Details</h3>
+                      {cardEditControls('bank')}
+                    </div>
+                    <div className="detail-grid">
+                      {editingBank ? (
+                        <>
+                          {editItem("Account Holder Name", textField("bank_holder_name"))}
+                          {editItem("Bank Name", textField("bank_name"))}
+                          {editItem("Account Number", textField("bank_account"))}
+                          {editItem("IFSC Code", textField("bank_ifsc"))}
+                          {editItem("Branch", textField("bank_branch"))}
+                          {editItem("Account Type", selectField("bank_account_type", BANK_ACCOUNT_TYPES))}
+                          {editItem("UPI ID", textField("bank_upi"))}
+                        </>
+                      ) : (
+                        <>
+                          {detailRow("Account Holder Name", coach.bank_holder_name)}
+                          {detailRow("Bank Name", coach.bank_name)}
+                          {detailRow("Account Number", coach.bank_account)}
+                          {detailRow("IFSC Code", coach.bank_ifsc)}
+                          {detailRow("Branch", coach.bank_branch)}
+                          {detailRow("Account Type", coach.bank_account_type)}
+                          {detailRow("UPI ID", coach.bank_upi)}
+                        </>
+                      )}
+                    </div>
+                    {editingBank && (
+                      <p className="text-muted detail-edit-note">
+                        These details are what payroll pays into. An IFSC code is stored
+                        in upper case. Nothing here affects the HB+ Score.
                       </p>
                     )}
                   </div>
