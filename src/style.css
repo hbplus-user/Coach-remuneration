@@ -1617,6 +1617,19 @@ button, input, select, textarea {
 .score-tracker-table tbody tr.row-unrecorded > td:first-child {
   box-shadow: inset 3px 0 0 var(--brand-orange);
 }
+/* The run's own header, so the export sits with the table rather than only in
+   the page toolbar. The table bleeds to the card edges, so this keeps its own
+   padding above it. */
+.payroll-run-head {
+  margin-bottom: 1rem;
+}
+.payroll-run-head h3 {
+  font-size: 1rem;
+}
+.payroll-run-head h3 .text-muted {
+  font-weight: 500;
+}
+
 .payroll-incomplete-note {
   display: flex;
   align-items: flex-start;
@@ -2349,6 +2362,32 @@ form {
 .payslip-ledger-table td.amt {
   text-align: right;
   font-family: monospace;
+}
+
+/* Payslip: a section heading over each block, the net stated in words under
+   the figure, and the generated-statement note, as on a standard slip. */
+.payslip-section-title {
+  margin: 1.25rem 0 .5rem;
+  padding-bottom: .3rem;
+  font-family: var(--font-title);
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+.payslip-net-words {
+  margin: .35rem 0 0;
+  font-size: .82rem;
+  font-style: italic;
+  font-weight: 600;
+}
+.payslip-note {
+  margin-top: .9rem;
+  font-size: .72rem;
+  font-style: italic;
+  color: var(--text-muted);
 }
 
 .payslip-net-box {

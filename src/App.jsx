@@ -29,6 +29,7 @@ import {
   setEducationScores,
   EDUCATION_TIERS,
   getHighestEducationEntry,
+  amountInWords,
   getPeriodForDate,
   getNextPeriod
 } from './calculations.js';
@@ -3134,8 +3135,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <h3>Risk Watchlist</h3>
                         <h2>{
                           coaches.filter(c => {
+                            // A month with no recorded score is not a weak month:
+                            // `null < 40` is true, so without this an unrecorded
+                            // period counts against the coach.
                             const combined = [...historicMonths, ...currentMonth]
-                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT")
+                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT" && e.hb_score != null)
                               .sort((a, b) => new Date(b.period_end) - new Date(a.period_end));
                             return combined.length >= 2 && combined[0].hb_score < 40 && combined[1].hb_score < 40;
                           }).length
@@ -3194,8 +3198,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <div className="interaction-history-list">
                         {(() => {
                           const wList = coaches.map(c => {
+                            // Same guard as the count above: only months that
+                            // actually carry a score can be weak ones.
                             const hist = [...historicMonths, ...currentMonth]
-                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT")
+                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT" && e.hb_score != null)
                               .sort((a, b) => new Date(b.period_end) - new Date(a.period_end));
                             if (hist.length >= 2 && hist[0].hb_score < 40 && hist[1].hb_score < 40) {
                               return { c, score1: hist[0].hb_score, score2: hist[1].hb_score };
@@ -4553,16 +4559,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Score Management</h3>
-                      {canManage && curr && curr.status !== 'FINANCE_LOCKED' && (
-                        <button className="btn btn-primary" onClick={() => handleOpenEvalModal(coach.id)}>
-                          <i className="bx bx-edit"></i> Enter / Edit Score Card
-                        </button>
-                      )}
-                      {canManage && curr && curr.status === 'FINANCE_LOCKED' && (
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          <i className="bx bxs-lock-alt"></i> {curr.period_month} is locked — unlock it on Record Status to edit
-                        </span>
-                      )}
+{/* Scores are entered inline on each row now, so this slot carries the
+                          payslip instead. It follows the same rule as the payslip buttons
+                          elsewhere: a slip is issued once Finance has locked the month. */}
+                      {canManage && statRun && (() => {
+                        const slipPeriod = statRun.period_month;
+                        const slipLocked = statRun.status === 'FINANCE_LOCKED';
+                        const mayIssue = slipLocked || currentRole === 'Super Admin';
+                        return (
+                          <button
+                            className="btn btn-primary"
+                            disabled={!mayIssue}
+                            title={mayIssue
+                              ? `Download the ${slipPeriod} salary slip`
+                              : `${slipPeriod} is not finance-locked yet, so no slip can be issued`}
+                            onClick={() => handleOpenPayslipModal(coach.id, slipPeriod)}
+                          >
+                            <i className="bx bx-download"></i> Download Salary Slip
+                          </button>
+                        );
+                      })()}
                     </div>
 
                     {(() => {
@@ -5196,6 +5212,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
 
                 <div className="card score-tracker-card">
+                  {/* The export also sits in the page toolbar, but the table is
+                      where Finance actually works, so it is offered here too. */}
+                  <div className="card-header-row payroll-run-head">
+                    <h3>{period} Payroll Run <span className="text-muted">· {run.length} coach{run.length === 1 ? '' : 'es'}</span></h3>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => handleExportPayrollRun(period)}
+                      disabled={run.length === 0}
+                      title={run.length === 0 ? 'Nothing to export for this period' : `Download the ${period} payroll run as CSV`}
+                    >
+                      <i className="bx bx-download"></i> Download CSV
+                    </button>
+                  </div>
+
                   {/* The run still pays out on an unrecorded month, but Finance
                       needs to see that those lines rest on the fixed points
                       alone — the manual half has not been entered yet. */}
@@ -6985,6 +7015,24 @@ HB+_030,185,0,96`} />
                   </tbody>
                 </table>
 
+                <div className="payslip-section-title">SALARY DETAILS</div>
+                <table className="payslip-details-table">
+                  <tbody>
+                    <tr>
+                      <td className="label-col">Sessions Completed</td>
+                      <td className="val-col">{Number(e.sessions_completed) || 0}</td>
+                      <td className="label-col">Session Threshold</td>
+                      <td className="val-col">{pay.threshold ?? '—'}</td>
+                    </tr>
+                    <tr>
+                      <td className="label-col">Sessions Beyond Threshold</td>
+                      <td className="val-col">{pay.extraSessions || 0}</td>
+                      <td className="label-col">Per-Session Rate</td>
+                      <td className="val-col">₹{Number(pay.perSessionRate || 0).toFixed(2)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
                 <div className="payslip-ledger-grid">
                   {/* Earnings */}
                   <div className="payslip-ledger-section">
@@ -7057,7 +7105,13 @@ HB+_030,185,0,96`} />
                 <div className="payslip-net-box">
                   <h2>NET PAYABLE AMOUNT</h2>
                   <h1>₹{pay.grossPay.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h1>
+                  <p className="payslip-net-words">{amountInWords(pay.grossPay)}</p>
                 </div>
+
+                <p className="payslip-note">
+                  All amounts are in INR. This is a computer generated statement and does
+                  not require a signature.
+                </p>
 
                 <div className="payslip-signatures-row">
                   <div className="signature-box">Prepared by Finance Department</div>

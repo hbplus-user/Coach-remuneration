@@ -8,7 +8,7 @@ import React from 'react';
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, componentStack: '' };
   }
 
   static getDerivedStateFromError(error) {
@@ -17,6 +17,10 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     console.error('Render error:', error, info);
+    // The message alone ("Cannot read properties of null") says nothing about
+    // where it happened, which makes these very slow to track down. Keep the
+    // stack so the screen can name the file and line.
+    this.setState({ componentStack: info?.componentStack || '' });
   }
 
   render() {
@@ -39,8 +43,26 @@ export default class ErrorBoundary extends React.Component {
           }}>
             {this.state.error?.message || String(this.state.error)}
           </pre>
+
+          {/* Where it happened. In development this carries the file and line;
+              in a production build it is minified but still shows the shape. */}
+          {(this.state.error?.stack || this.state.componentStack) && (
+            <details style={{ marginTop: '.75rem', textAlign: 'left' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '.8rem' }}>
+                Where it happened
+              </summary>
+              <pre style={{
+                marginTop: '.5rem', padding: '.8rem', borderRadius: 8, overflowX: 'auto',
+                maxHeight: 260, fontSize: '.7rem', lineHeight: 1.45, whiteSpace: 'pre-wrap',
+                background: 'rgba(0,0,0,.05)', border: '1px solid var(--border-color, #ddd)'
+              }}>
+                {[this.state.error?.stack, this.state.componentStack]
+                  .filter(Boolean).join('\n\n')}
+              </pre>
+            </details>
+          )}
           <button className="auth-submit" style={{ marginTop: '1.25rem' }}
-                  onClick={() => this.setState({ error: null })}>
+                  onClick={() => this.setState({ error: null, componentStack: '' })}>
             Try again
           </button>
           <button className="auth-google" style={{ marginTop: '.6rem' }}
