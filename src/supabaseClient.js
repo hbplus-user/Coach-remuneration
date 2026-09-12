@@ -129,6 +129,7 @@ const MAPPERS = {
     toRow: c => blanksToNull({
       ...pick(c, COACH_COLS),
       certifications: c.certifications ?? [],
+      education: c.education ?? [],
       pdf_name: c.pdfName || null,
       pdf_data: c.pdfData || null
     }, DATE_ISH),

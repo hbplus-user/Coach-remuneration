@@ -945,7 +945,7 @@ button, input, select, textarea {
   max-height: none;
   /* Bleed to the card's edges sideways only. There are two of these stacked in
      the card now, so a negative bottom margin would pull whatever follows —
-     the Volume & Conduct heading, then the legend — up over the table. */
+     the Incentive heading, then the legend — up over the table. */
   margin: 0 -1.5rem;
   border-radius: 0;
 }
@@ -1062,22 +1062,47 @@ button, input, select, textarea {
   .scorecard-tab-pill::after { animation: none; }
 }
 
+/* Size to content rather than to a fixed floor, so the table only scrolls
+   sideways when the columns genuinely do not fit. */
 .scorecard-container .score-tracker-table {
-  min-width: 1180px;
+  min-width: 100%;
 }
-/* The Final Score tab carries the most columns; tighten them so the band still
-   clears the pinned Actions column instead of sliding under it. */
+/* Core Performance carries the most columns, so these widths decide how far
+   the score card scrolls. Keep them tight enough that it usually does not. */
 .scorecard-container .column-header-row th {
-  min-width: 96px;
+  min-width: 84px;
+  /* A preferred width, not a cap: without one the table hands each column its
+     full unwrapped width, and the longest entry tag ends up setting it. With
+     it, long labels and tags wrap instead of stretching the column. Numeric
+     cells stay nowrap, so figures still set a sensible floor. */
+  width: 84px;
   max-width: none;
 }
 .scorecard-container .sticky-month {
-  min-width: 128px;
+  min-width: 112px;
+}
+/* Status holds a single padlock, so it needs far less room than a column of
+   figures. Narrower than the shared floor, and centred on the icon. */
+.scorecard-container .col-status {
+  min-width: 58px;
+  width: 58px;
+  text-align: center;
+}
+.scorecard-container .col-status .status-cell {
+  justify-content: center;
 }
 .scorecard-container td,
 .scorecard-container .column-header-row th {
-  padding-left: 0.6rem;
-  padding-right: 0.6rem;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+}
+/* The entry tag is the widest thing in most headers — "MANUAL · FROM APP" is
+   wider than the numbers below it — so inside the score card let it sit
+   tighter and wrap rather than setting the column width on its own. */
+.scorecard-container .entry-tag {
+  font-size: 0.56rem;
+  padding: 1px 5px;
+  white-space: normal;
 }
 .scorecard-container .score-tracker-table td:not(.num-col) {
   white-space: normal;
@@ -1109,6 +1134,58 @@ button, input, select, textarea {
   background-color: rgba(148, 163, 184, 0.12);
   color: var(--text-muted);
   border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+/* Record Status carries its own lock, so a single period can be locked or
+   released by hand without touching the rest of the month. */
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.status-lock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: .95rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  transition: var(--transition-fast, .15s ease);
+}
+.status-lock-btn:hover {
+  color: var(--brand-rust);
+  border-color: var(--brand-rust);
+  background: rgba(159, 64, 34, .08);
+}
+.status-lock-btn.is-locked {
+  color: var(--brand-olive);
+  border-color: rgba(116, 116, 64, .45);
+  background: rgba(116, 116, 64, .12);
+}
+.status-lock-btn:focus-visible {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 1px;
+}
+/* Shown to roles that cannot change the lock: same reading, no affordance. */
+.status-lock-btn.is-static {
+  cursor: default;
+  border-color: transparent;
+}
+.status-lock-btn.is-static:hover {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: transparent;
+}
+.status-lock-btn.is-static.is-locked:hover {
+  color: var(--brand-olive);
+  background: rgba(116, 116, 64, .12);
 }
 
 /* The open performance period — the month being recorded into right now. */
@@ -1316,7 +1393,7 @@ button, input, select, textarea {
 .score-tracker-table .scorecard-editing-row .actions-col {
   background-color: #eceadb;
 }
-/* Volume & Conduct renders as its own table below the tabbed score card, so it
+/* Incentive renders as its own table below the tabbed score card, so it
    needs a heading of its own — the tab strip no longer names it. */
 .scorecard-subhead {
   font-family: var(--font-title);
@@ -1391,6 +1468,14 @@ button, input, select, textarea {
   font-size: 0.72rem;
   color: var(--text-muted);
   margin-top: 2px;
+}
+/* A parameter that is stated rather than keyed in — it follows the period
+   picker, so it reads as a value, not a field. */
+.calc-static {
+  display: inline-block;
+  padding: .35rem 0;
+  font-weight: 700;
+  color: var(--text-primary);
 }
 .calc-input-cell {
   background-color: rgba(245, 158, 11, 0.06);
@@ -2544,10 +2629,87 @@ form {
   border: 1px solid var(--border-color);
 }
 
+/* Education rows carry more than a certification does — institution, the two
+   master fields, the points they earn, and the certificate itself. */
+.edu-edit-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr) 72px minmax(0, 1fr);
+  gap: .5rem;
+}
+.edu-edit-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  min-width: 0;
+}
+.edu-edit-fields label span {
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.edu-edit-fields .detail-input {
+  width: 100%;
+}
+.edu-edit-fields .detail-input[readonly] {
+  background: var(--bg-surface-header);
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-align: right;
+  cursor: not-allowed;
+}
+.edu-edit-fields input[type="file"] {
+  font-size: .72rem;
+  padding: .3rem;
+}
+/* A document already attached: name it, let it be opened, let it be dropped. */
+.edu-doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  min-width: 0;
+  padding: .3rem .45rem;
+  border-radius: 6px;
+  font-size: .72rem;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+.edu-doc-chip a {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent-teal);
+  text-decoration: none;
+}
+.edu-doc-chip button {
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+}
+.edu-doc-chip button:hover { color: var(--brand-rust); }
+
+@media (max-width: 1100px) {
+  .edu-edit-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px;
+  }
+  .edu-edit-fields .edu-edit-doc { grid-column: 1 / -1; }
+}
+
 .cert-edit-fields {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) 90px;
+  /* Awarding body, course, the format it was earned under, and its score. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr) 90px;
   gap: .5rem;
 }
 
@@ -2577,5 +2739,8 @@ form {
   .cert-edit-fields label:nth-child(2) {
     grid-column: 1 / -1;
     order: -1;
+  }
+  .cert-edit-fields label:nth-child(3) {
+    grid-column: 1 / -1;
   }
 }

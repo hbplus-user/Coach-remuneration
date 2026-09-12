@@ -268,6 +268,178 @@ export const INITIAL_VARIANTS = [
         { threshold: 182, amount: 2500 }
       ]
     }
+  },
+
+  // Yoga at HOP: Yoga's per-session rates and thresholds, in HOP's shape —
+  // per-session only, no fixed salary. Weights follow V5, the other HOP variant.
+  {
+    "id": "V6",
+    "name": "Yoga",
+    "discipline": "Yoga",
+    "audience": "Internal",
+    "property": "HOP Studio / Home Visit",
+    "is_active": true,
+    "weights": {
+      "coaching_exp": 8,
+      "non_coaching_exp": 4,
+      "education": 5,
+      "technical_cert": 15,
+      "core_performance": 28,
+      "tenure": 15,
+      "attendance": 25
+    },
+    "rates": {
+      "Fixed": {
+        "0\u201330 Non-Functional": {
+          "per_session": 210,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "30\u201340 Weak": {
+          "per_session": 240,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "40\u201350 Basic": {
+          "per_session": 280,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "50\u201360 Stable": {
+          "per_session": 320,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "60\u201370 Good": {
+          "per_session": 360,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "70\u201380 High-Quality": {
+          "per_session": 400,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        },
+        "80\u201390 Exceptional": {
+          "per_session": 440,
+          "std_fixed": 0,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 117
+        }
+      },
+      "Flexi-Fixed": {
+        "0\u201330 Non-Functional": {
+          "per_session": 210,
+          "min_fixed": 500,
+          "max_fixed": 1000,
+          "threshold": 96
+        },
+        "30\u201340 Weak": {
+          "per_session": 240,
+          "min_fixed": 1000,
+          "max_fixed": 1500,
+          "threshold": 96
+        },
+        "40\u201350 Basic": {
+          "per_session": 280,
+          "min_fixed": 1500,
+          "max_fixed": 2000,
+          "threshold": 96
+        },
+        "50\u201360 Stable": {
+          "per_session": 320,
+          "min_fixed": 2000,
+          "max_fixed": 2500,
+          "threshold": 96
+        },
+        "60\u201370 Good": {
+          "per_session": 360,
+          "min_fixed": 2500,
+          "max_fixed": 3000,
+          "threshold": 96
+        },
+        "70\u201380 High-Quality": {
+          "per_session": 400,
+          "min_fixed": 3000,
+          "max_fixed": 3500,
+          "threshold": 96
+        },
+        "80\u201390 Exceptional": {
+          "per_session": 440,
+          "min_fixed": 3500,
+          "max_fixed": 4000,
+          "threshold": 96
+        }
+      },
+      "Flexi": {
+        "0\u201330 Non-Functional": {
+          "per_session": 210,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "30\u201340 Weak": {
+          "per_session": 240,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "40\u201350 Basic": {
+          "per_session": 280,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "50\u201360 Stable": {
+          "per_session": 320,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "60\u201370 Good": {
+          "per_session": 360,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "70\u201380 High-Quality": {
+          "per_session": 400,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        },
+        "80\u201390 Exceptional": {
+          "per_session": 440,
+          "min_fixed": 0,
+          "max_fixed": 0,
+          "threshold": 96
+        }
+      }
+    },
+    "milestones": {
+      "Fixed": [{
+        "threshold": 117,
+        "amount": 1000
+      }, {
+        "threshold": 143,
+        "amount": 2000
+      }],
+      "Flexi-Fixed": [],
+      "Flexi": []
+    }
   }
 ];
 

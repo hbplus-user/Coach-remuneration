@@ -52,6 +52,12 @@ const COACH_STATUSES = ["Active", "Suspended", "Exited"];
 const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 
 // Pay structures; each maps to a rates/milestones table on the policy variant.
+// A variant is its discipline and the property it runs at. Dropping the
+// property made V1 and V5 render identically — both "S&C (Internal)" — so it
+// belongs in every label a user picks from.
+const variantProperty = (v) => /HOP/i.test(v?.property || '') ? 'HOP' : 'HB+';
+const variantLabel = (v) => `${v?.name ?? ''} ${variantProperty(v)}`.trim();
+
 const COACH_CATEGORIES = ["Fixed", "Flexi-Fixed", "Flexi"];
 
 // Column groups of the Monthly Score Records sheet, in sheet order. `weightKeys`
@@ -147,7 +153,7 @@ const COACH_SCORECARD_GROUPS = [
     columns: [
       { key: "month", label: "Performance Month", sticky: true },
       { key: "range", label: "Period" },
-      { key: "status", label: "Record Status" }
+      { key: "status", label: "Status" }
     ]
   },
   {
@@ -167,7 +173,7 @@ const COACH_SCORECARD_GROUPS = [
     columns: [
       { key: "edu_raw", label: "Non-Tech Educational Score", entry: "profile", source: "One-time", decimals: 2, step: 0.5, max: 10 },
       { key: "edu_score", label: "Non-Tech Score", entry: "derived", weightKeys: ["education"], decimals: 2 },
-      { key: "cert_raw", label: "Technical Certification Score", entry: "derived", note: "From certifications", decimals: 2 },
+      { key: "cert_raw", label: "Technical Cert Score", entry: "derived", note: "From certs", decimals: 2 },
       { key: "cert_score", label: "Tech Cert Score", entry: "derived", weightKeys: ["technical_cert"], decimals: 2 },
       { key: "technical", label: "Total", entry: "derived", decimals: 2, emphasis: true }
     ]
@@ -214,7 +220,7 @@ const COACH_SCORECARD_GROUPS = [
     ]
   },
   {
-    key: "volume", label: "Volume & Conduct", tone: "green",
+    key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
@@ -246,6 +252,8 @@ const overrideCeiling = (col, weights) => {
     case "exp_post_doj": return 60;
     case "cert_raw": return 10;
     case "threshold": return 400;
+    case "extra_sessions": return 999;
+    case "violations": return 99;
     default: return null;
   }
 };
@@ -254,8 +262,16 @@ const OVERRIDABLE_KEYS = [
   "exp_post_doj", "exp_coach_score", "exp_non_coach_score", "experience",
   "edu_score", "cert_raw", "cert_score", "technical",
   "core_total", "core", "tenure_years", "org",
-  "attendance_pct", "attendance_score", "hb_score", "threshold"
+  "attendance_pct", "attendance_score", "hb_score",
+  // Incentive inputs. They drive pay, not the HB+ score.
+  "threshold", "extra_sessions", "violations"
 ];
+
+// The subset of the above that actually feeds the HB+ score. Overriding an
+// incentive cell must not make a locked month's stored score recompute.
+const SCORE_DRIVING_OVERRIDES = OVERRIDABLE_KEYS.filter(
+  k => !["threshold", "extra_sessions", "violations"].includes(k)
+);
 
 // Fields an RM / the app keys in each period. A rolled-over period starts with
 // these null so the row reads empty until someone actually records the month.
@@ -312,7 +328,7 @@ const resolvePeriodScore = (coach, record, vConfig) => {
  * editable; the breakdown below is driven by computeMonthlyPay so it can never
  * drift from the payroll the rest of the app produces.
  */
-function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach }) {
+function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange }) {
   const [coachName, setCoachName] = useState(seed?.coachName ?? "");
   const [variantId, setVariantId] = useState(seed?.variantId ?? "V1");
   const [category, setCategory] = useState(seed?.category ?? "Fixed");
@@ -324,9 +340,20 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [orgWorkPay, setOrgWorkPay] = useState(seed?.orgWorkPay ?? 0);
   const [penalties, setPenalties] = useState(seed?.penalties ?? 0);
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
+  // Blank means "use the band's rate"; a number overrides it for this model.
+  const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
 
-  // Re-seed when the caller points the calculator at a different period/coach.
-  const seedKey = seed?.key;
+  // Re-seed when the caller points the calculator somewhere new — a different
+  // coach or period — AND when the record it is already showing changes. Keying
+  // this on the coach/period alone left the calculator holding stale figures
+  // after a score card was edited underneath it, since the key never moved.
+  const seedSignature = seed
+    ? [
+        seed.key, seed.coachName, seed.variantId, seed.category, seed.score,
+        seed.sessions, seed.nightSessions, seed.streak, seed.consistency,
+        seed.orgWorkPay, seed.penalties, seed.baseOverride, seed.rateOverride
+      ].join('|')
+    : '';
   useEffect(() => {
     if (!seed) return;
     setCoachName(seed.coachName ?? "");
@@ -340,7 +367,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setOrgWorkPay(seed.orgWorkPay ?? 0);
     setPenalties(seed.penalties ?? 0);
     setBaseOverride(seed.baseOverride ?? "");
-  }, [seedKey]);
+    setRateOverride(seed.rateOverride ?? "");
+  }, [seedSignature]);
 
   const vConfig = variants.find(v => v.id === variantId) || variants[0];
   if (!vConfig) return null;
@@ -369,7 +397,24 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     ? [{ amount: Number(orgWorkPay) }]
     : [];
 
-  const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], vConfig, orgItems);
+  // computeMonthlyPay reads the rate off the variant, so an override is applied
+  // by handing it a variant whose rate for this category and band is the entered
+  // one. Threshold and the fixed-salary figures on that band are left intact.
+  const rateOverrideNum = rateOverride !== "" && Number.isFinite(Number(rateOverride))
+    ? Math.max(0, Number(rateOverride))
+    : null;
+  const effectiveVConfig = rateOverrideNum === null ? vConfig : {
+    ...vConfig,
+    rates: {
+      ...vConfig.rates,
+      [category]: {
+        ...vConfig.rates[category],
+        [band.label]: { ...rates, per_session: rateOverrideNum }
+      }
+    }
+  };
+
+  const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], effectiveVConfig, orgItems);
   const penaltyTotal = Number(penalties) || 0;
   const grossPay = Math.round((pay.grossPay - penaltyTotal) * 100) / 100;
 
@@ -402,6 +447,26 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         <div className="calc-section-title calc-section-input">Input Parameters <span>Fill these cells only</span></div>
         <table className="data-table calc-table">
           <tbody>
+            {/* Which period the figures below belong to. Read-only: it follows
+                the period picker above rather than being keyed in here, so the
+                inputs and the score card can never drift apart silently. */}
+            {seed?.periodMonth && inputRow(
+              "Performance Period",
+              periodOptions?.length && onPeriodChange ? (
+                // Changing it re-seeds every figure below from that month's
+                // score card, so the pay recalculates for the month chosen.
+                <select
+                  className="calc-input"
+                  value={seed.periodMonth}
+                  onChange={(e) => onPeriodChange(e.target.value)}
+                >
+                  {periodOptions.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              ) : (
+                <span className="calc-static">{seed.periodMonth}</span>
+              ),
+              seed.periodRange
+            )}
             {inputRow("Coach Name", coachOptions ? (
               <select
                 className="calc-input calc-input-text"
@@ -419,7 +484,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             ), coachOptions && !lockCoach ? "picking a coach loads their recorded figures" : undefined)}
             {inputRow("Policy Variant", (
               <select className="calc-input" value={variantId} onChange={(e) => setVariantId(e.target.value)}>
-                {variants.map(v => <option key={v.id} value={v.id}>{v.id} — {v.name} ({v.audience})</option>)}
+                {variants.map(v => <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)} ({v.audience})</option>)}
               </select>
             ))}
             {inputRow("Coach Category", (
@@ -438,9 +503,24 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               </select>
             ), "zero violations and zero no-shows")}
             {inputRow("Org Work Pay This Month (₹)", num(orgWorkPay, setOrgWorkPay), "Flexi-Fixed only")}
-            {inputRow("Total Penalty Deductions (₹)", num(penalties, setPenalties))}
-            {category !== "Flexi" && inputRow("Base / Fixed Pay Override (₹)", (
-              <input type="number" min="0" className="calc-input" value={baseOverride} placeholder={`Std ${rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}`} onChange={(e) => setBaseOverride(e.target.value)} />
+            {inputRow("Total Penalty (₹)", num(penalties, setPenalties))}
+            {/* Per-session rate applies to every category: Flexi and Flexi-Fixed
+                pay it on all sessions, Fixed on the ones beyond its threshold. */}
+            {inputRow("Per-Session Rate (₹)", (
+              <input
+                type="number" min="0" className="calc-input" value={rateOverride}
+                placeholder={`Std ${rupees(rates.per_session)}`}
+                onChange={(e) => setRateOverride(e.target.value)}
+              />
+            ), "leave blank to use the band rate")}
+            {/* A Flexi coach has no fixed component — they are paid per session
+                alone — so the field is not offered for that category. */}
+            {category !== "Flexi" && inputRow("Base / Fixed Pay (₹)", (
+              <input
+                type="number" min="0" className="calc-input" value={baseOverride}
+                placeholder={`Std ${rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}`}
+                onChange={(e) => setBaseOverride(e.target.value)}
+              />
             ), "leave blank to use the band rate")}
           </tbody>
         </table>
@@ -450,18 +530,22 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         <div className="calc-section-title calc-section-output">Computed Pay Breakdown <span>{band.label}</span></div>
         <table className="data-table calc-table">
           <tbody>
-            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate))}
+            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
+              rateOverrideNum !== null ? "entered above" : null)}
             {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
-            {outputRow("Base / Fixed Pay (₹)", rupees(pay.basePay))}
+            {outputRow("Base / Fixed Pay (₹)", rupees(pay.basePay),
+              category === 'Flexi' ? "not paid to Flexi" : (baseOverride !== "" ? "entered above" : null))}
             {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
             {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay))}
-            {outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay), "Flexi / Flexi-Fixed")}
+            {/* Only Flexi and Flexi-Fixed are paid per session on every session;
+                for Fixed the row is always ₹0, so it is not shown. */}
+            {category !== "Fixed" && outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay))}
             {outputRow("Night Session Premium (₹)", rupees(pay.nightSessionPay), "₹60/session, Flexi & Flexi-Fixed only")}
             {outputRow("Milestone Incentive (₹)", rupees(pay.milestoneIncentive))}
             {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
             {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
             {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi-Fixed only")}
-            {outputRow("Penalty Deductions (₹)", `− ${rupees(penaltyTotal)}`)}
+            {outputRow("Penalty (₹)", `− ${rupees(penaltyTotal)}`)}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
           </tbody>
         </table>
@@ -913,7 +997,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [coachDetailId, setCoachDetailId] = useState(null);
   // Score Management inline editing: which period is open, and its draft values.
   const [editingScorePeriod, setEditingScorePeriod] = useState(null);
-  // The score card renders as two tables (the tabbed one and Volume & Conduct).
+  // The score card renders as two tables (the tabbed one and Incentive).
   // Both list the same periods, so the open period alone is not enough to say
   // which table the user clicked edit on — this pins it to one of them.
   const [editingScorePane, setEditingScorePane] = useState(null);
@@ -1072,9 +1156,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const activeCoaches = coaches.filter(c => c.status === "Active");
+    // Closing the pay cycle locks the period it closes. Nothing edits a locked
+    // card, so a month that has rolled over is settled unless someone unlocks
+    // it by hand on Record Status — which is audited.
     const rolledIntoHistory = [
-      ...currentMonth,
-      ...closed.flatMap(period => activeCoaches.map(c => blankPeriodRecord(c.id, period)))
+      ...currentMonth.map(r => ({ ...r, status: 'FINANCE_LOCKED' })),
+      ...closed.flatMap(period => activeCoaches.map(c => ({
+        ...blankPeriodRecord(c.id, period),
+        status: 'FINANCE_LOCKED'
+      })))
     ];
 
     setHistoricMonths(prev => [...prev, ...rolledIntoHistory]);
@@ -1084,7 +1174,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const opened = closed.length + 1;
     logAudit(
       "Period Rolled Over",
-      `Calendar advanced past ${openPeriod.period_month}. Opened ${livePeriod.period_month} (${opened} period${opened > 1 ? 's' : ''} created) with blank score cards for ${activeCoaches.length} active coaches.`
+      `Calendar advanced past ${openPeriod.period_month}. Locked ${rolledIntoHistory.length} score card${rolledIntoHistory.length > 1 ? 's' : ''} on close, and opened ${livePeriod.period_month} (${opened} period${opened > 1 ? 's' : ''} created) with blank score cards for ${activeCoaches.length} active coaches.`
     );
     showToast(`New performance period opened: ${livePeriod.period_month}.`, "info");
   }, [isStateLoaded, coaches.length]);
@@ -1301,6 +1391,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const coach = coaches.find(c => c.id === coachId);
     const evalData = currentMonth.find(m => m.coach_id === coachId);
     if (!coach || !evalData) return;
+    // The score card table is not the only way in, so the lock is enforced
+    // here too rather than only on the button that opens this.
+    if (evalData.status === 'FINANCE_LOCKED') {
+      showToast(`${evalData.period_month} is locked. Unlock it on Record Status to edit.`, "error");
+      return;
+    }
 
     setSelectedCoachId(coachId);
     setEvalCoachCategory(coach.coach_category);
@@ -1392,7 +1488,24 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Profile / Experience cards: edit in place against a draft of the coach record.
   const beginCoachCardEdit = (coach, card) => {
     setEditingCoachCard(card);
-    setCoachDraft({ ...coach });
+    const draft = { ...coach };
+    // Coaches recorded before education became a list open with their existing
+    // qualification/format pair as the first row, so nothing has to be re-keyed.
+    if (card === 'education' && !(coach.education || []).length && coach.education_qualification) {
+      const master = educationLevels.find(
+        l => l.qualification === coach.education_qualification && l.format === coach.education_type
+      );
+      draft.education = [{
+        id: `EDU_${coach.id}_1`,
+        institution: "",
+        qualification: coach.education_qualification,
+        format: coach.education_type || "",
+        score: master ? master.score : "",
+        pdfName: "",
+        pdfData: ""
+      }];
+    }
+    setCoachDraft(draft);
   };
 
   const cancelCoachCardEdit = () => {
@@ -1420,9 +1533,62 @@ export default function App({ session = null, profile = null, onSignOut = null }
       ...prev,
       certifications: [
         ...(prev.certifications || []),
-        { id: `CERT_${Date.now()}${Math.floor(Math.random() * 100)}`, authority: "", course_name: "", score: "" }
+        { id: `CERT_${Date.now()}${Math.floor(Math.random() * 100)}`, authority: "", course_name: "", format: "", score: "" }
       ]
     }));
+
+  // Education certificates work like technical ones: a list on the coach, with
+  // the best of them scoring. The points are not typed in — they come from the
+  // qualification/format pairing in the Education Master.
+  const setEduField = (index, key, value) =>
+    setCoachDraft(prev => ({
+      ...prev,
+      education: (prev.education || []).map((row, i) => {
+        if (i !== index) return row;
+        const next = { ...row, [key]: value };
+        if (key === 'qualification' || key === 'format') {
+          const master = educationLevels.find(
+            l => l.qualification === next.qualification && l.format === next.format
+          );
+          next.score = master ? master.score : "";
+        }
+        return next;
+      })
+    }));
+
+  const addEduRow = () =>
+    setCoachDraft(prev => ({
+      ...prev,
+      education: [
+        ...(prev.education || []),
+        { id: `EDU_${Date.now()}${Math.floor(Math.random() * 100)}`, institution: "", qualification: "", format: "", score: "", pdfName: "", pdfData: "" }
+      ]
+    }));
+
+  const removeEduRow = (index) =>
+    setCoachDraft(prev => ({
+      ...prev,
+      education: (prev.education || []).filter((_, i) => i !== index)
+    }));
+
+  // Certificates are stored on the row as a base64 data URL, the same way the
+  // certifications master stores its attachment.
+  const setEduDocument = (index, file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) {
+      showToast("Error: File size must be less than 500 KB.", "danger");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCoachDraft(prev => ({
+        ...prev,
+        education: (prev.education || []).map((row, i) =>
+          i === index ? { ...row, pdfName: file.name, pdfData: reader.result } : row)
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
 
   const removeCertRow = (index) =>
     setCoachDraft(prev => ({
@@ -1441,6 +1607,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const changedEducation = updated.education_qualification !== coach.education_qualification
         || updated.education_type !== coach.education_type;
       if (changedEducation) delete updated.education_score_override;
+    }
+
+    if (card === 'education') {
+      // A row needs at least a qualification to mean anything; the score is
+      // stored as a number so the engine never has to parse it.
+      updated.education = (updated.education || [])
+        .filter(e => (e.qualification || "").trim())
+        .map(e => ({
+          ...e,
+          institution: (e.institution || "").trim(),
+          score: e.score === "" || e.score === null || e.score === undefined ? "" : Number(e.score)
+        }));
+      // Keep the legacy single pair in step with the best row, so anything
+      // still reading those two fields stays correct.
+      const best = [...updated.education].sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0];
+      if (best) {
+        updated.education_qualification = best.qualification;
+        updated.education_type = best.format;
+      }
     }
 
     if (card === 'certifications') {
@@ -1551,6 +1736,45 @@ export default function App({ session = null, profile = null, onSignOut = null }
       showToast(`${col.label} cannot exceed ${ceiling}. Check the entry before saving.`, "danger");
       return;
     }
+  };
+
+  // Lock or unlock one period's score card by hand, from the Record Status
+  // cell. handleLockCycle() locks a whole month at once; this is the per-row
+  // equivalent, for the cases that need correcting after the fact.
+  const toggleRecordLock = (coach, run) => {
+    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
+      showToast("Only Super Admin and HR Manager can lock a score card.", "error");
+      return;
+    }
+
+    const locking = run.status !== 'FINANCE_LOCKED';
+    const what = `the ${run.period_month} score card for ${coach.name}`;
+    const proceed = window.confirm(locking
+      ? `Lock ${what}?\n\nIt can no longer be edited, and payroll treats it as final.`
+      : `Unlock ${what}?\n\nIt becomes editable again and payroll stops treating it as final.`);
+    if (!proceed) return;
+
+    const nextStatus = locking ? 'FINANCE_LOCKED' : 'DRAFT';
+    // The record lives in whichever list holds its period, so both are mapped.
+    const apply = (list) => list.map(r =>
+      (r.coach_id === run.coach_id && r.period_month === run.period_month)
+        ? { ...r, status: nextStatus }
+        : r);
+    setCurrentMonth(prev => apply(prev));
+    setHistoricMonths(prev => apply(prev));
+
+    // Locking a row that is open for editing would leave an editor on a record
+    // nobody may edit, so close it and drop the draft.
+    if (locking && editingScorePeriod === run.period_month) cancelScoreRowEdit();
+
+    logAudit(
+      locking ? "Score Card Locked" : "Score Card Unlocked",
+      `${locking ? 'Locked' : 'Unlocked'} the ${run.period_month} score card for ${coach.name} (${coach.id}) by hand`
+    );
+    showToast(
+      `${run.period_month} score card ${locking ? 'locked' : 'unlocked'}.`,
+      locking ? "info" : "warning"
+    );
   };
 
   const cancelScoreRowEdit = () => {
@@ -1872,6 +2096,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     e.preventDefault();
     if (payrollLocked) {
       showToast("Evaluation locked: The current payroll cycle has already been closed by Finance.", "danger");
+      return;
+    }
+    // The card may have been locked after this form was opened.
+    const openRecord = currentMonth.find(m => m.coach_id === selectedCoachId);
+    if (openRecord?.status === 'FINANCE_LOCKED') {
+      showToast(`${openRecord.period_month} is locked. Unlock it on Record Status to edit.`, "danger");
       return;
     }
 
@@ -2446,7 +2676,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const rows = buildPayrollRun(periodMonth);
     const header = ["Coach ID", "Coach Name", "Category", "Score Card", "HB+ Score", "Band", "Per-Session Rate",
       "Base Pay", "Extra Sessions", "Extra Session Pay", "Session Pay", "Night Premium",
-      "Milestone", "Consistency", "Streak Bonus", "Org Work", "Deductions", "Gross Pay"];
+      "Milestone", "Consistency", "Streak Bonus", "Org Work", "Penalty", "Gross Pay"];
     const body = rows.map(r => [
       r.coach.id, r.coach.name, r.coach.coach_category,
       r.recorded ? "Recorded" : "NOT RECORDED — fixed points only",
@@ -2476,7 +2706,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Export CSV
   const handleExportCSV = () => {
     const dataset = payrollMonthFilter === currentPeriodMonth ? currentMonth : historicMonths;
-    let csvContent = "data:text/csv;charset=utf-8,Coach ID,Name,Category,HB+ Score,Band,Base Pay,Session Pay,Incentives,Deductions,Gross Pay,Status\n";
+    let csvContent = "data:text/csv;charset=utf-8,Coach ID,Name,Category,HB+ Score,Band,Base Pay,Session Pay,Incentives,Penalty,Gross Pay,Status\n";
 
     dataset.forEach(e => {
       const coach = coaches.find(c => c.id === e.coach_id);
@@ -3449,7 +3679,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
               const summed = Math.min(100, Math.max(0,
                 experienceTotal + technicalTotal + coreScore + orgScore + attendanceScore));
-              const hasOverride = OVERRIDABLE_KEYS.some(k => ov[k] !== undefined && ov[k] !== null);
+              const hasOverride = SCORE_DRIVING_OVERRIDES.some(k => ov[k] !== undefined && ov[k] !== null);
               const storedScore = (!isEdited && !hasOverride && run.hb_score != null) ? run.hb_score : summed;
               const finalScore = pick("hb_score", Math.round(storedScore * 100) / 100);
               const finalBand = (!isEdited && !hasOverride && run.band) ? run.band : getPerformanceBand(finalScore).label;
@@ -3494,12 +3724,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 night_sessions: run.night_sessions,
                 streak: run.five_star_streak,
                 threshold: finalThreshold,
-                extra_sessions: Math.max(0, periodSessions - finalThreshold),
-                violations: coachVios.filter(v =>
+                extra_sessions: pick("extra_sessions", Math.max(0, periodSessions - finalThreshold)),
+                violations: pick("violations", coachVios.filter(v =>
                   v.status !== 'Appeal_Approved' &&
                   new Date(v.incident_date) >= new Date(run.period_start) &&
                   new Date(v.incident_date) <= new Date(run.period_end)
-                ).length
+                ).length)
               };
             };
 
@@ -3535,18 +3765,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
               };
             };
 
-            // Volume & Conduct is recorded per period but carries no weight in the
-            // HB+ score, so it leaves the tab strip for its own table below. That
+            // Incentive is recorded per period but carries no weight in the HB+
+            // score, so it leaves the tab strip for its own table below. That
             // table repeats only the month — the period range and record status
             // are already stated once, in the table above.
             const periodGroup = COACH_SCORECARD_GROUPS.find(g => g.key === 'period');
-            const volumeGroup = COACH_SCORECARD_GROUPS.find(g => g.key === 'volume');
-            const tabGroups = COACH_SCORECARD_GROUPS.filter(g => g.key !== 'period' && g.key !== 'volume');
+            const incentiveGroup = COACH_SCORECARD_GROUPS.find(g => g.key === 'incentive');
+            const tabGroups = COACH_SCORECARD_GROUPS.filter(g => g.key !== 'period' && g.key !== 'incentive');
             const activeGroup = tabGroups.find(g => g.key === scorecardTab) || tabGroups[0];
             const visibleScorecardGroups = [periodGroup, activeGroup];
-            const volumeScorecardGroups = [
+            const incentiveScorecardGroups = [
               { ...periodGroup, columns: periodGroup.columns.filter(c => c.key === 'month') },
-              volumeGroup
+              incentiveGroup
             ];
 
             const scoreCellValue = (col, row) => {
@@ -3583,6 +3813,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             key={col.key}
                             className={[
                               `group-tint-${group.tone}`,
+                              `col-${col.key}`,
                               col.sticky ? 'sticky-col sticky-month' : '',
                               col.decimals !== undefined ? 'num-col' : '',
                               col.emphasis ? 'emphasis-col' : ''
@@ -3609,7 +3840,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       const source = isEditing ? draftFor(run) : { coach, run };
                       const row = buildScoreRow(source.coach, source.run);
                       const isLocked = run.status === 'FINANCE_LOCKED';
-                      const mayEdit = canManage && (!isLocked || currentRole === 'Super Admin');
+                      // A locked card is read-only for every role, Super Admin
+                      // included. The way back in is the padlock on Record
+                      // Status, which leaves an audit entry behind it.
+                      const mayEdit = canManage && !isLocked;
 
                       return (
                         <tr
@@ -3637,6 +3871,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 key={col.key}
                                 title={isOverridden ? 'Hand-entered — overrides the calculated value' : undefined}
                                 className={[
+                                  `col-${col.key}`,
                                   col.sticky ? 'sticky-col sticky-month' : '',
                                   col.decimals !== undefined ? 'num-col' : '',
                                   col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
@@ -3674,7 +3909,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       : applyScoreOverride(col, e.target.value, ceiling)}
                                   />
                                 ) : col.key === 'status' ? (
-                                  <span className={`badge ${isLocked ? 'badge-success' : 'badge-warning'}`}>{run.status}</span>
+                                  // The padlock carries the status on its own: shut means
+                                  // finance-locked, open means still editable. The written
+                                  // status stays available on hover and to screen readers.
+                                  <div className="status-cell">
+                                    {canManage ? (
+                                      <button
+                                        type="button"
+                                        className={`status-lock-btn${isLocked ? ' is-locked' : ''}`}
+                                        title={`${run.status} — click to ${isLocked ? 'unlock' : 'lock'} the ${run.period_month} score card`}
+                                        aria-label={`${run.status}. ${isLocked ? 'Unlock' : 'Lock'} score card`}
+                                        aria-pressed={isLocked}
+                                        onClick={() => toggleRecordLock(coach, run)}
+                                      >
+                                        <i className={isLocked ? 'bx bxs-lock-alt' : 'bx bx-lock-open-alt'}></i>
+                                      </button>
+                                    ) : (
+                                      <span
+                                        className={`status-lock-btn is-static${isLocked ? ' is-locked' : ''}`}
+                                        title={run.status}
+                                        role="img"
+                                        aria-label={run.status}
+                                      >
+                                        <i className={isLocked ? 'bx bxs-lock-alt' : 'bx bx-lock-open-alt'}></i>
+                                      </span>
+                                    )}
+                                  </div>
                                 ) : (
                                   scoreCellValue(col, row)
                                 )}
@@ -3706,7 +3966,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <i className={row.isBlank ? 'bx bx-plus' : 'bx bx-edit'}></i>
                               </button>
                             ) : (
-                              <span className="btn-row-icon icon-locked" title={isLocked ? 'Period is finance-locked' : 'Read-only for your role'}>
+                              <span
+                                className="btn-row-icon icon-locked"
+                                title={isLocked
+                                  ? (canManage
+                                      ? 'Locked — unlock it on Record Status to edit'
+                                      : 'Locked at the close of the pay cycle')
+                                  : 'Read-only for your role'}
+                              >
                                 <i className="bx bx-lock-alt"></i>
                               </span>
                             )}
@@ -3727,6 +3994,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const editingProfile = editingCoachCard === 'profile';
             const editingExperience = editingCoachCard === 'experience';
             const editingCerts = editingCoachCard === 'certifications';
+            const editingEducation = editingCoachCard === 'education';
 
             const editItem = (label, control) => (
               <div className="detail-item" key={label}>
@@ -3874,7 +4142,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Gender", selectField("gender", ["", ...GENDER_OPTIONS]))}
                           {editItem("Type of Coach", selectField("coach_type", ["", ...COACH_TYPES.map(t => t.value)]))}
                           {editItem("Category", selectField("coach_category", COACH_CATEGORIES))}
-                          {editItem("Policy Variant", selectField("variant_id", variants.map(v => ({ value: v.id, label: `${v.id} — ${v.name}` }))))}
+                          {editItem("Policy Variant", selectField("variant_id", variants.map(v => ({ value: v.id, label: `${v.id} — ${variantLabel(v)} (${v.audience})` }))))}
                           {editItem("Designation", textField("internal_designation"))}
                           {editItem("Reporting Manager", selectField("reporting_manager_id", REPORTING_MANAGERS))}
                           {editItem("Assigned Property", textField("assigned_property"))}
@@ -3948,6 +4216,136 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     )}
 
                     <div className="card-header-row" style={{ marginTop: '1.5rem' }}>
+                      <h3>Education Certificates</h3>
+                      {cardEditControls('education')}
+                    </div>
+
+                    {editingEducation ? (
+                      <>
+                        <div className="cert-edit-list">
+                          {(coachDraft.education || []).length === 0 && (
+                            <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+                              No education recorded yet. Add the first certificate below.
+                            </p>
+                          )}
+                          {(coachDraft.education || []).map((row, i) => (
+                            <div className="cert-edit-row edu-edit-row" key={row.id || i}>
+                              <div className="edu-edit-fields">
+                                <label>
+                                  <span>Institution</span>
+                                  <input
+                                    type="text" className="detail-input"
+                                    placeholder="e.g. Pune University"
+                                    value={row.institution ?? ""}
+                                    onChange={(e) => setEduField(i, 'institution', e.target.value)}
+                                  />
+                                </label>
+                                <label>
+                                  <span>Qualification</span>
+                                  <select
+                                    className="detail-input"
+                                    value={row.qualification ?? ""}
+                                    onChange={(e) => setEduField(i, 'qualification', e.target.value)}
+                                  >
+                                    <option value="">Select…</option>
+                                    {educationQualifications.map(q => <option key={q} value={q}>{q}</option>)}
+                                  </select>
+                                </label>
+                                <label>
+                                  <span>Format</span>
+                                  <select
+                                    className="detail-input"
+                                    value={row.format ?? ""}
+                                    onChange={(e) => setEduField(i, 'format', e.target.value)}
+                                  >
+                                    <option value="">Select…</option>
+                                    {educationFormats.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                                  </select>
+                                </label>
+                                <label className="cert-edit-score">
+                                  <span>Points</span>
+                                  <input
+                                    type="text" className="detail-input" readOnly tabIndex={-1}
+                                    title="Set by the qualification and format, on the Education Master"
+                                    value={row.score === "" || row.score == null ? "—" : Number(row.score).toFixed(1)}
+                                  />
+                                </label>
+                                <label className="edu-edit-doc">
+                                  <span>Certificate</span>
+                                  {row.pdfData ? (
+                                    <span className="edu-doc-chip">
+                                      <a href={row.pdfData} download={row.pdfName || 'certificate'} target="_blank" rel="noreferrer">
+                                        <i className={getFileIcon(row.pdfName)}></i> {row.pdfName || 'certificate'}
+                                      </a>
+                                      <button
+                                        type="button" title="Remove this document" aria-label="Remove document"
+                                        onClick={() => setCoachDraft(prev => ({
+                                          ...prev,
+                                          education: (prev.education || []).map((r, j) =>
+                                            j === i ? { ...r, pdfName: "", pdfData: "" } : r)
+                                        }))}
+                                      >
+                                        <i className="bx bx-x"></i>
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <input
+                                      type="file" className="detail-input"
+                                      accept=".pdf,image/*,.doc,.docx"
+                                      onChange={(e) => setEduDocument(i, e.target.files[0])}
+                                    />
+                                  )}
+                                </label>
+                              </div>
+                              <button
+                                type="button" className="btn-row-icon icon-cancel"
+                                title="Remove this education entry" aria-label="Remove"
+                                onClick={() => removeEduRow(i)}
+                              >
+                                <i className="bx bx-trash"></i>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <button type="button" className="btn btn-secondary" style={{ marginTop: '.75rem' }} onClick={addEduRow}>
+                          <i className="bx bx-plus"></i> Add Education Certificate
+                        </button>
+                        <p className="text-muted detail-edit-note">
+                          Points come from the qualification and format pairing on the
+                          Education Master and cannot be typed here. Scoring takes the
+                          highest, so adding a lesser qualification never lowers the HB+
+                          Score. Rows without a qualification are discarded on save.
+                        </p>
+                      </>
+                    ) : coach.education && coach.education.length > 0 ? (
+                      <ul className="detail-cert-list">
+                        {coach.education.map((row, i) => (
+                          <li key={row.id || i}>
+                            <span>
+                              <strong>{row.qualification}</strong>
+                              {row.institution ? ` — ${row.institution}` : ''}
+                              {row.format ? ` · ${educationFormats.find(f => f.value === row.format)?.label || row.format}` : ''}
+                              {row.pdfData && (
+                                <a
+                                  href={row.pdfData} download={row.pdfName || 'certificate'}
+                                  target="_blank" rel="noreferrer"
+                                  title={`Open ${row.pdfName || 'certificate'}`}
+                                  style={{ marginLeft: '8px' }}
+                                >
+                                  <i className={getFileIcon(row.pdfName)}></i>
+                                </a>
+                              )}
+                            </span>
+                            <span className="badge badge-info">{Number(row.score || 0).toFixed(1)} pts</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-muted" style={{ fontSize: '0.85rem' }}>No education recorded for this coach.</p>
+                    )}
+
+                    <div className="card-header-row" style={{ marginTop: '1.5rem' }}>
                       <h3>Technical Certifications</h3>
                       {cardEditControls('certifications')}
                     </div>
@@ -4004,6 +4402,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     }}
                                   />
                                 </label>
+                                <label>
+                                  <span>Format</span>
+                                  <select
+                                    className="detail-input"
+                                    value={cert.format ?? ""}
+                                    onChange={(e) => setCertField(i, 'format', e.target.value)}
+                                  >
+                                    <option value="">Select…</option>
+                                    {educationFormats.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                                  </select>
+                                </label>
                                 <label className="cert-edit-score">
                                   <span>Score</span>
                                   <input
@@ -4037,7 +4446,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <ul className="detail-cert-list">
                         {coach.certifications.map(cert => (
                           <li key={cert.id}>
-                            <span><strong>{cert.authority}</strong> — {cert.course_name}</span>
+                            <span>
+                              <strong>{cert.authority}</strong> — {cert.course_name}
+                              {cert.format && ` · ${educationFormats.find(f => f.value === cert.format)?.label || cert.format}`}
+                            </span>
                             <span className="badge badge-info">{cert.score} pts</span>
                           </li>
                         ))}
@@ -4050,10 +4462,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Score Management</h3>
-                      {canManage && curr && (
+                      {canManage && curr && curr.status !== 'FINANCE_LOCKED' && (
                         <button className="btn btn-primary" onClick={() => handleOpenEvalModal(coach.id)}>
                           <i className="bx bx-edit"></i> Enter / Edit Score Card
                         </button>
+                      )}
+                      {canManage && curr && curr.status === 'FINANCE_LOCKED' && (
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          <i className="bx bxs-lock-alt"></i> {curr.period_month} is locked — unlock it on Record Status to edit
+                        </span>
                       )}
                     </div>
 
@@ -4087,8 +4504,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                       {renderScorecardTable(visibleScorecardGroups, scorecardTab, 'main')}
 
-                      <h4 className="scorecard-subhead">{volumeGroup.label}</h4>
-                      {renderScorecardTable(volumeScorecardGroups, 'volume', 'volume')}
+                      <h4 className="scorecard-subhead">{incentiveGroup.label}</h4>
+                      {renderScorecardTable(incentiveScorecardGroups, 'incentive', 'incentive')}
                       </>
                     )}
 
@@ -4104,13 +4521,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Payroll Calculator</h3>
-                      <select
-                        className="header-select"
-                        value={payCalcPeriod || allRuns[allRuns.length - 1]?.period_month || ''}
-                        onChange={(e) => setPayCalcPeriod(e.target.value)}
-                      >
-                        {allRuns.map(r => <option key={r.period_month} value={r.period_month}>{r.period_month}</option>)}
-                      </select>
                     </div>
                     {(() => {
                       const selected = allRuns.find(r => r.period_month === payCalcPeriod) || allRuns[allRuns.length - 1];
@@ -4128,15 +4538,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       return (
                         <>
                           <p className="text-muted calc-seed-note">
-                            Seeded from {selected.period_month}'s score card. Change any input to model a different outcome — nothing here writes back to the record.
+                            Seeded from {selected.period_month}'s score card
+                            ({fmtDay(selected.period_start)} – {fmtDay(selected.period_end)}).
+                            Change any input to model a different outcome — nothing here writes back to the record.
                           </p>
                           <PayCalculator
                             variants={variants}
                             coachOptions={[coach]}
                             selectedCoachId={coach.id}
                             lockCoach
+                            periodOptions={allRuns.map(r => r.period_month)}
+                            onPeriodChange={setPayCalcPeriod}
                             seed={{
                               key: `${coach.id}-${selected.period_month}`,
+                              periodMonth: selected.period_month,
+                              periodRange: `${new Date(selected.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
                               coachName: coach.name,
                               variantId: coach.variant_id,
                               category: coach.coach_category,
@@ -4685,7 +5101,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <th colSpan={2} className="group-head group-teal">Score</th>
                           <th colSpan={5} className="group-head group-blue">Session &amp; Base Pay</th>
                           <th colSpan={4} className="group-head group-green">Incentives</th>
-                          <th colSpan={2} className="group-head group-red">Deductions &amp; Total</th>
+                          <th colSpan={2} className="group-head group-red">Penalty &amp; Total</th>
                         </tr>
                         <tr className="column-header-row">
                           <th className="group-tint-slate sticky-col sticky-month">Coach</th>
@@ -4703,7 +5119,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <th className="group-tint-green num-col">Milestone</th>
                           <th className="group-tint-green num-col">Consistency</th>
                           <th className="group-tint-green num-col">Streak + Org Work</th>
-                          <th className="group-tint-red num-col">Deductions</th>
+                          <th className="group-tint-red num-col">Penalty</th>
                           <th className="group-tint-red num-col emphasis-col">Gross Pay</th>
                         </tr>
                       </thead>
@@ -4779,6 +5195,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     onCoachChange={setPayCalcCoachId}
                     seed={selected ? {
                       key: `${selected.coach.id}-${period}`,
+                      periodMonth: period,
+                      periodRange: selected.record.period_start
+                        ? `${new Date(selected.record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
+                        : undefined,
                       coachName: selected.coach.name,
                       variantId: selected.coach.variant_id,
                       category: selected.coach.coach_category,
@@ -4804,7 +5224,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </p>
                   </div>
                   <select className="header-select" value={payCalcVariant} onChange={(e) => setPayCalcVariant(e.target.value)}>
-                    {variants.map(v => <option key={v.id} value={v.id}>Reference: {v.id} — {v.name}</option>)}
+                    {variants.map(v => <option key={v.id} value={v.id}>Reference: {v.id} — {variantLabel(v)}</option>)}
                   </select>
                 </div>
 
@@ -4995,7 +5415,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <th>Violation Type</th>
                       <th>Occur. #</th>
                       <th>Consequence Applied</th>
-                      <th>Deduction Amount</th>
+                      <th>Penalty Amount</th>
                       <th>Date &amp; Time</th>
                       <th>Workflow Status</th>
                       <th className="actions-col">Actions</th>
@@ -5148,7 +5568,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <div className="stat-card stat-red">
                         <div className="stat-icon"><i className="bx bx-minus-circle"></i></div>
                         <div className="stat-info">
-                          <h3>Total Deductions</h3>
+                          <h3>Total Penalty</h3>
                           <h2>₹{sumDeductions.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
                           <p>Penalties applied</p>
                         </div>
@@ -5167,7 +5587,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <th>Base Pay</th>
                             <th>Session Pay</th>
                             <th>Incentives Sum</th>
-                            <th>Deductions</th>
+                            <th>Penalty</th>
                             <th>Gross Monthly Pay</th>
                             <th>Status</th>
                             <th className="actions-col">Actions</th>
@@ -6240,7 +6660,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 <div className="live-violation-calc-bar card" style={{ marginTop: '1rem', padding: '0.75rem', borderLeft: '4px solid var(--accent-red)', display: 'block' }}>
                   <p>Historical Occurrences (Tracking Window): <strong>{occurrence}</strong></p>
                   <p>Consequence Rule: <strong className="text-red">{consequenceObj.consequence}</strong></p>
-                  <p>Deduction Amount: <strong>₹{finalAmount.toLocaleString('en-IN')}</strong></p>
+                  <p>Penalty Amount: <strong>₹{finalAmount.toLocaleString('en-IN')}</strong></p>
                 </div>
 
                 <div className="modal-footer">
@@ -6490,7 +6910,7 @@ HB+_030,185,0,96`} />
                     </table>
                   </div>
 
-                  {/* Deductions */}
+                  {/* Penalty */}
                   <div className="payslip-ledger-section">
                     <h3>DISCIPLINARY DEDUCTIONS</h3>
                     <table className="payslip-ledger-table">
@@ -6505,7 +6925,7 @@ HB+_030,185,0,96`} />
                             </tr>
                           ))
                         )}
-                        <tr className="total-row"><td>Gross Deductions</td><td className="amt">₹{pay.penaltyDeductions.toFixed(2)}</td></tr>
+                        <tr className="total-row"><td>Gross Penalty</td><td className="amt">₹{pay.penaltyDeductions.toFixed(2)}</td></tr>
                       </tbody>
                     </table>
                   </div>

@@ -46,6 +46,31 @@ export function getEducationScore(qualification, type) {
 }
 
 /**
+ * The education score a coach actually earns: the best of their education
+ * certificates, the way the technical score takes the highest certification.
+ *
+ * A row's score is whatever the Education Master gave it when it was added;
+ * if that is missing the pairing is looked up live, so repointing a
+ * qualification in the master still reaches rows that never stored one.
+ *
+ * Coaches recorded before the list existed keep scoring from the single
+ * qualification/format pair on their profile.
+ */
+export function getHighestEducationScore(coach) {
+  const list = Array.isArray(coach?.education) ? coach.education : [];
+  if (list.length === 0) {
+    return getEducationScore(coach?.education_qualification, coach?.education_type);
+  }
+  return list.reduce((best, row) => {
+    const stored = row?.score;
+    const value = (stored !== undefined && stored !== null && stored !== "")
+      ? Number(stored)
+      : getEducationScore(row?.qualification, row?.format);
+    return Number.isFinite(value) && value > best ? value : best;
+  }, 0);
+}
+
+/**
  * Calculates Tenure in years between two dates (fractional, rounded to 1 decimal place)
  */
 export function calculateTenureYears(doj, targetDateStr) {
@@ -103,7 +128,9 @@ export function computeHBPlusScore(coach, periodData, variant) {
                    (nonCoachingExpYears * weights.non_coaching_exp / 10);
 
   // 2. Technical Score (Max 10 for education and max 10 for highest cert, then weighted)
-  const eduScore = coach.education_score_override != null ? Number(coach.education_score_override) : Math.min(10, getEducationScore(coach.education_qualification, coach.education_type));
+  const eduScore = coach.education_score_override != null
+    ? Number(coach.education_score_override)
+    : Math.min(10, getHighestEducationScore(coach));
   
   // Highest single certification score
   let maxCertScore = 0;
@@ -372,7 +399,7 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     sessionPay = 0; // Not session based
   }
 
-  // 8. Total Deductions from active violations this month
+  // 8. Total penalty from active violations this month
   const penaltyDeductions = activeViolationsForMonth.reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
 
   // 9. GROSS PAY CALCULATION
