@@ -272,7 +272,10 @@ export async function loadProfile(userId) {
 // ---------------------------------------------------------------------------
 
 export const APP_ROLES = [
-  'Super Admin', 'HR Manager', 'Finance', 'Operations', 'Reporting Manager', 'Coach'
+  // 'Coach' is still a valid role in the database — it is what a new sign-in
+  // defaults to — but it is not offered for assignment, so nobody is put on
+  // it deliberately.
+  'Super Admin', 'HR Manager', 'Finance', 'Showrunner', 'Reporting Manager'
 ];
 
 export const RM_SCOPES = [

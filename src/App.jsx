@@ -62,6 +62,10 @@ const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 // The policies offered when assigning or modelling: HB+ S&C, HB+ Yoga,
 // HOP S&C and HOP Yoga. The others stay in the data — a coach already on one keeps scoring
 // against it, and its rate card is untouched — they are simply not on the menu.
+// Showrunner runs scheduling and performance, not payroll: everything a
+// Super Admin sees except what a coach is paid and where it is paid to.
+const HIDES_PAY = (role) => role === 'Showrunner';
+
 const OFFERED_VARIANT_IDS = ['V1', 'V3', 'V5', 'V6'];
 
 /**
@@ -768,7 +772,7 @@ function PayReferenceTables({ vConfig, penaltyMatrix }) {
 // are paid, and what they bring — so it is tabbed rather than stacked.
 const COACH_DETAIL_TABS = [
   { key: 'profile',    label: 'Profile',                tone: 'teal' },
-  { key: 'bank',       label: 'Bank Details',           tone: 'blue' },
+  { key: 'bank',       label: 'Bank Details',           tone: 'blue', pay: true },
   { key: 'experience', label: 'Experience & Education', tone: 'violet' }
 ];
 
@@ -1241,6 +1245,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const educationQualifications = [...new Set(educationLevels.map(l => l.qualification))];
   const educationQualificationOptions = ["None", ...educationQualifications];
 
+  // Two of the Score Tracker's columns are rupee amounts. A role that does not
+  // see pay does not see those, and everything that counts columns — the group
+  // header spans, the empty-row colspan and the CSV — reads from here.
+  const trackerGroups = HIDES_PAY(currentRole)
+    ? SCORE_TRACKER_GROUPS
+        .map(g => ({ ...g, columns: g.columns.filter(c => !c.money) }))
+        .filter(g => g.columns.length > 0)
+    : SCORE_TRACKER_GROUPS;
+  const trackerColumns = trackerGroups.flatMap(g => g.columns);
+
   // Write-through. Supabase gets a debounced diff of whatever changed;
   // localStorage keeps a mirror so a dropped connection is not data loss.
   useEffect(() => {
@@ -1491,6 +1505,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Open Payslip Modal
   const handleOpenPayslipModal = (coachId, period) => {
+    if (currentRole === 'Showrunner' || currentRole === 'Coach') {
+      showToast("Payslips are not available to this role.", "error");
+      return;
+    }
     setSelectedCoachId(coachId);
     setPayslipPeriod(period);
     setActiveModal("payslip-preview");
@@ -2698,8 +2716,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   const handleExportScoreTracker = () => {
     const rows = buildScoreTrackerRows();
-    const header = SCORE_TRACKER_COLUMNS.map(c => `"${c.label}"`).join(",");
-    const body = rows.map(row => SCORE_TRACKER_COLUMNS.map(c => `"${row[c.key]}"`).join(",")).join("\n");
+    // Export what the role can see: a download must not carry columns the
+    // screen withheld.
+    const cols = SCORE_TRACKER_COLUMNS.filter(c => !(c.money && HIDES_PAY(currentRole)));
+    const header = cols.map(c => `"${c.label}"`).join(",");
+    const body = rows.map(row => cols.map(c => `"${row[c.key]}"`).join(",")).join("\n");
 
     const encodedUri = encodeURI(`data:text/csv;charset=utf-8,${header}\n${body}`);
     const link = document.createElement("a");
@@ -2905,15 +2926,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // Auto redirection if the active view is blocked for this role
     const items = [
       { view: "dashboard", roles: null },
-      { view: "coaches", roles: "Super Admin,HR Manager,Auditor" },
-      { view: "score-tracker", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Auditor" },
-      { view: "pay-calculator", roles: "Super Admin,HR Manager,Finance,Auditor" },
-      { view: "evaluations", roles: "Super Admin,HR Manager,Reporting Manager,Operations,Auditor" },
-      { view: "violations", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Auditor" },
-      { view: "payroll", roles: "Super Admin,HR Manager,Finance,Auditor" },
-      { view: "appeals", roles: "Super Admin,HR Manager,Reporting Manager,Coach,Auditor" },
+      { view: "coaches", roles: "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner,Auditor" },
+      { view: "score-tracker", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor" },
+      { view: "pay-calculator", roles: "Super Admin,HR Manager,Finance,Reporting Manager,Auditor" },
+      { view: "evaluations", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor" },
+      { view: "violations", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor" },
+      { view: "payroll", roles: "Super Admin,HR Manager,Finance,Reporting Manager,Auditor" },
+      { view: "appeals", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Coach,Auditor" },
       { view: "certifications", roles: "Super Admin,HR Manager" },
-      { view: "settings", roles: "Super Admin,HR Manager" },
+      { view: "settings", roles: "Super Admin,HR Manager,Finance,Reporting Manager" },
       { view: "audit", roles: "Super Admin,Auditor" }
     ];
 
@@ -2974,43 +2995,43 @@ export default function App({ session = null, profile = null, onSignOut = null }
             <li className={`nav-item ${activeView === 'dashboard' ? 'active' : ''}`} onClick={() => handleNavClick('dashboard')}>
               <a href="#dashboard"><i className="bx bxs-dashboard nav-icon"></i><span>Dashboard</span></a>
             </li>
-            {verifyAccess("Super Admin,HR Manager,Auditor") && (
-              <li className={`nav-item ${activeView === 'coaches' ? 'active' : ''}`} onClick={() => handleNavClick('coaches', "Super Admin,HR Manager,Auditor")}>
+            {verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner,Auditor") && (
+              <li className={`nav-item ${activeView === 'coaches' ? 'active' : ''}`} onClick={() => handleNavClick('coaches', "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner,Auditor")}>
                 <a href="#coaches"><i className="bx bxs-group nav-icon"></i><span>Coach Master</span></a>
               </li>
             )}
-            {isViewEnabled('score-tracker') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Auditor") && (
-              <li className={`nav-item ${activeView === 'score-tracker' ? 'active' : ''}`} onClick={() => handleNavClick('score-tracker', "Super Admin,HR Manager,Reporting Manager,Finance,Auditor")}>
+            {isViewEnabled('score-tracker') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor") && (
+              <li className={`nav-item ${activeView === 'score-tracker' ? 'active' : ''}`} onClick={() => handleNavClick('score-tracker', "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor")}>
                 <a href="#score-tracker"><i className="bx bxs-spreadsheet nav-icon"></i><span>Score Tracker</span></a>
               </li>
             )}
-            {isViewEnabled('pay-calculator') && verifyAccess("Super Admin,HR Manager,Finance,Auditor") && (
-              <li className={`nav-item ${activeView === 'pay-calculator' ? 'active' : ''}`} onClick={() => handleNavClick('pay-calculator', "Super Admin,HR Manager,Finance,Auditor")}>
+            {isViewEnabled('pay-calculator') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Auditor") && (
+              <li className={`nav-item ${activeView === 'pay-calculator' ? 'active' : ''}`} onClick={() => handleNavClick('pay-calculator', "Super Admin,HR Manager,Finance,Reporting Manager,Auditor")}>
                 <a href="#pay-calculator"><i className="bx bxs-calculator nav-icon"></i><span>Payroll Calculator</span></a>
               </li>
             )}
-            {isViewEnabled('evaluations') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Operations,Auditor") && (
-              <li className={`nav-item ${activeView === 'evaluations' ? 'active' : ''}`} onClick={() => handleNavClick('evaluations', "Super Admin,HR Manager,Reporting Manager,Operations,Auditor")}>
+            {isViewEnabled('evaluations') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor") && (
+              <li className={`nav-item ${activeView === 'evaluations' ? 'active' : ''}`} onClick={() => handleNavClick('evaluations', "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor")}>
                 <a href="#evaluations"><i className="bx bxs-medal nav-icon"></i><span>Evaluations</span></a>
               </li>
             )}
-            {isViewEnabled('violations') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Auditor") && (
-              <li className={`nav-item ${activeView === 'violations' ? 'active' : ''}`} onClick={() => handleNavClick('violations', "Super Admin,HR Manager,Reporting Manager,Finance,Auditor")}>
+            {isViewEnabled('violations') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor") && (
+              <li className={`nav-item ${activeView === 'violations' ? 'active' : ''}`} onClick={() => handleNavClick('violations', "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor")}>
                 <a href="#violations"><i className="bx bxs-error-circle nav-icon"></i><span>Violation Register</span></a>
               </li>
             )}
-            {isViewEnabled('payroll') && verifyAccess("Super Admin,HR Manager,Finance,Auditor") && (
-              <li className={`nav-item ${activeView === 'payroll' ? 'active' : ''}`} onClick={() => handleNavClick('payroll', "Super Admin,HR Manager,Finance,Auditor")}>
+            {isViewEnabled('payroll') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Auditor") && (
+              <li className={`nav-item ${activeView === 'payroll' ? 'active' : ''}`} onClick={() => handleNavClick('payroll', "Super Admin,HR Manager,Finance,Reporting Manager,Auditor")}>
                 <a href="#payroll"><i className="bx bx-rupee nav-icon"></i><span>Payroll &amp; Incentives</span></a>
               </li>
             )}
-            {isViewEnabled('appeals') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Coach,Auditor") && (
-              <li className={`nav-item ${activeView === 'appeals' ? 'active' : ''}`} onClick={() => handleNavClick('appeals', "Super Admin,HR Manager,Reporting Manager,Coach,Auditor")}>
+            {isViewEnabled('appeals') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Coach,Auditor") && (
+              <li className={`nav-item ${activeView === 'appeals' ? 'active' : ''}`} onClick={() => handleNavClick('appeals', "Super Admin,HR Manager,Reporting Manager,Finance,Coach,Auditor")}>
                 <a href="#appeals"><i className="bx bxs-conversation nav-icon"></i><span>Appeals Panel</span></a>
               </li>
             )}
-            {isViewEnabled('user-access') && verifyAccess("Super Admin,HR Manager") && (
-              <li className={`nav-item ${activeView === 'user-access' ? 'active' : ''}`} onClick={() => handleNavClick('user-access', "Super Admin,HR Manager")}>
+            {isViewEnabled('user-access') && verifyAccess("Super Admin") && (
+              <li className={`nav-item ${activeView === 'user-access' ? 'active' : ''}`} onClick={() => handleNavClick('user-access', "Super Admin")}>
                 <a href="#user-access">
                   <i className="bx bxs-shield nav-icon"></i><span>User Access</span>
                   {pendingAccessCount > 0 && <span className="nav-pill">{pendingAccessCount}</span>}
@@ -3022,8 +3043,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 <a href="#certifications"><i className="bx bxs-medal nav-icon"></i><span>Certifications</span></a>
               </li>
             )}
-            {isViewEnabled('settings') && verifyAccess("Super Admin,HR Manager") && (
-              <li className={`nav-item ${activeView === 'settings' ? 'active' : ''}`} onClick={() => handleNavClick('settings', "Super Admin,HR Manager")}>
+            {isViewEnabled('settings') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager") && (
+              <li className={`nav-item ${activeView === 'settings' ? 'active' : ''}`} onClick={() => handleNavClick('settings', "Super Admin,HR Manager,Finance,Reporting Manager")}>
                 <a href="#settings"><i className="bx bxs-cog nav-icon"></i><span>Settings &amp; Variants</span></a>
               </li>
             )}
@@ -3042,14 +3063,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
               background: currentRole === "Super Admin" ? "linear-gradient(135deg, var(--accent-violet), var(--accent-blue))" :
                           currentRole === "HR Manager" ? "linear-gradient(135deg, var(--accent-teal), var(--accent-blue))" :
                           currentRole === "Finance" ? "linear-gradient(135deg, var(--accent-violet), var(--accent-teal))" :
-                          currentRole === "Operations" ? "linear-gradient(135deg, var(--accent-amber), var(--accent-teal))" :
+                          currentRole === "Showrunner" ? "linear-gradient(135deg, var(--accent-amber), var(--accent-teal))" :
                           currentRole === "Reporting Manager" ? "linear-gradient(135deg, var(--accent-blue), var(--accent-teal))" :
                           "linear-gradient(135deg, var(--accent-teal), var(--accent-amber))"
             }}>
               {currentRole === "Super Admin" ? "SA" :
                currentRole === "HR Manager" ? "HR" :
                currentRole === "Finance" ? "FN" :
-               currentRole === "Operations" ? "OP" :
+               currentRole === "Showrunner" ? "SR" :
                currentRole === "Reporting Manager" ? "RM" :
                (currentSelectedCoach ? currentSelectedCoach.name.substring(0, 2).toUpperCase() : "CH")}
             </div>
@@ -3058,7 +3079,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 {currentRole === "Super Admin" ? "Super Admin" :
                  currentRole === "HR Manager" ? "HR Manager" :
                  currentRole === "Finance" ? "Finance Officer" :
-                 currentRole === "Operations" ? "SRS Scheduler" :
+                 currentRole === "Showrunner" ? "Showrunner" :
                  currentRole === "Reporting Manager" ? 
                    (currentRmContext === "RM_01" ? "S&C RM (Lead)" : currentRmContext === "RM_02" ? "Yoga RM (Lead)" : "HOP RM (Lead)") :
                  (currentSelectedCoach ? currentSelectedCoach.name : "Coach Profile")}
@@ -3067,7 +3088,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 {currentRole === "Super Admin" ? "System Root" :
                  currentRole === "HR Manager" ? "HR Department" :
                  currentRole === "Finance" ? "Accounts & Payroll" :
-                 currentRole === "Operations" ? "Operations Team" :
+                 currentRole === "Showrunner" ? "Scheduling & Roster" :
                  currentRole === "Reporting Manager" ? "Reporting Manager" :
                  `Coach ID: ${currentCoachContext}`}
               </span>
@@ -3112,8 +3133,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <option value="HR Manager">HR Manager</option>
                   <option value="Reporting Manager">Reporting Manager</option>
                   <option value="Finance">Finance / Payroll</option>
-                  <option value="Operations">Operations / SRS</option>
-                  <option value="Coach">Coach (Self-Service)</option>
+                  <option value="Showrunner">Showrunner</option>
                 </select>
               ) : (
                 /* Non-admins get their app_users role, not a picker — RLS would
@@ -3471,11 +3491,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </>
               )}
 
-              {/* Operations Dashboard View */}
-              {currentRole === "Operations" && (
+              {/* Showrunner Dashboard View */}
+              {currentRole === "Showrunner" && (
                 <div className="card grid-span-12" style={{ textAlign: 'center', padding: '3rem' }}>
                   <i className="bx bx-calendar-check text-teal" style={{ fontSize: '3.5rem', marginBottom: '1rem' }}></i>
-                  <h2>Operations Floor Portal (SRS Scheduling)</h2>
+                  <h2>Showrunner Portal (SRS Scheduling)</h2>
                   <p className="text-secondary" style={{ maxWidth: '600px', margin: '0.5rem auto 1.5rem auto' }}>
                     Submit session volumes, trial logs, and roster metrics dynamically. Simulated fallback CSV imports can be loaded directly below to patch scores.
                   </p>
@@ -4224,7 +4244,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       only one of them is usually being read. */}
                   <div className="grid-span-12">
                     <ScorecardTabs
-                      groups={COACH_DETAIL_TABS}
+                      groups={COACH_DETAIL_TABS.filter(t => !(t.pay && HIDES_PAY(currentRole)))}
                       active={coachDetailTab}
                       onChange={switchCoachDetailTab}
                       weights={{}}
@@ -4284,7 +4304,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                   {/* Payment details are their own card: they are the one part of
                       the profile that goes to a bank rather than to scoring. */}
-                  {coachDetailTab === 'bank' && (
+                  {coachDetailTab === 'bank' && !HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Bank Details</h3>
@@ -4347,8 +4367,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {detailRow("Non-Coaching Exp", `${coach.non_coaching_exp_years ?? 0} yrs`)}
                       {detailRow("Highest Education", coach.education_qualification)}
                       {detailRow("Education Format", educationFormats.find(f => f.value === coach.education_type)?.label || coach.education_type)}
-                      {coach.flexi_fixed_base_salary != null && detailRow("Flexi-Fixed Base", `₹${Number(coach.flexi_fixed_base_salary).toLocaleString('en-IN')}`)}
-                      {coach.offer_letter_fixed_salary != null && detailRow("Offer Letter Salary", `₹${Number(coach.offer_letter_fixed_salary).toLocaleString('en-IN')}`)}
+                      {!HIDES_PAY(currentRole) && coach.flexi_fixed_base_salary != null && detailRow("Flexi-Fixed Base", `₹${Number(coach.flexi_fixed_base_salary).toLocaleString('en-IN')}`)}
+                      {!HIDES_PAY(currentRole) && coach.offer_letter_fixed_salary != null && detailRow("Offer Letter Salary", `₹${Number(coach.offer_letter_fixed_salary).toLocaleString('en-IN')}`)}
                         </>
                       )}
                     </div>
@@ -4734,6 +4754,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </p>
                   </div>
 
+                  {/* Pay lives in these two cards, so they are the gate. */}
+                  {!HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Payroll Calculator</h3>
@@ -4788,7 +4810,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       );
                     })()}
                   </div>
+                  )}
 
+                  {!HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row"><h3>Payroll History</h3></div>
                     <div className="table-container">
@@ -4840,6 +4864,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </table>
                     </div>
                   </div>
+                  )}
 
                   <div className="card grid-span-12">
                     <div className="card-header-row"><h3>Disciplinary History</h3></div>
@@ -5118,7 +5143,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <table className="data-table score-tracker-table">
                       <thead>
                         <tr className="group-header-row">
-                          {SCORE_TRACKER_GROUPS.map(group => {
+                          {trackerGroups.map(group => {
                             const weight = weightLabel(group.weightKeys);
                             return (
                               <th key={group.key} colSpan={group.columns.length} className={`group-head group-${group.tone}`}>
@@ -5128,7 +5153,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           })}
                         </tr>
                         <tr className="column-header-row">
-                          {SCORE_TRACKER_GROUPS.flatMap(group => group.columns.map(col => {
+                          {trackerGroups.flatMap(group => group.columns.map(col => {
                             const weight = weightLabel(col.weightOf ? [col.weightOf] : null);
                             const isSorted = scoreSort.key === col.key;
                             return (
@@ -5158,14 +5183,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <tbody>
                         {pageRows.length === 0 && (
                           <tr>
-                            <td colSpan={SCORE_TRACKER_COLUMNS.length} className="text-muted">
+                            <td colSpan={trackerColumns.length} className="text-muted">
                               No score records match the current filters.
                             </td>
                           </tr>
                         )}
                         {pageRows.map(row => (
                           <tr key={row.id} className="row-clickable" title="Open coach page" onClick={() => { setCoachDetailId(row.coach_id); setActiveView('coaches'); }}>
-                            {SCORE_TRACKER_GROUPS.flatMap(group => group.columns.map(col => (
+                            {trackerGroups.flatMap(group => group.columns.map(col => (
                               <td
                                 key={col.key}
                                 className={[
@@ -5483,7 +5508,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <div className="page-header-row">
                 <h2>Performance Evaluations</h2>
                 <div className="action-buttons-group">
-                  {verifyAccess("Super Admin,Operations") && (
+                  {verifyAccess("Super Admin,Showrunner") && (
                     <button className="btn btn-secondary" onClick={() => setActiveModal("bulk-sessions")}><i className="bx bx-cloud-upload"></i> Bulk Import Sessions</button>
                   )}
                   {verifyAccess("Super Admin,Reporting Manager") && (
@@ -6421,7 +6446,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
           )}
 
           {/* Audit View */}
-          {isViewEnabled('user-access') && activeView === 'user-access' && verifyAccess("Super Admin,HR Manager") && (
+          {isViewEnabled('user-access') && activeView === 'user-access' && verifyAccess("Super Admin") && (
             <section id="view-user-access" className="content-view active-view">
               <div className="page-header-row">
                 <div>
@@ -6499,7 +6524,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               value={draft.role}
                               onChange={(e) => updateUserDraft(u.id, { role: e.target.value })}
                             >
-                              {APP_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                              {(APP_ROLES.includes(draft.role) ? APP_ROLES : [...APP_ROLES, draft.role])
+                                .map(r => (
+                                  <option key={r} value={r}>
+                                    {r}{APP_ROLES.includes(r) ? '' : ' (current)'}
+                                  </option>
+                                ))}
                             </select>
                           </td>
                           <td>
