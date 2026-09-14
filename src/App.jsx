@@ -59,6 +59,25 @@ const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 // A variant is its discipline and the property it runs at. Dropping the
 // property made V1 and V5 render identically — both "S&C (Internal)" — so it
 // belongs in every label a user picks from.
+// The policies offered when assigning or modelling: HB+ S&C, HB+ Yoga,
+// HOP S&C and HOP Yoga. The others stay in the data — a coach already on one keeps scoring
+// against it, and its rate card is untouched — they are simply not on the menu.
+const OFFERED_VARIANT_IDS = ['V1', 'V3', 'V5', 'V6'];
+
+/**
+ * The offered policies, plus whichever one is currently selected. Keeping the
+ * current value means a coach on a retired policy still shows it rather than
+ * silently reading as something they are not.
+ */
+const offeredVariants = (list, currentId) => {
+  const all = Array.isArray(list) ? list : [];
+  const offered = all.filter(v => OFFERED_VARIANT_IDS.includes(v.id));
+  const current = all.find(v => v.id === currentId);
+  return current && !offered.some(v => v.id === current.id)
+    ? [...offered, current]
+    : offered;
+};
+
 const variantProperty = (v) => /HOP/i.test(v?.property || '') ? 'HOP' : 'HB+';
 const variantLabel = (v) => `${v?.name ?? ''} ${variantProperty(v)}`.trim();
 
@@ -488,7 +507,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             ), coachOptions && !lockCoach ? "picking a coach loads their recorded figures" : undefined)}
             {inputRow("Policy Variant", (
               <select className="calc-input" value={variantId} onChange={(e) => setVariantId(e.target.value)}>
-                {variants.map(v => <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)} ({v.audience})</option>)}
+                {offeredVariants(variants, variantId).map(v => (
+                  <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)}</option>
+                ))}
               </select>
             ))}
             {inputRow("Coach Category", (
@@ -743,6 +764,14 @@ function PayReferenceTables({ vConfig, penaltyMatrix }) {
 // Brand-guideline colours. These sit behind white pill text, so each is taken
 // at a depth that still carries the label — the lighter cream, tan and sage
 // from the palette are used elsewhere, not here.
+// The coach page reads as three separate records — who they are, where they
+// are paid, and what they bring — so it is tabbed rather than stacked.
+const COACH_DETAIL_TABS = [
+  { key: 'profile',    label: 'Profile',                tone: 'teal' },
+  { key: 'bank',       label: 'Bank Details',           tone: 'blue' },
+  { key: 'experience', label: 'Experience & Education', tone: 'violet' }
+];
+
 const TAB_TONE_COLORS = {
   blue: "#344161",   // navy (secondary)
   amber: "#a9674d",  // terracotta (primary)
@@ -856,6 +885,18 @@ const NEW_COACH_DEFAULTS = {
 
 // A fresh copy of the reference data, in the shape the app state holds it.
 // Used both by "Restore Seed" and by the first sign-in against an empty database.
+// Policy variants are reference data the app ships with. A variant defined
+// here but absent from stored state — one added after that state was written —
+// is folded in, so a new policy does not stay invisible in every picker until
+// the database is migrated by hand. Stored variants always win on id, so an
+// edited policy is never overwritten by the seed.
+const withSeedVariants = (loaded) => {
+  const list = Array.isArray(loaded) ? loaded : [];
+  const have = new Set(list.map(v => v.id));
+  const missing = INITIAL_VARIANTS.filter(v => !have.has(v.id));
+  return missing.length ? [...list, ...JSON.parse(JSON.stringify(missing))] : list;
+};
+
 const seedSnapshot = () => ({
   variants: JSON.parse(JSON.stringify(INITIAL_VARIANTS)),
   certifications: JSON.parse(JSON.stringify(INITIAL_CERTIFICATIONS)),
@@ -1010,6 +1051,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [unlockedDynamicKeys, setUnlockedDynamicKeys] = useState([]);
   // Score Management shows one column group at a time so the row stays readable.
   const [scorecardTab, setScorecardTab] = useState("core");
+  const [coachDetailTab, setCoachDetailTab] = useState("profile");
   // Which pay cycles the score card tables show. Blank means the full span,
   // so a coach with only a few periods needs no filtering at all.
   const [scorecardFrom, setScorecardFrom] = useState("");
@@ -1021,6 +1063,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [scoreSearch, setScoreSearch] = useState("");
   const [scoreMonthFilter, setScoreMonthFilter] = useState("All");
   const [scoreCategoryFilter, setScoreCategoryFilter] = useState("All");
+  const [payrollCategoryFilter, setPayrollCategoryFilter] = useState("All");
   const [scoreVariantFilter, setScoreVariantFilter] = useState("All");
   const [payCalcVariant, setPayCalcVariant] = useState("V1");
   const [payCalcPeriod, setPayCalcPeriod] = useState("");
@@ -1056,7 +1099,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const lastSynced = useRef(null);
 
   const applyState = (next) => {
-    setVariants(next.variants || []);
+    setVariants(withSeedVariants(next.variants));
     setCertifications(next.certifications || []);
     setEducationLevels(next.educationLevels?.length ? next.educationLevels : INITIAL_EDUCATION_LEVELS);
     setEducationFormats(next.educationFormats?.length ? next.educationFormats : INITIAL_EDUCATION_FORMATS);
@@ -1523,6 +1566,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   const setCoachField = (key, value) => setCoachDraft(prev => ({ ...prev, [key]: value }));
+
+  // Leaving a tab mid-edit would hide an open editor and its draft, so say so
+  // rather than losing the changes quietly.
+  const switchCoachDetailTab = (tab) => {
+    if (tab === coachDetailTab) return;
+    if (editingCoachCard && !window.confirm('Discard the changes you are editing?')) return;
+    if (editingCoachCard) cancelCoachCardEdit();
+    setCoachDetailTab(tab);
+  };
 
   // Certifications are an array on the coach record, so they need their own
   // add/edit/remove rather than the single-field setter above. Rows carry a
@@ -2581,7 +2633,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
           month: record.period_month,
           coach_id: coach.id,
           coach_name: coach.name,
-          category: coach.internal_designation || 'Coach',
+          category: coach.coach_category || '—',
+          designation: coach.internal_designation || 'Coach',
           exp_doc: Number(coach.freelance_past_exp_with_document) || 0,
           exp_nodoc: Number(coach.freelance_past_exp_without_document) || 0,
           exp_post_doj: calculateTenureYears(coach.date_of_joining, record.period_end),
@@ -2691,7 +2744,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   const handleExportPayrollRun = (periodMonth) => {
-    const rows = buildPayrollRun(periodMonth);
+    // Export what is on screen: the run is filtered by category in the view,
+    // so a download taken while filtered must carry the same rows.
+    const rows = buildPayrollRun(periodMonth).filter(
+      r => payrollCategoryFilter === "All" || r.coach.coach_category === payrollCategoryFilter
+    );
     const header = ["Coach ID", "Coach Name", "Category", "Score Card", "HB+ Score", "Band", "Per-Session Rate",
       "Base Pay", "Extra Sessions", "Extra Session Pay", "Session Pay", "Night Premium",
       "Milestone", "Consistency", "Streak Bonus", "Org Work", "Penalty", "Gross Pay"];
@@ -2707,7 +2764,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const encodedUri = encodeURI(`data:text/csv;charset=utf-8,${header.map(h => `"${h}"`).join(",")}\n${body.join("\n")}`);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `HB_Payroll_Run_${periodMonth.replace(' ', '_')}.csv`);
+    const categoryTag = payrollCategoryFilter === "All" ? '' : `_${payrollCategoryFilter.replace('-', '')}`;
+    link.setAttribute("download", `HB_Payroll_Run_${periodMonth.replace(' ', '_')}${categoryTag}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2715,7 +2773,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const unrecorded = rows.filter(r => !r.recorded).length;
     logAudit(
       "Payroll Run Exported",
-      `Exported the ${periodMonth} payroll run (${rows.length} coaches) to CSV` +
+      `Exported the ${periodMonth} payroll run (${rows.length} coaches` +
+      (payrollCategoryFilter === "All" ? '' : `, ${payrollCategoryFilter} only`) + `) to CSV` +
       (unrecorded ? ` — ${unrecorded} score card${unrecorded > 1 ? 's' : ''} not recorded, paid on fixed points only` : '')
     );
     showToast(`${periodMonth} payroll run downloaded.`);
@@ -4161,7 +4220,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
 
                 <div className="dashboard-grid" style={{ marginTop: '1.5rem' }}>
-                  <div className="card grid-span-6">
+                  {/* One section at a time: the three cards were a long scroll, and
+                      only one of them is usually being read. */}
+                  <div className="grid-span-12">
+                    <ScorecardTabs
+                      groups={COACH_DETAIL_TABS}
+                      active={coachDetailTab}
+                      onChange={switchCoachDetailTab}
+                      weights={{}}
+                    />
+                  </div>
+
+                  {coachDetailTab === 'profile' && (
+                  <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Profile</h3>
                       {cardEditControls('profile')}
@@ -4174,7 +4245,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Gender", selectField("gender", ["", ...GENDER_OPTIONS]))}
                           {editItem("Type of Coach", selectField("coach_type", ["", ...COACH_TYPES.map(t => t.value)]))}
                           {editItem("Category", selectField("coach_category", COACH_CATEGORIES))}
-                          {editItem("Policy Variant", selectField("variant_id", variants.map(v => ({ value: v.id, label: `${v.id} — ${variantLabel(v)} (${v.audience})` }))))}
+                          {editItem("Policy Variant", selectField("variant_id", offeredVariants(variants, coachDraft.variant_id ?? coach.variant_id)
+                            .map(v => ({ value: v.id, label: `${v.id} — ${variantLabel(v)}` }))))}
                           {editItem("Designation", textField("internal_designation"))}
                           {editItem("Reporting Manager", selectField("reporting_manager_id", REPORTING_MANAGERS))}
                           {editItem("Assigned Property", textField("assigned_property"))}
@@ -4208,10 +4280,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </p>
                     )}
                   </div>
+                  )}
 
                   {/* Payment details are their own card: they are the one part of
                       the profile that goes to a bank rather than to scoring. */}
-                  <div className="card grid-span-6">
+                  {coachDetailTab === 'bank' && (
+                  <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Bank Details</h3>
                       {cardEditControls('bank')}
@@ -4246,8 +4320,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </p>
                     )}
                   </div>
+                  )}
 
-                  <div className="card grid-span-6">
+                  {coachDetailTab === 'experience' && (
+                  <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Experience &amp; Education</h3>
                       {cardEditControls('experience')}
@@ -4555,6 +4631,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <p className="text-muted" style={{ fontSize: '0.85rem' }}>No certifications recorded for this coach.</p>
                     )}
                   </div>
+                  )}
 
                   <div className="card grid-span-12">
                     <div className="card-header-row">
@@ -4939,7 +5016,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
           {isViewEnabled('score-tracker') && activeView === 'score-tracker' && (() => {
             const rows = buildScoreTrackerRows();
             const months = [...new Set([...historicMonths, ...currentMonth].map(r => r.period_month))];
-            const designations = [...new Set(coaches.map(c => c.internal_designation || 'Coach'))].sort();
 
             // Unscored periods come back with hb_score null. Left in, they
             // coerce to 0 and drag the average down, and the best/worst
@@ -4990,7 +5066,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </select>
                     <select value={scoreCategoryFilter} onChange={(e) => { setScoreCategoryFilter(e.target.value); setScorePage(1); }}>
                       <option value="All">All Categories</option>
-                      {designations.map(d => <option key={d} value={d}>{d}</option>)}
+                      {COACH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                     <select value={scoreMonthFilter} onChange={(e) => { setScoreMonthFilter(e.target.value); setScorePage(1); }}>
                       <option value="All">All Months</option>
@@ -5142,7 +5218,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
           {isViewEnabled('pay-calculator') && activeView === 'pay-calculator' && (() => {
             const periods = [...new Set([...historicMonths, ...currentMonth].map(r => r.period_month))];
             const period = periods.includes(payrollRunPeriod) ? payrollRunPeriod : (periods[periods.length - 1] || currentPeriodMonth);
-            const run = buildPayrollRun(period);
+            const fullRun = buildPayrollRun(period);
+            // Filtering the run rather than only the table keeps the totals,
+            // the stat cards and the export in step with what is on screen.
+            const run = payrollCategoryFilter === "All"
+              ? fullRun
+              : fullRun.filter(r => r.coach.coach_category === payrollCategoryFilter);
             const sum = (fn) => run.reduce((acc, r) => acc + fn(r), 0);
             const totals = {
               base: sum(r => r.pay.basePay),
@@ -5173,6 +5254,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="tracker-toolbar-controls">
                     <select className="header-select" value={period} onChange={(e) => setPayrollRunPeriod(e.target.value)}>
                       {periods.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select
+                      className="header-select"
+                      value={payrollCategoryFilter}
+                      onChange={(e) => setPayrollCategoryFilter(e.target.value)}
+                    >
+                      <option value="All">All Categories</option>
+                      {COACH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                     <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
                       <i className="bx bx-download"></i> Export CSV
@@ -5377,7 +5466,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </p>
                   </div>
                   <select className="header-select" value={payCalcVariant} onChange={(e) => setPayCalcVariant(e.target.value)}>
-                    {variants.map(v => <option key={v.id} value={v.id}>Reference: {v.id} — {variantLabel(v)}</option>)}
+                    {offeredVariants(variants, payCalcVariant).map(v => (
+                      <option key={v.id} value={v.id}>Reference: {v.id} — {variantLabel(v)}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -6060,6 +6151,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <tr>
                         <th>Authority</th>
                         <th>Certification Name</th>
+                        <th>Type</th>
                         <th>Tier</th>
                         <th>Score</th>
                       </tr>
@@ -6083,8 +6175,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </a>
                             )}
                           </td>
+                          <td>
+                            {(() => {
+                              // Yoga and S&C certifications score against different
+                              // denominators, so which discipline a row belongs to
+                              // is worth showing rather than only filtering on.
+                              const yoga = /yoga/i.test(c.variant_type || '');
+                              return (
+                                <span className={`cert-type-chip ${yoga ? 'is-yoga' : 'is-sc'}`}>
+                                  <i className={yoga ? 'bx bx-body' : 'bx bx-dumbbell'}></i>
+                                  {c.variant_type || '—'}
+                                </span>
+                              );
+                            })()}
+                          </td>
                           <td>{c.level}</td>
-                          <td><strong>{c.score.toFixed(1)}</strong></td>
+                          <td><strong>{Number(c.score ?? 0).toFixed(1)}</strong></td>
                         </tr>
                       ))}
                     </tbody>

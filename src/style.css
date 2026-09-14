@@ -1458,6 +1458,27 @@ button, input, select, textarea {
 }
 /* Incentive renders as its own table below the tabbed score card, so it
    needs a heading of its own — the tab strip no longer names it. */
+/* Which discipline a certification belongs to, on the master list. */
+.cert-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cert-type-chip i { font-size: .95rem; }
+.cert-type-chip.is-sc {
+  color: var(--brand-navy);
+  background: rgba(52, 65, 97, .12);
+}
+.cert-type-chip.is-yoga {
+  color: #5c7a68;
+  background: rgba(92, 122, 104, .14);
+}
+
 .scorecard-subhead {
   font-family: var(--font-title);
   font-size: 1rem;
@@ -1716,7 +1737,9 @@ button, input, select, textarea {
 }
 .detail-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Two columns in a half-width card; a full-width card fits more, so the
+     fields fill the row rather than leaving the right half empty. */
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1rem 1.25rem;
 }
 .detail-item {
