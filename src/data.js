@@ -1418,6 +1418,18 @@ export const INITIAL_VIOLATIONS = [
 ];
 
 // Detailed progressive penalty structures for S&C, Yoga, and HOP
+// Annexure-1: how far back occurrences are counted, per violation type. A
+// late arrival is forgiven at the turn of the quarter; the serious ones are
+// counted for as long as the coach is here. This is a property of the
+// violation, not of the policy variant, so it sits outside the matrix.
+export const VIOLATION_TRACKING = {
+  "Late Arrival (<5 min)": "Quarterly",
+  "Late Arrival (>5 min)": "Quarterly",
+  "Coach No-Show": "Lifetime",
+  "Unplanned Absence (<4 hrs notice)": "Lifetime",
+  "Repeated Roster Violations": "Lifetime"
+};
+
 export const PENALTY_MATRIX = {
   // V1 - Internal S&C
   "V1": {

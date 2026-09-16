@@ -9,7 +9,8 @@ import {
   INITIAL_ORG_WORK, 
   INITIAL_EDUCATION_LEVELS,
   INITIAL_EDUCATION_FORMATS,
-  PENALTY_MATRIX 
+  PENALTY_MATRIX,
+  VIOLATION_TRACKING
 } from './data.js';
 
 import {
@@ -37,7 +38,7 @@ import {
 
 // Phase 1 scope: only these modules are exposed in the UI.
 // Add a view key back to this list to re-enable its nav item and its view section.
-const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "certifications", "user-access"];
+const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "certifications", "penalties", "user-access"];
 const isViewEnabled = (view) => ENABLED_VIEWS.includes(view);
 
 // Coach disciplines offered on the Add Coach form, mapped to the policy variant
@@ -1067,6 +1068,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [unlockedDynamicKeys, setUnlockedDynamicKeys] = useState([]);
   // Score Management shows one column group at a time so the row stays readable.
   const [scorecardTab, setScorecardTab] = useState("core");
+  const [penaltyVariant, setPenaltyVariant] = useState("V1");
   const [coachDetailTab, setCoachDetailTab] = useState("profile");
   // Which pay cycles the score card tables show. Blank means the full span,
   // so a coach with only a few periods needs no filtering at all.
@@ -2948,6 +2950,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       { view: "payroll", roles: "Super Admin,HR Manager,Finance,Reporting Manager,Auditor" },
       { view: "appeals", roles: "Super Admin,HR Manager,Reporting Manager,Finance,Coach,Auditor" },
       { view: "certifications", roles: "Super Admin,HR Manager" },
+      { view: "penalties", roles: "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner" },
       { view: "settings", roles: "Super Admin,HR Manager,Finance,Reporting Manager" },
       { view: "audit", roles: "Super Admin,Auditor" }
     ];
@@ -3050,6 +3053,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <i className="bx bxs-shield nav-icon"></i><span>User Access</span>
                   {pendingAccessCount > 0 && <span className="nav-pill">{pendingAccessCount}</span>}
                 </a>
+              </li>
+            )}
+            {isViewEnabled('penalties') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner") && (
+              <li className={`nav-item ${activeView === 'penalties' ? 'active' : ''}`} onClick={() => handleNavClick('penalties', "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner")}>
+                <a href="#penalties"><i className="bx bx-error-circle nav-icon"></i><span>Penalties</span></a>
               </li>
             )}
             {isViewEnabled('certifications') && verifyAccess("Super Admin,HR Manager") && (
@@ -6167,6 +6175,143 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                 </div>
 
+              </div>
+            </section>
+          )}
+
+          {/* Annexure-1: what a violation costs, and how far back occurrences
+              are counted. Read-only — the schedule is policy, not data anyone
+              edits here. */}
+          {isViewEnabled('penalties') && activeView === 'penalties' && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner") && (
+            <section id="view-penalties" className="content-view active-view">
+              <div className="page-header-row">
+                <div>
+                  <h2>Violation Penalties</h2>
+                  <p>Annexure-1 — what each violation costs at every occurrence</p>
+                </div>
+                <div className="tracker-toolbar-controls">
+                  <select className="header-select" value={penaltyVariant} onChange={(e) => setPenaltyVariant(e.target.value)}>
+                    {offeredVariants(variants, penaltyVariant).map(v => (
+                      <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)}</option>
+                    ))}
+                  </select>
+                  {verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (
+                    <button className="btn btn-danger" onClick={() => handleOpenViolationModal()}>
+                      <i className="bx bx-error"></i> Record an Incident
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="table-container">
+                  <table className="data-table penalty-matrix-table">
+                    <thead>
+                      <tr>
+                        <th>Violation Type</th>
+                        <th>1st</th>
+                        <th>2nd</th>
+                        <th>3rd</th>
+                        <th>4th / Final</th>
+                        <th>Tracking</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(PENALTY_MATRIX[penaltyVariant] || PENALTY_MATRIX['default'] || {}).map(([type, steps]) => {
+                        const tracking = VIOLATION_TRACKING[type] || 'Lifetime';
+                        return (
+                          <tr key={type}>
+                            <td><strong>{type}</strong></td>
+                            {[0, 1, 2, 3].map(i => {
+                              const step = steps[i];
+                              return (
+                                <td key={i} className="num-col">
+                                  {step
+                                    ? (step.amount > 0 && /₹/.test(step.consequence)
+                                        ? `₹${step.amount}`
+                                        : step.consequence)
+                                    : '—'}
+                                </td>
+                              );
+                            })}
+                            <td>
+                              <span className={`badge ${tracking === 'Quarterly' ? 'badge-warning' : 'badge-muted'}`}>
+                                {tracking}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-muted scorecard-legend">
+                  Occurrences are counted per coach, per violation type.
+                  <strong> Quarterly</strong> types start again each quarter, so a late arrival in
+                  a new quarter is a first occurrence.
+                  <strong> Lifetime</strong> types keep counting for as long as the coach is here.
+                  A violation that wins an appeal is not counted at all.
+                </p>
+              </div>
+
+              {/* What has actually been recorded. The amount on each row is what
+                  the schedule above charged for that occurrence, and it is what
+                  the coach's payslip deducts for the period it falls in. */}
+              <div className="card" style={{ marginTop: '1.5rem' }}>
+                <div className="card-header-row">
+                  <h3>Recorded Incidents</h3>
+                  <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                    {violations.length} recorded · ₹{violations
+                      .filter(v => v.status !== 'Appeal_Approved')
+                      .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0)
+                      .toLocaleString('en-IN')} chargeable
+                  </span>
+                </div>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Coach</th>
+                        <th>Violation</th>
+                        <th className="num-col">Occurrence</th>
+                        <th>Consequence</th>
+                        <th className="num-col">Penalty</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {violations.length === 0 && (
+                        <tr><td colSpan={7} className="text-muted">No incidents recorded.</td></tr>
+                      )}
+                      {[...violations]
+                        .sort((a, b) => new Date(b.incident_date) - new Date(a.incident_date))
+                        .map(v => {
+                          const c = coaches.find(x => x.id === v.coach_id);
+                          const waived = v.status === 'Appeal_Approved';
+                          return (
+                            <tr key={v.id} className={waived ? 'row-unrecorded' : undefined}>
+                              <td>{new Date(v.incident_date).toLocaleDateString('en-IN')}</td>
+                              <td><strong>{c?.name || v.coach_id}</strong></td>
+                              <td>{v.type}</td>
+                              <td className="num-col">#{v.occurrence_no}</td>
+                              <td>{v.consequence}</td>
+                              <td className="num-col">
+                                {waived
+                                  ? <span className="text-muted">waived</span>
+                                  : `₹${(Number(v.penalty_amount) || 0).toLocaleString('en-IN')}`}
+                              </td>
+                              <td><span className="badge badge-muted">{v.status}</span></td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-muted scorecard-legend">
+                  A penalty is deducted on the payslip for the period its incident date falls in,
+                  under Taxes &amp; Deductions. Nothing is keyed in there — it comes from here.
+                </p>
               </div>
             </section>
           )}

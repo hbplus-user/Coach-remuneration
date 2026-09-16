@@ -1,6 +1,7 @@
 /**
  * HB+ Coach Remuneration & Performance Management - Calculations Engine
  */
+import { VIOLATION_TRACKING } from './data.js';
 
 // Educational Score Table Lookup
 // Education: 3-Year Bachelor's (1/3/5), 4/5-Year (1.5/3.5/5.5), Post-Grad (3/6/8), PhD (4/8/10)
@@ -352,8 +353,10 @@ export function getQuarterLabel(dateStr) {
  * Calculate active occurrences of a violation type within its tracking window
  */
 export function getViolationOccurrenceNumber(coachId, violationType, incidentDateStr, allViolations) {
-  const violationDef = allViolations.find(v => v.type === violationType);
-  const trackingWindow = violationDef ? violationDef.tracking : 'Lifetime';
+  // The tracking window belongs to the violation type, per Annexure-1. It was
+  // read off a violation record, which never carries the field — so every type
+  // fell back to Lifetime and the quarterly ones never reset.
+  const trackingWindow = VIOLATION_TRACKING[violationType] || 'Lifetime';
   
   // Filter other historical violations of the same type for this coach
   const historical = allViolations.filter(v => 
