@@ -103,7 +103,9 @@ const SCORE_TRACKER_GROUPS = [
       { key: "month", label: "Month", sortable: true },
       { key: "coach_id", label: "Coach ID", sticky: true, sortable: true },
       { key: "coach_name", label: "Coach Name", sticky: true, sortable: true },
-      { key: "category", label: "Category", sortable: true }
+      { key: "category", label: "Category", sortable: true },
+      { key: "range", label: "Period" },
+      { key: "status", label: "Record Status" }
     ]
   },
   {
@@ -133,8 +135,19 @@ const SCORE_TRACKER_GROUPS = [
   {
     key: "performance", label: "Performance & Reliability", tone: "violet",
     columns: [
+      { key: "prof_appearance", label: "Professional Appearance", decimals: 0 },
+      { key: "client_engagement", label: "Client Rating", decimals: 0 },
+      { key: "safety", label: "Safety & Cleanliness", decimals: 0 },
+      { key: "punctuality", label: "Punctuality & Documentation", decimals: 0 },
+      { key: "team_conduct", label: "Team Conduct", decimals: 0 },
+      { key: "communication", label: "Communication & Responsiveness", decimals: 0 },
+      { key: "core_total", label: "Core Total", decimals: 0 },
       { key: "core", label: "Core Performance", weightOf: "core_performance", decimals: 2 },
+      { key: "tenure_years", label: "HB+ Tenure (Yrs)", decimals: 1 },
       { key: "org", label: "Org Reliability", weightOf: "tenure", decimals: 2 },
+      { key: "meetings_scheduled", label: "Meetings Scheduled", decimals: 0 },
+      { key: "meetings_attended", label: "Meetings Attended", decimals: 0 },
+      { key: "attendance_pct", label: "Attendance %", decimals: 1 },
       { key: "attendance", label: "Elevate+ Attendance", weightOf: "attendance", decimals: 2 }
     ]
   },
@@ -149,6 +162,7 @@ const SCORE_TRACKER_GROUPS = [
     key: "sessions", label: "Session Counts", tone: "indigo",
     columns: [
       { key: "sessions", label: "Sessions Completed", decimals: 0, sortable: true },
+      { key: "night_sessions", label: "Night Sessions", decimals: 0 },
       { key: "threshold", label: "Threshold", decimals: 0 },
       { key: "extra_sessions", label: "Extra Sessions", decimals: 0, emphasis: true }
     ]
@@ -171,6 +185,18 @@ const SCORE_TRACKER_GROUPS = [
 ];
 
 const SCORE_TRACKER_COLUMNS = SCORE_TRACKER_GROUPS.flatMap(g => g.columns);
+
+// A few columns carry the same field under a different key.
+const TRACKER_META_ALIASES = {
+  attendance: 'attendance_score',
+  edu_raw: 'edu_raw',
+  cert_raw: 'cert_raw'
+};
+
+const trackerColumnMeta = (col) => {
+  const key = TRACKER_META_ALIASES[col.key] || col.key;
+  return COACH_SCORECARD_COLUMNS.find(c => c.key === key) || null;
+};
 
 // Score Management on the coach profile: one row per evaluated period, laid out
 // like the Calculator sheet. `entry` mirrors that sheet's row 20/21 annotations —
@@ -357,7 +383,7 @@ const resolvePeriodScore = (coach, record, vConfig) => {
  * editable; the breakdown below is driven by computeMonthlyPay so it can never
  * drift from the payroll the rest of the app produces.
  */
-function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange }) {
+function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange, canOverridePay = false }) {
   const [coachName, setCoachName] = useState(seed?.coachName ?? "");
   const [variantId, setVariantId] = useState(seed?.variantId ?? "V1");
   const [category, setCategory] = useState(seed?.category ?? "Fixed");
@@ -371,6 +397,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
   // Blank means "use the band's rate"; a number overrides it for this model.
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
+  // Both pay fields start locked. Taking one over is a deliberate act, as it is
+  // for a calculated cell on the score card.
+  const [unlockedPay, setUnlockedPay] = useState({ rate: false, base: false });
 
   // Re-seed when the caller points the calculator somewhere new — a different
   // coach or period — AND when the record it is already showing changes. Keying
@@ -397,6 +426,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setPenalties(seed.penalties ?? 0);
     setBaseOverride(seed.baseOverride ?? "");
     setRateOverride(seed.rateOverride ?? "");
+    // A different coach or period is a different pay decision, so both lock again.
+    setUnlockedPay({ rate: false, base: false });
   }, [seedSignature]);
 
   const vConfig = variants.find(v => v.id === variantId) || variants[0];
@@ -409,12 +440,19 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   // A synthetic coach + month record: consistency is a yes/no input here rather
   // than something derived, so attendance is forced to match the choice and the
   // penalty total is applied at the end instead of through a violations list.
+  // The override travels on the coach, so every category honours it the same
+  // way — including Fixed, whose rate is otherwise derived from its own pay.
+  const rateOverrideNum = rateOverride !== "" && Number.isFinite(Number(rateOverride))
+    ? Math.max(0, Number(rateOverride))
+    : null;
+
   const syntheticCoach = {
     id: "CALC",
     coach_category: category,
     variant_id: vConfig.id,
     ...(baseOverride !== "" && category === "Fixed" ? { fixed_salary_override: Number(baseOverride) } : {}),
-    ...(baseOverride !== "" && category === "Flexi-Fixed" ? { flexi_fixed_base_salary: Number(baseOverride) } : {})
+    ...(baseOverride !== "" && category === "Flexi-Fixed" ? { flexi_fixed_base_salary: Number(baseOverride) } : {}),
+    ...(rateOverrideNum !== null ? { per_session_override: rateOverrideNum } : {})
   };
   const syntheticMonth = {
     sessions_completed: Number(sessions) || 0,
@@ -426,30 +464,35 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     ? [{ amount: Number(orgWorkPay) }]
     : [];
 
-  // computeMonthlyPay reads the rate off the variant, so an override is applied
-  // by handing it a variant whose rate for this category and band is the entered
-  // one. Threshold and the fixed-salary figures on that band are left intact.
-  const rateOverrideNum = rateOverride !== "" && Number.isFinite(Number(rateOverride))
-    ? Math.max(0, Number(rateOverride))
-    : null;
-  const effectiveVConfig = rateOverrideNum === null ? vConfig : {
-    ...vConfig,
-    rates: {
-      ...vConfig.rates,
-      [category]: {
-        ...vConfig.rates[category],
-        [band.label]: { ...rates, per_session: rateOverrideNum }
-      }
-    }
-  };
-
-  const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], effectiveVConfig, orgItems);
+  const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], vConfig, orgItems);
   const penaltyTotal = Number(penalties) || 0;
   const grossPay = Math.round((pay.grossPay - penaltyTotal) * 100) / 100;
   // Section 194J: TDS on professional or technical fees, withheld at source.
   // Withheld in whole rupees, as on the payslip.
   const incomeTax = Math.round(grossPay * TDS_194J_RATE);
   const netPay = Math.round((grossPay - incomeTax) * 100) / 100;
+
+  const requestPayEdit = (key, label, standard) => {
+    if (unlockedPay[key]) return;
+    const proceed = window.confirm(
+      `"${label}" comes from the band rate (${standard}).\n\n` +
+      `Overriding it changes what this coach is paid for the month. Do you want to edit it?`
+    );
+    if (!proceed) return;
+    setUnlockedPay(prev => ({ ...prev, [key]: true }));
+  };
+
+  const payLock = (key, label, standard, current) => (
+    <button
+      type="button"
+      className="dynamic-lock-btn"
+      title={`From the band rate — click to override (${standard})`}
+      onClick={() => requestPayEdit(key, label, standard)}
+    >
+      <span>{current}</span>
+      <i className="bx bx-lock-alt"></i>
+    </button>
+  );
 
   const inputRow = (label, control, hint) => (
     <tr key={label}>
@@ -518,7 +561,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {inputRow("Policy Variant", (
               <select className="calc-input" value={variantId} onChange={(e) => setVariantId(e.target.value)}>
                 {offeredVariants(variants, variantId).map(v => (
-                  <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)}</option>
+                  <option key={v.id} value={v.id}>{variantLabel(v)}</option>
                 ))}
               </select>
             ))}
@@ -541,22 +584,47 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {inputRow("Total Penalty (₹)", num(penalties, setPenalties))}
             {/* Per-session rate applies to every category: Flexi and Flexi-Fixed
                 pay it on all sessions, Fixed on the ones beyond its threshold. */}
+            {/* Overriding what a coach is paid is a pay decision, not a
+                modelling one, so it is left to the roles that own the rate card.
+                Everyone else sees the band rate, stated rather than editable. */}
             {inputRow("Per-Session Rate (₹)", (
-              <input
-                type="number" min="0" className="calc-input" value={rateOverride}
-                placeholder={`Std ${rupees(rates.per_session)}`}
-                onChange={(e) => setRateOverride(e.target.value)}
-              />
-            ), "leave blank to use the band rate")}
+              !canOverridePay
+                ? <span className="calc-static">{rupees(pay.perSessionRate)}</span>
+                : unlockedPay.rate
+                  ? (
+                    <input
+                      type="number" min="0" className="calc-input" value={rateOverride}
+                      placeholder={`Std ${rupees(pay.perSessionRate)}`}
+                      autoFocus
+                      onChange={(e) => setRateOverride(e.target.value)}
+                    />
+                  )
+                  : payLock('rate', 'Per-Session Rate', rupees(pay.perSessionRate),
+                      rateOverride !== "" ? rupees(rateOverride) : rupees(pay.perSessionRate))
+            ), !canOverridePay
+                 ? "from the band rate"
+                 : unlockedPay.rate ? "leave blank to use the band rate" : "click to override")}
             {/* A Flexi coach has no fixed component — they are paid per session
                 alone — so the field is not offered for that category. */}
             {category !== "Flexi" && inputRow("Base / Fixed Pay (₹)", (
-              <input
-                type="number" min="0" className="calc-input" value={baseOverride}
-                placeholder={`Std ${rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}`}
-                onChange={(e) => setBaseOverride(e.target.value)}
-              />
-            ), "leave blank to use the band rate")}
+              !canOverridePay
+                ? <span className="calc-static">{rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}</span>
+                : unlockedPay.base
+                  ? (
+                    <input
+                      type="number" min="0" className="calc-input" value={baseOverride}
+                      placeholder={`Std ${rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}`}
+                      autoFocus
+                      onChange={(e) => setBaseOverride(e.target.value)}
+                    />
+                  )
+                  : payLock('base', 'Base / Fixed Pay',
+                      rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed),
+                      baseOverride !== "" ? rupees(baseOverride)
+                        : rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed))
+            ), !canOverridePay
+                 ? "from the band rate"
+                 : unlockedPay.base ? "leave blank to use the band rate" : "click to override")}
           </tbody>
         </table>
       </div>
@@ -1069,6 +1137,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Score Management shows one column group at a time so the row stays readable.
   const [scorecardTab, setScorecardTab] = useState("core");
   const [penaltyVariant, setPenaltyVariant] = useState("V1");
+  const [trackerTab, setTrackerTab] = useState("experience");
+  // Which period a template is drawn for and an upload is applied to. Blank
+  // means the open payroll period, so it always starts on the live month.
+  const [importMonth, setImportMonth] = useState("");
   const [coachDetailTab, setCoachDetailTab] = useState("profile");
   // Which pay cycles the score card tables show. Blank means the full span,
   // so a coach with only a few periods needs no filtering at all.
@@ -1262,11 +1334,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Two of the Score Tracker's columns are rupee amounts. A role that does not
   // see pay does not see those, and everything that counts columns — the group
   // header spans, the empty-row colspan and the CSV — reads from here.
-  const trackerGroups = HIDES_PAY(currentRole)
+  const trackerVisible = HIDES_PAY(currentRole)
     ? SCORE_TRACKER_GROUPS
         .map(g => ({ ...g, columns: g.columns.filter(c => !c.money) }))
         .filter(g => g.columns.length > 0)
     : SCORE_TRACKER_GROUPS;
+
+  // One group at a time, the way the score card reads, so the table stops
+  // running off the side. The coach identity group always stays.
+  const trackerIdentity = trackerVisible.find(g => g.key === 'info');
+  const trackerTabs = trackerVisible.filter(g => g.key !== 'info');
+  const trackerActive = trackerTabs.find(g => g.key === trackerTab) || trackerTabs[0];
+  const trackerGroups = [trackerIdentity, trackerActive].filter(Boolean);
   const trackerColumns = trackerGroups.flatMap(g => g.columns);
 
   // Write-through. Supabase gets a debounced diff of whatever changed;
@@ -2681,13 +2760,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
           cert_raw: calc.breakdown.certScore,
           cert_score: calc.breakdown.techScore - (calc.breakdown.eduScore * vConfig.weights.education / 10),
           technical: calc.breakdown.techScore,
+          prof_appearance: record.prof_appearance,
+          client_engagement: record.client_engagement,
+          safety: record.safety,
+          punctuality: record.punctuality,
+          team_conduct: record.team_conduct,
+          communication: record.communication,
+          core_total: calc.breakdown.coreTotal,
           core: calc.breakdown.coreScore,
+          tenure_years: calc.breakdown.tenureYears,
           org: calc.breakdown.tenureScore,
+          meetings_scheduled: record.meetings_scheduled,
+          meetings_attended: record.meetings_attended,
+          attendance_pct: calc.breakdown.attendancePct,
           attendance: calc.breakdown.attendanceScore,
           hb_score: hbScore,
           band,
           coach_type: coach.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : 'Strength'),
+          range: `${new Date(record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+          status: record.status,
           sessions: Number(record.sessions_completed) || 0,
+          night_sessions: record.night_sessions,
           threshold,
           extra_sessions: pay.extraSessions,
           late_count: inPeriod.filter(v => v.type && v.type.includes('Late Arrival')).length,
@@ -2728,6 +2821,159 @@ export default function App({ session = null, profile = null, onSignOut = null }
       ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
       : { key, dir: 'asc' });
     setScorePage(1);
+  };
+
+  // The manual columns, in the order the template writes them. Everything else
+  // on a score card is calculated, so it is not the importer's business.
+  const IMPORT_COLUMNS = [
+    { key: 'prof_appearance',    label: 'Professional Appearance (max 20)' },
+    { key: 'client_engagement',  label: 'Client Rating (max 20)' },
+    { key: 'safety',             label: 'Safety & Cleanliness (max 15)' },
+    { key: 'punctuality',        label: 'Punctuality & Documentation (max 10)' },
+    { key: 'team_conduct',       label: 'Team Conduct (max 15)' },
+    { key: 'communication',      label: 'Communication & Responsiveness (max 20)' },
+    { key: 'meetings_scheduled', label: 'Meetings Scheduled' },
+    { key: 'meetings_attended',  label: 'Meetings Attended' },
+    { key: 'sessions_completed', label: 'Sessions Completed' },
+    { key: 'night_sessions',     label: 'Night Sessions' },
+    { key: 'five_star_streak',   label: '5-Star Streak' }
+  ];
+
+  const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+
+  /**
+   * A filled-in template: every coach's row for a period, carrying whatever is
+   * already recorded. Editing and re-importing it is the round trip — there is
+   * no blank form to line up by hand.
+   */
+  const handleDownloadScoreTemplate = () => {
+    const month = importMonth || currentPeriodMonth;
+    const records = [...historicMonths, ...currentMonth].filter(r => r.period_month === month);
+    if (records.length === 0) {
+      showToast(`No score cards exist for ${month}.`, "warning");
+      return;
+    }
+
+    const header = ['Coach ID', 'Coach Name', 'Period Month', ...IMPORT_COLUMNS.map(c => c.label)];
+    const rows = records
+      .map(r => {
+        const coach = coaches.find(c => c.id === r.coach_id);
+        if (!coach) return null;
+        return [coach.id, coach.name, r.period_month,
+          ...IMPORT_COLUMNS.map(c => r[c.key] ?? '')];
+      })
+      .filter(Boolean)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    const csv = [header, ...rows].map(line => line.map(csvCell).join(',')).join('\n');
+    const link = document.createElement('a');
+    link.setAttribute('href', encodeURI(`data:text/csv;charset=utf-8,${csv}`));
+    link.setAttribute('download', `HB_Score_Import_Template_${month.replace(' ', '_')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    logAudit("Score Template Downloaded", `Downloaded the ${month} score import template (${rows.length} coaches)`);
+    showToast(`${month} template downloaded — ${rows.length} coaches.`);
+  };
+
+  /**
+   * Apply an edited template. Rows are matched on coach id and period month, so
+   * a file can carry more than one month. A locked card is left alone: the lock
+   * means it is settled, and an import is not an exception to that.
+   */
+  const handleImportScoreCSV = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const lines = String(reader.result).split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) {
+        showToast("That file has no rows under its header.", "error");
+        return;
+      }
+
+      // Quoted cells may contain commas, so split on commas outside quotes.
+      const parse = (line) => (line.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
+        .slice(0, -1)
+        .map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+
+      const header = parse(lines[0]);
+      const colIndex = {};
+      IMPORT_COLUMNS.forEach(c => {
+        const i = header.findIndex(h => h.toLowerCase() === c.label.toLowerCase());
+        if (i >= 0) colIndex[c.key] = i;
+      });
+      if (Object.keys(colIndex).length === 0) {
+        showToast("No recognisable columns — download the template and edit that.", "error");
+        return;
+      }
+
+      const parsed = lines.slice(1).map(parse).filter(cols => cols[0]);
+      const updates = new Map();   // "coachId|month" -> { field: value }
+      const unknown = [];
+      // The month chosen on screen decides where the rows land. A file carrying
+      // a different Period Month is still applied to the chosen one — the
+      // person uploading said which month this is for — but they are told.
+      const month = importMonth || currentPeriodMonth;
+      const otherMonths = new Set();
+      for (const cols of parsed) {
+        const coachId = cols[0];
+        if (cols[2] && cols[2] !== month) otherMonths.add(cols[2]);
+        if (!coaches.some(c => c.id === coachId)) { unknown.push(coachId); continue; }
+        const patch = {};
+        for (const [key, i] of Object.entries(colIndex)) {
+          const raw = cols[i];
+          if (raw === undefined || raw === '') continue;
+          const n = Number(raw);
+          if (Number.isFinite(n)) patch[key] = n;
+        }
+        if (Object.keys(patch).length) updates.set(`${coachId}|${month}`, patch);
+      }
+
+      let applied = 0, locked = 0;
+      const patchList = (list) => list.map(r => {
+        const patch = updates.get(`${r.coach_id}|${r.period_month}`);
+        if (!patch) return r;
+        if (r.status === 'FINANCE_LOCKED') { locked++; return r; }
+
+        const updated = { ...r, ...patch };
+        // Attendance follows the meetings, and the score follows everything.
+        const scheduled = Number(updated.meetings_scheduled) || 0;
+        if (scheduled > 0) {
+          updated.attendance_pct = Math.round(
+            ((Number(updated.meetings_attended) || 0) / scheduled) * 10000) / 100;
+        }
+        const coach = coaches.find(c => c.id === r.coach_id);
+        const vCfg = variants.find(v => v.id === coach?.variant_id);
+        if (coach && vCfg) {
+          const calc = computeHBPlusScore(coach, updated, vCfg);
+          updated.hb_score = calc.hbScore;
+          updated.band = getPerformanceBand(calc.hbScore).label;
+        }
+        applied++;
+        return updated;
+      });
+
+      setCurrentMonth(prev => patchList(prev));
+      setHistoricMonths(prev => patchList(prev));
+
+      const notes = [];
+      if (locked) notes.push(`${locked} locked and left alone`);
+      if (unknown.length) notes.push(`${unknown.length} unknown coach id${unknown.length > 1 ? 's' : ''}`);
+      if (otherMonths.size) {
+        notes.push(`the file named ${[...otherMonths].join(', ')} — applied to ${month}`);
+      }
+      logAudit("Score Cards Imported",
+        `Imported ${applied} score card${applied === 1 ? '' : 's'} into ${month} from CSV` +
+        (notes.length ? ` — ${notes.join(', ')}` : ''));
+      showToast(
+        applied
+          ? `${applied} score card${applied === 1 ? '' : 's'} updated${notes.length ? ` · ${notes.join(' · ')}` : ''}.`
+          : `Nothing applied${notes.length ? ` — ${notes.join(', ')}` : '.'}`,
+        applied ? "success" : "warning"
+      );
+    };
+    reader.readAsText(file);
   };
 
   const handleExportScoreTracker = () => {
@@ -4288,7 +4534,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Type of Coach", selectField("coach_type", ["", ...COACH_TYPES.map(t => t.value)]))}
                           {editItem("Category", selectField("coach_category", COACH_CATEGORIES))}
                           {editItem("Policy Variant", selectField("variant_id", offeredVariants(variants, coachDraft.variant_id ?? coach.variant_id)
-                            .map(v => ({ value: v.id, label: `${v.id} — ${variantLabel(v)}` }))))}
+                            .map(v => ({ value: v.id, label: variantLabel(v) }))))}
                           {editItem("Designation", textField("internal_designation"))}
                           {editItem("Reporting Manager", selectField("reporting_manager_id", REPORTING_MANAGERS))}
                           {editItem("Assigned Property", textField("assigned_property"))}
@@ -4680,26 +4926,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Score Management</h3>
-{/* Scores are entered inline on each row now, so this slot carries the
-                          payslip instead. It follows the same rule as the payslip buttons
-                          elsewhere: a slip is issued once Finance has locked the month. */}
-                      {canManage && statRun && (() => {
-                        const slipPeriod = statRun.period_month;
-                        const slipLocked = statRun.status === 'FINANCE_LOCKED';
-                        const mayIssue = slipLocked || currentRole === 'Super Admin';
-                        return (
-                          <button
-                            className="btn btn-primary"
-                            disabled={!mayIssue}
-                            title={mayIssue
-                              ? `Download the ${slipPeriod} salary slip`
-                              : `${slipPeriod} is not finance-locked yet, so no slip can be issued`}
-                            onClick={() => handleOpenPayslipModal(coach.id, slipPeriod)}
-                          >
-                            <i className="bx bx-download"></i> Download Salary Slip
-                          </button>
-                        );
-                      })()}
                     </div>
 
                     {(() => {
@@ -4783,6 +5009,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Payroll Calculator</h3>
+                      {/* The slip belongs with the pay it states, not with the
+                          scores. Same rule as the payslip buttons elsewhere: a
+                          slip is issued once Finance has locked the month. */}
+                      {canManage && statRun && (() => {
+                        const slipPeriod = statRun.period_month;
+                        const slipLocked = statRun.status === 'FINANCE_LOCKED';
+                        const mayIssue = slipLocked || currentRole === 'Super Admin';
+                        return (
+                          <button
+                            className="btn btn-primary"
+                            disabled={!mayIssue}
+                            title={mayIssue
+                              ? `Download the ${slipPeriod} salary slip`
+                              : `${slipPeriod} is not finance-locked yet, so no slip can be issued`}
+                            onClick={() => handleOpenPayslipModal(coach.id, slipPeriod)}
+                          >
+                            <i className="bx bx-download"></i> Download Salary Slip
+                          </button>
+                        );
+                      })()}
                     </div>
                     {(() => {
                       const selected = allRuns.find(r => r.period_month === payCalcPeriod) || allRuns[allRuns.length - 1];
@@ -4811,6 +5057,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             lockCoach
                             periodOptions={allRuns.map(r => r.period_month)}
                             onPeriodChange={setPayCalcPeriod}
+                            canOverridePay={currentRole === 'Super Admin' || currentRole === 'HR Manager'}
                             seed={{
                               key: `${coach.id}-${selected.period_month}`,
                               periodMonth: selected.period_month,
@@ -5121,6 +5368,39 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <option value="All">All Months</option>
                       {months.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
+                    {verifyAccess("Super Admin,HR Manager,Reporting Manager") && (
+                      <>
+                        {/* Which period the template is drawn for and the upload
+                            applied to. Starts on the open payroll period. */}
+                        <select
+                          className="header-select"
+                          value={importMonth || currentPeriodMonth}
+                          onChange={(e) => setImportMonth(e.target.value)}
+                          title="The month a template covers and an import is applied to"
+                        >
+                          {[...new Set([
+                            currentPeriodMonth,
+                            ...[...historicMonths, ...currentMonth].map(r => r.period_month)
+                          ])].map(m => (
+                            <option key={m} value={m}>
+                              {m}{m === currentPeriodMonth ? ' (open)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
+                                title="A filled-in CSV of this month's cards — edit it and import it back">
+                          <i className="bx bx-download"></i> Template
+                        </button>
+                        <label className="btn btn-primary" style={{ marginBottom: 0 }}
+                               title="Apply an edited template">
+                          <i className="bx bx-upload"></i> Import CSV
+                          <input
+                            type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                            onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
+                          />
+                        </label>
+                      </>
+                    )}
                     <button className="btn btn-secondary" onClick={handleExportScoreTracker}>
                       <i className="bx bx-download"></i> Export CSV
                     </button>
@@ -5163,6 +5443,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
 
                 <div className="card score-tracker-card">
+                  {/* One column group at a time, as the score card does, so the
+                      table reads without running off the side. */}
+                  <ScorecardTabs
+                    groups={trackerTabs}
+                    active={trackerActive?.key}
+                    onChange={setTrackerTab}
+                    weights={{}}
+                  />
                   <div className="table-container score-tracker-container">
                     <table className="data-table score-tracker-table">
                       <thead>
@@ -5198,7 +5486,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <i className={`bx ${isSorted ? (scoreSort.dir === 'asc' ? 'bx-chevron-up' : 'bx-chevron-down') : 'bx-chevron-down'} sort-icon ${isSorted ? 'sort-active' : ''}`}></i>
                                   )}
                                 </span>
-                                {weight && <span className="col-weight">{weight}</span>}
+                                {/* Weight, or the ceiling the figure is out of —
+                                    the same line the score card carries. */}
+                                {(() => {
+                                  const meta = trackerColumnMeta(col);
+                                  const scale = weight
+                                    || meta?.scale
+                                    || (meta?.max && meta.max <= 20 ? `Max ${meta.max}` : null);
+                                  return scale ? <span className="col-weight">{scale}</span> : null;
+                                })()}
+                                {(() => {
+                                  const meta = trackerColumnMeta(col);
+                                  if (!meta?.entry) return null;
+                                  return (
+                                    <span className={`entry-tag entry-${meta.entry}`}>
+                                      {meta.entry === 'derived' ? 'Dynamic' : 'Manual'}
+                                      {meta.source ? ` · ${meta.source}` : ''}
+                                      {meta.note ? ` · ${meta.note}` : ''}
+                                    </span>
+                                  );
+                                })()}
                               </th>
                             );
                           }))}
@@ -5484,6 +5791,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     coachOptions={run.map(r => r.coach)}
                     selectedCoachId={payCalcCoachId}
                     onCoachChange={setPayCalcCoachId}
+                    canOverridePay={currentRole === 'Super Admin' || currentRole === 'HR Manager'}
                     seed={selected ? {
                       key: `${selected.coach.id}-${period}`,
                       periodMonth: period,
@@ -5516,7 +5824,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   <select className="header-select" value={payCalcVariant} onChange={(e) => setPayCalcVariant(e.target.value)}>
                     {offeredVariants(variants, payCalcVariant).map(v => (
-                      <option key={v.id} value={v.id}>Reference: {v.id} — {variantLabel(v)}</option>
+                      <option key={v.id} value={v.id}>Reference: {variantLabel(v)}</option>
                     ))}
                   </select>
                 </div>
@@ -6192,7 +6500,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 <div className="tracker-toolbar-controls">
                   <select className="header-select" value={penaltyVariant} onChange={(e) => setPenaltyVariant(e.target.value)}>
                     {offeredVariants(variants, penaltyVariant).map(v => (
-                      <option key={v.id} value={v.id}>{v.id} — {variantLabel(v)}</option>
+                      <option key={v.id} value={v.id}>{variantLabel(v)}</option>
                     ))}
                   </select>
                   {verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (

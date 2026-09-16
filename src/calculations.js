@@ -399,6 +399,18 @@ export function getPenaltyConsequence(variantId, violationType, occurrenceNo, pe
 /**
  * Compute Monthly Pay
  */
+// A Fixed coach's extra sessions are costed from their own monthly pay rather
+// than the band's session rate: a day's pay over 26 working days, split across
+// 6 sessions in a day. Never below the floor, whatever the salary works out to.
+export const FIXED_WORKING_DAYS = 26;
+export const FIXED_SESSIONS_PER_DAY = 6;
+export const FIXED_PER_SESSION_FLOOR = 200;
+
+export function fixedPerSessionRate(monthlyBasicPay) {
+  const derived = (Number(monthlyBasicPay) || 0) / FIXED_WORKING_DAYS / FIXED_SESSIONS_PER_DAY;
+  return Math.max(FIXED_PER_SESSION_FLOOR, Math.round(derived * 100) / 100);
+}
+
 export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsForMonth, variantConfig, orgWorkItems = []) {
   const score = scoreData.hbScore;
   const bandObj = getPerformanceBand(score);
@@ -416,6 +428,13 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const sessionsCompleted = Number(monthData.sessions_completed) || 0;
   const nightSessions = Number(monthData.night_sessions) || 0;
   
+  // The rate actually used. A hand-entered override wins over everything; a
+  // Fixed coach otherwise derives theirs below.
+  let effectiveRate = Number(coach.per_session_override) > 0
+    ? Number(coach.per_session_override)
+    : (rates.per_session || 0);
+  const rateIsOverridden = Number(coach.per_session_override) > 0;
+
   let basePay = 0;
   let extraSessions = 0;
   let extraSessionPay = 0;
@@ -429,15 +448,17 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     // extra sessions
     const threshold = rates.threshold || (variantConfig.discipline === 'Yoga' ? 117 : 156);
     extraSessions = Math.max(0, sessionsCompleted - threshold);
+    // Costed from this coach's own monthly pay, not the band's session rate.
+    if (!rateIsOverridden) effectiveRate = fixedPerSessionRate(basePay);
     // Reference Table A, band 0–30: "No per sessions pay. Only Fixed Pay." The
     // count is still reported — the sessions happened — but none of them are
     // paid at the per-session rate.
     const nonFunctional = bandLabel.startsWith('0–30') || bandLabel.startsWith('0-30');
-    extraSessionPay = nonFunctional ? 0 : extraSessions * (rates.per_session || 0);
+    extraSessionPay = nonFunctional ? 0 : extraSessions * effectiveRate;
   } else if (coach.coach_category === 'Flexi-Fixed') {
     // Flexi-Fixed has a fixed pay component + per-session for all sessions
     basePay = Number(coach.flexi_fixed_base_salary) || rates.min_fixed || 0;
-    sessionPay = sessionsCompleted * (rates.per_session || 0);
+    sessionPay = sessionsCompleted * effectiveRate;
     // Reference Table C: fixed pay + per session on every session. Sessions
     // past the 96 threshold are rewarded by the milestone (Table D), not by
     // paying the same session twice.
@@ -445,7 +466,7 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   } else if (coach.coach_category === 'Flexi') {
     basePay = 0;
     // Reference Table B: per session + milestone only, no fixed pay.
-    sessionPay = sessionsCompleted * (rates.per_session || 0);
+    sessionPay = sessionsCompleted * effectiveRate;
     nightSessionPay = nightSessions * 60; // Night session premium (₹60)
   }
 
@@ -550,7 +571,7 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
                    penaltyDeductions;
 
   return {
-    perSessionRate: rates.per_session || 0,
+    perSessionRate: effectiveRate,
     basePay,
     extraSessions,
     extraSessionPay,
