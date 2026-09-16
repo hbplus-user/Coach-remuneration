@@ -59,7 +59,7 @@ const COACH_COLS = [
   'education_score_override', 'education_qualification', 'education_type',
   'reporting_manager_id', 'assigned_property', 'status', 'bank_account',
   'bank_holder_name', 'bank_name', 'bank_ifsc', 'bank_branch',
-  'bank_account_type', 'bank_upi',
+  'bank_account_type', 'bank_upi', 'pan_number',
   'fixed_salary_override', 'flexi_fixed_base_salary', 'certifications',
   'five_star_streak'
 ];

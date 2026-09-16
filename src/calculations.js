@@ -104,6 +104,65 @@ export function getHighestEducationScore(coach) {
 }
 
 /**
+ * How a payslip presents the month's earnings.
+ *
+ * The figures are the same money the pay engine already computed — this only
+ * describes it the way a slip does. A Fixed coach's salary is shown as a
+ * structure, the flexible categories as what they actually are: a shift
+ * allowance for the fixed half and incentive for the session half.
+ *
+ * The shares and flat allowances come from the payslip formats in use; they
+ * are named here rather than buried so they can be corrected in one place.
+ */
+export const PAYSLIP_BASIC_SHARE = 0.50;        // Basic, as a share of earnings
+export const PAYSLIP_HRA_SHARE_OF_BASIC = 0.45; // HRA, as a share of Basic
+export const PAYSLIP_FLAT_ALLOWANCES = [
+  { label: 'Medical Allowance', amount: 1000 },
+  { label: 'Conveyance Allowance', amount: 1000 },
+  { label: 'Internet Allowance', amount: 800 }
+];
+
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+export function payslipEarnings(category, totalEarnings, basePay = 0) {
+  const total = round2(totalEarnings);
+
+  if (category === 'Fixed') {
+    const basic = round2(total * PAYSLIP_BASIC_SHARE);
+    const hra = round2(basic * PAYSLIP_HRA_SHARE_OF_BASIC);
+
+    // On a small month the flat allowances can exceed what is left after Basic
+    // and HRA. Take them only as far as the money goes, so no line is negative
+    // and the parts still sum to the total.
+    let remaining = round2(total - basic - hra);
+    const flats = PAYSLIP_FLAT_ALLOWANCES.map(({ label, amount }) => {
+      const paid = round2(Math.max(0, Math.min(amount, remaining)));
+      remaining = round2(remaining - paid);
+      return { label, amount: paid };
+    });
+
+    return [
+      { label: 'Basic', amount: basic },
+      { label: 'HRA', amount: hra },
+      ...flats.slice(0, 2),
+      { label: 'Special Allowance', amount: remaining },
+      ...flats.slice(2)
+    ];
+  }
+
+  if (category === 'Flexi-Fixed') {
+    // The fixed half is the shift allowance; everything else is incentive.
+    const shift = round2(Math.max(0, Math.min(Number(basePay) || 0, total)));
+    return [
+      { label: 'Shift Allowance (SA)', amount: shift },
+      { label: 'Incentive', amount: round2(total - shift) }
+    ];
+  }
+
+  return [{ label: 'Incentive', amount: total }];
+}
+
+/**
  * An amount written out in words, Indian numbering — lakh and crore rather
  * than million. Payslips state the net in words as well as in figures, so the
  * two can be checked against each other.
@@ -363,18 +422,26 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   // 1. Calculate Base and Session Pay based on Coach Category
   if (coach.coach_category === 'Fixed') {
     basePay = Number(coach.fixed_salary_override) || rates.std_fixed || 0;
-    
+
     // extra sessions
     const threshold = rates.threshold || (variantConfig.discipline === 'Yoga' ? 117 : 156);
     extraSessions = Math.max(0, sessionsCompleted - threshold);
-    extraSessionPay = extraSessions * (rates.per_session || 0);
+    // Reference Table A, band 0–30: "No per sessions pay. Only Fixed Pay." The
+    // count is still reported — the sessions happened — but none of them are
+    // paid at the per-session rate.
+    const nonFunctional = bandLabel.startsWith('0–30') || bandLabel.startsWith('0-30');
+    extraSessionPay = nonFunctional ? 0 : extraSessions * (rates.per_session || 0);
   } else if (coach.coach_category === 'Flexi-Fixed') {
     // Flexi-Fixed has a fixed pay component + per-session for all sessions
     basePay = Number(coach.flexi_fixed_base_salary) || rates.min_fixed || 0;
     sessionPay = sessionsCompleted * (rates.per_session || 0);
+    // Reference Table C: fixed pay + per session on every session. Sessions
+    // past the 96 threshold are rewarded by the milestone (Table D), not by
+    // paying the same session twice.
     nightSessionPay = nightSessions * 60; // Night session premium (₹60)
   } else if (coach.coach_category === 'Flexi') {
     basePay = 0;
+    // Reference Table B: per session + milestone only, no fixed pay.
     sessionPay = sessionsCompleted * (rates.per_session || 0);
     nightSessionPay = nightSessions * 60; // Night session premium (₹60)
   }

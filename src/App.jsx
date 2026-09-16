@@ -30,6 +30,7 @@ import {
   EDUCATION_TIERS,
   getHighestEducationEntry,
   amountInWords,
+  payslipEarnings,
   getPeriodForDate,
   getNextPeriod
 } from './calculations.js';
@@ -444,6 +445,10 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], effectiveVConfig, orgItems);
   const penaltyTotal = Number(penalties) || 0;
   const grossPay = Math.round((pay.grossPay - penaltyTotal) * 100) / 100;
+  // Section 194J: TDS on professional or technical fees, withheld at source.
+  // Withheld in whole rupees, as on the payslip.
+  const incomeTax = Math.round(grossPay * TDS_194J_RATE);
+  const netPay = Math.round((grossPay - incomeTax) * 100) / 100;
 
   const inputRow = (label, control, hint) => (
     <tr key={label}>
@@ -559,11 +564,12 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         <div className="calc-section-title calc-section-output">Computed Pay Breakdown <span>{band.label}</span></div>
         <table className="data-table calc-table">
           <tbody>
-            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
-              rateOverrideNum !== null ? "entered above" : null)}
-            {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
             {outputRow("Base / Fixed Pay (₹)", rupees(pay.basePay),
               category === 'Flexi' ? "not paid to Flexi" : (baseOverride !== "" ? "entered above" : null))}
+            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
+              rateOverrideNum !== null ? "entered above" : null)}
+            {outputRow("Sessions for the month", Number(sessions) || 0)}
+            {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
             {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
             {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay))}
             {/* Only Flexi and Flexi-Fixed are paid per session on every session;
@@ -576,6 +582,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi-Fixed only")}
             {outputRow("Penalty (₹)", `− ${rupees(penaltyTotal)}`)}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
+            {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
+            {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
           </tbody>
         </table>
         <p className="calc-notes">
@@ -775,6 +783,10 @@ const COACH_DETAIL_TABS = [
   { key: 'bank',       label: 'Bank Details',           tone: 'blue', pay: true },
   { key: 'experience', label: 'Experience & Education', tone: 'violet' }
 ];
+
+// Section 194J of the Income Tax Act: 10% withheld at source on professional
+// and technical fees, which is how a coach's remuneration is treated.
+const TDS_194J_RATE = 0.10;
 
 const TAB_TONE_COLORS = {
   blue: "#344161",   // navy (secondary)
@@ -1695,6 +1707,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
       for (const key of ['bank_holder_name', 'bank_name', 'bank_account', 'bank_branch', 'bank_upi']) {
         updated[key] = (updated[key] || "").trim();
       }
+      // PAN is quoted upper case on returns and payslips.
+      updated.pan_number = (updated.pan_number || "").trim().toUpperCase();
     }
 
     if (card === 'education') {
@@ -4320,6 +4334,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Branch", textField("bank_branch"))}
                           {editItem("Account Type", selectField("bank_account_type", BANK_ACCOUNT_TYPES))}
                           {editItem("UPI ID", textField("bank_upi"))}
+                          {editItem("PAN Number", textField("pan_number"))}
                         </>
                       ) : (
                         <>
@@ -4330,6 +4345,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {detailRow("Branch", coach.bank_branch)}
                           {detailRow("Account Type", coach.bank_account_type)}
                           {detailRow("UPI ID", coach.bank_upi)}
+                          {detailRow("PAN Number", coach.pan_number)}
                         </>
                       )}
                     </div>
@@ -7095,7 +7111,22 @@ HB+_030,185,0,96`} />
                             pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + 
                             pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
 
-        const uniqueAuditCode = `HB_AUD_${coach.id.replace('+', '')}_${payslipPeriod.replace(' ', '_').toUpperCase()}`;
+        // Earnings (A) is what the coach earned before tax; the penalty sits in
+        // deductions (B) alongside it, the way the slip formats present it.
+        const totalEarnings = Math.round((pay.grossPay + pay.penaltyDeductions) * 100) / 100;
+        const earningLines = payslipEarnings(coach.coach_category, totalEarnings, pay.basePay);
+        const incomeTax = Math.round(totalEarnings * TDS_194J_RATE);
+        const totalDeductions = Math.round((incomeTax + pay.penaltyDeductions) * 100) / 100;
+        const netPayable = Math.round((totalEarnings - totalDeductions) * 100) / 100;
+
+        // A salaried month is described in days, so count the period's own.
+        const periodDays = Math.round(
+          (new Date(e.period_end) - new Date(e.period_start)) / 86400000
+        ) + 1;
+
+        const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric'
+        }) : 'N/A';
 
         return (
           <div className="modal-backdrop active-modal">
@@ -7109,150 +7140,116 @@ HB+_030,185,0,96`} />
               </div>
               
               <div className="payslip-print-layout" id="payslip-print-content">
-                <div className="payslip-header-grid">
-                  <div className="payslip-header-left">
-                    <h1>HB+ FITNESS PRIVATE LIMITED</h1>
-                    <p>3rd Floor, HSR Plaza, Outer Ring Road, Bengaluru - 560102</p>
-                    <p>Official Pay Slip &amp; Performance Earnings Breakdown</p>
+                <div className="payslip-top">
+                  <div>
+                    <h1 className="payslip-title">PAYSLIP <span>{payslipPeriod.toUpperCase()}</span></h1>
+                    <p className="payslip-company">HB+ FITNESS PRIVATE LIMITED</p>
+                    <p className="payslip-address">3rd Floor, HSR Plaza, Outer Ring Road, Bengaluru - 560102</p>
                   </div>
-                  <div className="payslip-header-right">
-                    <h2>PAYSLIP STATEMENT</h2>
-                    <span className="text-teal">{payslipPeriod}</span>
-                    <small style={{ marginTop: '4px' }}>Audit Code: {uniqueAuditCode}</small>
-                  </div>
+                  <div className="payslip-mark">HB+</div>
                 </div>
 
-                <table className="payslip-details-table">
-                  <tbody>
-                    <tr>
-                      <td className="label-col">Coach Name</td>
-                      <td className="val-col">{coach.name}</td>
-                      <td className="label-col">Coach ID</td>
-                      <td className="val-col">{coach.id}</td>
-                    </tr>
-                    <tr>
-                      <td className="label-col">Policy Variant</td>
-                      <td className="val-col">{vConfig.name}</td>
-                      <td className="label-col">Coach Category</td>
-                      <td className="val-col">{coach.coach_category}</td>
-                    </tr>
-                    <tr>
-                      <td className="label-col">Designation</td>
-                      <td className="val-col">{coach.internal_designation || 'Coach'}</td>
-                      <td className="label-col">Assigned Hub</td>
-                      <td className="val-col">{coach.assigned_property}</td>
-                    </tr>
-                    <tr>
-                      <td className="label-col">HB+ Score</td>
-                      <td className="val-col"><strong>{(calcScoreObj.hbScore || calcScoreObj.hb_score).toFixed(2)}</strong></td>
-                      <td className="label-col">Performance Band</td>
-                      <td className="val-col">{calcScoreObj.band || getPerformanceBand(calcScoreObj.hbScore || calcScoreObj.hb_score).label}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <h2 className="payslip-person">{coach.name.toUpperCase()}</h2>
+                <div className="payslip-facts">
+                  {[
+                    ['Employee Number', coach.id],
+                    ['Date Joined', formatDate(coach.date_of_joining)],
+                    ['Department', 'Delivery'],
+                    ['Sub Department', vConfig?.discipline === 'Yoga' ? 'Yoga' : 'Physical Training'],
+                    ['Designation', coach.internal_designation || 'Coach'],
+                    ['Payment Mode', 'Bank Transfer'],
+                    ['UAN', 'N/A'],
+                    ['PF Number', 'N/A'],
+                    ['PAN Number', coach.pan_number || 'N/A'],
+                    ['Secondary Job Title', coach.coach_type || 'N/A']
+                  ].map(([label, value]) => (
+                    <div className="payslip-fact" key={label}>
+                      <span>{label}</span>
+                      <strong>{value ?? 'N/A'}</strong>
+                    </div>
+                  ))}
+                </div>
 
                 <div className="payslip-section-title">SALARY DETAILS</div>
-                <table className="payslip-details-table">
-                  <tbody>
-                    <tr>
-                      <td className="label-col">Sessions Completed</td>
-                      <td className="val-col">{Number(e.sessions_completed) || 0}</td>
-                      <td className="label-col">Session Threshold</td>
-                      <td className="val-col">{pay.threshold ?? '—'}</td>
-                    </tr>
-                    <tr>
-                      <td className="label-col">Sessions Beyond Threshold</td>
-                      <td className="val-col">{pay.extraSessions || 0}</td>
-                      <td className="label-col">Per-Session Rate</td>
-                      <td className="val-col">₹{Number(pay.perSessionRate || 0).toFixed(2)}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <div className="payslip-facts">
+                  {coach.coach_category === 'Fixed' ? (
+                    // A salaried month is described in days.
+                    [
+                      ['Actual Payable Days', periodDays.toFixed(1)],
+                      ['Total Working Days', periodDays.toFixed(1)],
+                      ['Loss Of Pay Days', '0.00'],
+                      ['Days Payable', String(periodDays)]
+                    ]
+                  ) : (
+                    // A session-paid month is described in what was delivered.
+                    [['Payable Units', `${Number(e.sessions_completed) || 0} Sessions`]]
+                  ).map(([label, value]) => (
+                    <div className="payslip-fact" key={label}>
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                    </div>
+                  ))}
+                </div>
 
                 <div className="payslip-ledger-grid">
-                  {/* Earnings */}
                   <div className="payslip-ledger-section">
-                    <h3>EARNINGS &amp; REWARDS</h3>
+                    <h3>EARNINGS</h3>
                     <table className="payslip-ledger-table">
                       <tbody>
-                        <tr><td>Base Pay ({coach.coach_category})</td><td className="amt">₹{pay.basePay.toFixed(2)}</td></tr>
-                        {pay.extraSessionPay > 0 && (
-                          <tr><td>Extra Session Payout (x{pay.extraSessions})</td><td className="amt">₹{pay.extraSessionPay.toFixed(2)}</td></tr>
-                        )}
-                        {pay.sessionPay > 0 && coach.coach_category !== 'Fixed' && (
-                          <tr><td>Session Completed Pay (x{e.sessions_completed})</td><td className="amt">₹{pay.sessionPay.toFixed(2)}</td></tr>
-                        )}
-                        {pay.nightSessionPay > 0 && (
-                          <tr><td>Night Shift Premiums (x{e.night_sessions})</td><td className="amt">₹{pay.nightSessionPay.toFixed(2)}</td></tr>
-                        )}
-                        {pay.milestoneIncentive > 0 && (
-                          <tr><td>Milestone Target Reward</td><td className="amt">₹{pay.milestoneIncentive.toFixed(2)}</td></tr>
-                        )}
-                        {pay.consistencyBonus > 0 && (
-                          <tr><td>Roster Consistency Reward</td><td className="amt">₹{pay.consistencyBonus.toFixed(2)}</td></tr>
-                        )}
-                        {pay.streakBonusPay > 0 && (
-                          <tr><td>5-Star Streak Reward</td><td className="amt">₹{pay.streakBonusPay.toFixed(2)}</td></tr>
-                        )}
-                        {pay.orgWorkPay > 0 && (
-                          <tr><td>Organizational Work Pay</td><td className="amt">₹{pay.orgWorkPay.toFixed(2)}</td></tr>
-                        )}
-                        {pay.trialIncentive > 0 && (
-                          <tr><td>Trial Completion Bonus</td><td className="amt">₹{pay.trialIncentive.toFixed(2)}</td></tr>
-                        )}
-                        {pay.eventIncentive > 0 && (
-                          <tr><td>Event Support Bonus</td><td className="amt">₹{pay.eventIncentive.toFixed(2)}</td></tr>
-                        )}
-                        {pay.hopOohPremium > 0 && (
-                          <tr><td>HOP Out-of-Hours Premium</td><td className="amt">₹{pay.hopOohPremium.toFixed(2)}</td></tr>
-                        )}
-                        {pay.hopPtHomePremium > 0 && (
-                          <tr><td>HOP PT &amp; Home Visit Reliability</td><td className="amt">₹{pay.hopPtHomePremium.toFixed(2)}</td></tr>
-                        )}
-                        {pay.hopPerformanceCreditsPay > 0 && (
-                          <tr><td>HOP Performance Credits</td><td className="amt">₹{pay.hopPerformanceCreditsPay.toFixed(2)}</td></tr>
-                        )}
-                        <tr className="total-row"><td>Gross Additions</td><td className="amt">₹{earningsSum.toFixed(2)}</td></tr>
+                        {earningLines.map(line => (
+                          <tr key={line.label}>
+                            <td>{line.label}</td>
+                            <td className="amt">{line.amount.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                        <tr className="total-row">
+                          <td>Total Earnings (A)</td>
+                          <td className="amt">{totalEarnings.toFixed(2)}</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
 
-                  {/* Penalty */}
                   <div className="payslip-ledger-section">
-                    <h3>DISCIPLINARY DEDUCTIONS</h3>
+                    <h3>TAXES &amp; DEDUCTIONS</h3>
                     <table className="payslip-ledger-table">
                       <tbody>
-                        {activeVio.length === 0 ? (
-                          <tr><td className="text-secondary">No payroll deductions recorded.</td><td className="amt">₹0.00</td></tr>
-                        ) : (
-                          activeVio.map(v => (
-                            <tr key={v.id}>
-                              <td>Incident: {v.type} ({new Date(v.incident_date).toLocaleDateString('en-IN')})</td>
-                              <td className="amt text-red">-₹{v.penalty_amount.toFixed(2)}</td>
-                            </tr>
-                          ))
+                        {pay.penaltyDeductions > 0 && (
+                          <tr>
+                            <td>Penalty ({activeVio.length} incident{activeVio.length === 1 ? '' : 's'})</td>
+                            <td className="amt">{pay.penaltyDeductions.toFixed(2)}</td>
+                          </tr>
                         )}
-                        <tr className="total-row"><td>Gross Penalty</td><td className="amt">₹{pay.penaltyDeductions.toFixed(2)}</td></tr>
+                        <tr>
+                          <td>Total Income Tax</td>
+                          <td className="amt">{incomeTax.toFixed(2)}</td>
+                        </tr>
+                        <tr className="total-row">
+                          <td>Total Taxes &amp; Deductions (B)</td>
+                          <td className="amt">{totalDeductions.toFixed(2)}</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
                 </div>
 
-                <div className="payslip-net-box">
-                  <h2>NET PAYABLE AMOUNT</h2>
-                  <h1>₹{pay.grossPay.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h1>
-                  <p className="payslip-net-words">{amountInWords(pay.grossPay)}</p>
+                <div className="payslip-net">
+                  <div className="payslip-net-row">
+                    <span>Net Salary Payable ( A - B )</span>
+                    <strong>{netPayable.toFixed(2)}</strong>
+                  </div>
+                  <div className="payslip-net-row payslip-net-words-row">
+                    <span>Net Salary in words</span>
+                    <strong>{amountInWords(netPayable)}</strong>
+                  </div>
                 </div>
 
                 <p className="payslip-note">
-                  All amounts are in INR. This is a computer generated statement and does
-                  not require a signature.
+                  <strong>**Note :</strong> All amounts displayed in this payslip are in INR
                 </p>
-
-                <div className="payslip-signatures-row">
-                  <div className="signature-box">Prepared by Finance Department</div>
-                  <div className="signature-box">Approved by HR Director</div>
-                </div>
+                <p className="payslip-note">
+                  * This is computer generated statement, does not require signature.
+                </p>
               </div>
             </div>
           </div>

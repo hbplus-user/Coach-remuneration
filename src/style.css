@@ -2389,6 +2389,78 @@ form {
 
 /* Payslip: a section heading over each block, the net stated in words under
    the figure, and the generated-statement note, as on a standard slip. */
+/* Payslip, laid out as the issued slips are: title block, the person and their
+   employment facts, then earnings against deductions, then the net. */
+.payslip-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.payslip-title {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.payslip-title span { font-weight: 400; color: var(--text-secondary); }
+.payslip-company {
+  margin: .6rem 0 0;
+  font-size: .82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.payslip-address {
+  margin: .15rem 0 0;
+  font-size: .78rem;
+  color: var(--text-secondary);
+}
+.payslip-mark {
+  font-family: var(--font-title);
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.payslip-person {
+  margin: 1.6rem 0 .5rem;
+  padding-bottom: .5rem;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: .02em;
+  border-bottom: 1px solid var(--border-color);
+}
+.payslip-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: .9rem 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.payslip-fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.payslip-fact span {
+  font-size: .68rem;
+  color: var(--text-muted);
+}
+.payslip-fact strong { font-size: .85rem; font-weight: 600; }
+.payslip-net {
+  margin-top: 1.25rem;
+  padding: .9rem 1rem;
+  border-radius: 8px;
+  background: var(--bg-main);
+}
+.payslip-net-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: .88rem;
+}
+.payslip-net-row + .payslip-net-row { margin-top: .5rem; }
+.payslip-net-row strong { font-weight: 700; }
+.payslip-net-words-row strong { text-align: right; }
+
 .payslip-section-title {
   margin: 1.25rem 0 .5rem;
   padding-bottom: .3rem;
