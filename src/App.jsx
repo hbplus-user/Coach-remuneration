@@ -5368,40 +5368,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <option value="All">All Months</option>
                       {months.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
-                    {verifyAccess("Super Admin,HR Manager,Reporting Manager") && (
-                      <>
-                        {/* Which period the template is drawn for and the upload
-                            applied to. Starts on the open payroll period. */}
-                        <select
-                          className="header-select"
-                          value={importMonth || currentPeriodMonth}
-                          onChange={(e) => setImportMonth(e.target.value)}
-                          title="The month a template covers and an import is applied to"
-                        >
-                          {[...new Set([
-                            currentPeriodMonth,
-                            ...[...historicMonths, ...currentMonth].map(r => r.period_month)
-                          ])].map(m => (
-                            <option key={m} value={m}>
-                              {m}{m === currentPeriodMonth ? ' (open)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
-                                title="A filled-in CSV of this month's cards — edit it and import it back">
-                          <i className="bx bx-download"></i> Template
-                        </button>
-                        <label className="btn btn-primary" style={{ marginBottom: 0 }}
-                               title="Apply an edited template">
-                          <i className="bx bx-upload"></i> Import CSV
-                          <input
-                            type="file" accept=".csv,text/csv" style={{ display: 'none' }}
-                            onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
-                          />
-                        </label>
-                      </>
-                    )}
-                    <button className="btn btn-secondary" onClick={handleExportScoreTracker}>
+                    {/* Template, import and export follow the view itself —
+                        the template holds manual fields only, and the export
+                        already withholds pay columns per role. */}
+                    <select
+                      className="header-select"
+                      value={importMonth || currentPeriodMonth}
+                      onChange={(e) => setImportMonth(e.target.value)}
+                      title="The month a template covers and an import is applied to"
+                    >
+                      {[...new Set([
+                        currentPeriodMonth,
+                        ...[...historicMonths, ...currentMonth].map(r => r.period_month)
+                      ])].map(m => (
+                        <option key={m} value={m}>
+                          {m}{m === currentPeriodMonth ? ' (open)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
+                            title="A filled-in CSV of this month's cards — edit it and import it back">
+                      <i className="bx bx-download"></i> Template
+                    </button>
+                    <label className="btn btn-primary" style={{ marginBottom: 0 }}
+                           title="Apply an edited template">
+                      <i className="bx bx-upload"></i> Import CSV
+                      <input
+                        type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                        onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
+                      />
+                    </label>
+                    <button className="btn btn-secondary" onClick={handleExportScoreTracker} title="Download CSV">
                       <i className="bx bx-download"></i> Export CSV
                     </button>
                   </div>
@@ -5840,7 +5837,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <div className="page-header-row">
                 <h2>Performance Evaluations</h2>
                 <div className="action-buttons-group">
-                  {verifyAccess("Super Admin,Showrunner") && (
+                  {verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (
                     <button className="btn btn-secondary" onClick={() => setActiveModal("bulk-sessions")}><i className="bx bx-cloud-upload"></i> Bulk Import Sessions</button>
                   )}
                   {verifyAccess("Super Admin,Reporting Manager") && (
