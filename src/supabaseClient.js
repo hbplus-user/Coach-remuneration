@@ -132,6 +132,7 @@ const MAPPERS = {
       ...pick(c, COACH_COLS),
       certifications: c.certifications ?? [],
       education: c.education ?? [],
+      org_work_types: c.org_work_types ?? [],
       pdf_name: c.pdfName || null,
       pdf_data: c.pdfData || null
     }, DATE_ISH),

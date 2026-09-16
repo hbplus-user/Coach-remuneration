@@ -951,6 +951,27 @@ button, input, select, textarea {
 }
 /* Which pay cycles the score card shows. Sits above the tab strip, since it
    narrows every tab rather than belonging to any one of them. */
+/* The tracker's tab strip and the controls that act on its table, on one row.
+   They wrap onto their own line when there is not room for both. */
+.tracker-tabs-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.tracker-tabs-row .scorecard-tabs {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.tracker-bulk-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
 .scorecard-range {
   display: flex;
   align-items: center;
@@ -2391,6 +2412,46 @@ form {
    the figure, and the generated-statement note, as on a standard slip. */
 /* Payslip, laid out as the issued slips are: title block, the person and their
    employment facts, then earnings against deductions, then the net. */
+/* Locked state for the org work field, sitting in a detail row rather than a
+   table cell, so it reads left-aligned and full width. */
+.org-work-lock {
+  justify-content: space-between;
+  min-height: 34px;
+}
+
+/* Org work the coach is put on: pick several, and what they are worth. */
+.org-work-picker {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+.org-work-option {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .5rem;
+  border-radius: 6px;
+  font-size: .82rem;
+  cursor: pointer;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+.org-work-option.is-chosen {
+  border-color: var(--accent-teal);
+  background: var(--accent-teal-glow);
+}
+.org-work-option input { margin: 0; cursor: pointer; }
+.org-work-option span { flex: 1; min-width: 0; }
+.org-work-option small {
+  flex-shrink: 0;
+  font-size: .72rem;
+  color: var(--text-muted);
+}
+.org-work-rate {
+  margin: .25rem 0 0;
+  font-size: .82rem;
+}
+
 .payslip-top {
   display: flex;
   align-items: flex-start;

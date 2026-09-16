@@ -54,6 +54,25 @@ const COACH_TYPES = [
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 const COACH_STATUSES = ["Active", "Suspended", "Exited"];
+// Organisational work a coach can be put on, with the band each pays within.
+// Flexi-Fixed and Flexi are org-work eligible; a Fixed coach's salary already
+// covers work off the floor.
+const ORG_WORK_TYPES = [
+  { value: "Workout Planning / Programming", min: 3000, max: 4000 },
+  { value: "Hiring Support",                 min: 1500, max: 2500 },
+  { value: "Course Development",             min: 3500, max: 5500 },
+  { value: "Coach Training / Mentoring",     min: 3500, max: 5500 }
+];
+
+const orgWorkBand = (type) => ORG_WORK_TYPES.find(t => t.value === type) || null;
+
+/** What a coach's selected org work is worth at the band minimum. */
+const ORG_WORK_CATEGORIES = ['Flexi-Fixed', 'Flexi'];
+const isOrgWorkEligible = (category) => ORG_WORK_CATEGORIES.includes(category);
+
+const orgWorkRate = (types) => (Array.isArray(types) ? types : [])
+  .reduce((sum, t) => sum + (orgWorkBand(t)?.min || 0), 0);
+
 const BANK_ACCOUNT_TYPES = ["Savings", "Current"];
 const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 
@@ -460,7 +479,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     five_star_streak: Number(streak) || 0,
     attendance_pct: consistency === "YES" ? 100 : 0
   };
-  const orgItems = category === "Flexi-Fixed" && Number(orgWorkPay) > 0
+  const orgItems = isOrgWorkEligible(category) && Number(orgWorkPay) > 0
     ? [{ amount: Number(orgWorkPay) }]
     : [];
 
@@ -580,7 +599,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 <option value="YES">YES</option>
               </select>
             ), "zero violations and zero no-shows")}
-            {inputRow("Org Work Pay This Month (₹)", num(orgWorkPay, setOrgWorkPay), "Flexi-Fixed only")}
+            {inputRow("Org Work Pay This Month (₹)", num(orgWorkPay, setOrgWorkPay), "Flexi & Flexi-Fixed only")}
             {inputRow("Total Penalty (₹)", num(penalties, setPenalties))}
             {/* Per-session rate applies to every category: Flexi and Flexi-Fixed
                 pay it on all sessions, Fixed on the ones beyond its threshold. */}
@@ -648,7 +667,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Milestone Incentive (₹)", rupees(pay.milestoneIncentive))}
             {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
             {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
-            {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi-Fixed only")}
+            {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi & Flexi-Fixed only")}
             {outputRow("Penalty (₹)", `− ${rupees(penaltyTotal)}`)}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
             {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
@@ -780,7 +799,7 @@ function PayReferenceTables({ vConfig, penaltyMatrix }) {
       </div>
 
       <div className="card">
-        <div className="card-header-row"><h3>Organizational Work Pay <span className="text-muted">(Flexi-Fixed only)</span></h3></div>
+        <div className="card-header-row"><h3>Organizational Work Pay <span className="text-muted">(Flexi &amp; Flexi-Fixed only)</span></h3></div>
         <div className="table-container">
           <table className="data-table reference-table">
             <thead>
@@ -911,7 +930,8 @@ function ScorecardTabs({ groups, active, onChange, weights }) {
         />
       )}
       {groups.map(group => {
-        const gw = group.weightKeys
+        const hasWeights = weights && Object.keys(weights).length > 0;
+        const gw = group.weightKeys && hasWeights
           ? group.weightKeys.reduce((sum, k) => sum + (weights[k] || 0), 0)
           : null;
         return (
@@ -1140,7 +1160,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [trackerTab, setTrackerTab] = useState("experience");
   // Which period a template is drawn for and an upload is applied to. Blank
   // means the open payroll period, so it always starts on the live month.
-  const [importMonth, setImportMonth] = useState("");
+  // Org work decides what a coach is put on and what it is worth, so it is
+  // locked until deliberately taken over — as a calculated cell is.
+  const [orgWorkUnlocked, setOrgWorkUnlocked] = useState(false);
   const [coachDetailTab, setCoachDetailTab] = useState("profile");
   // Which pay cycles the score card tables show. Blank means the full span,
   // so a coach with only a few periods needs no filtering at all.
@@ -1650,6 +1672,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Profile / Experience cards: edit in place against a draft of the coach record.
   const beginCoachCardEdit = (coach, card) => {
     setEditingCoachCard(card);
+    setOrgWorkUnlocked(false);
     const draft = { ...coach };
     // Coaches recorded before education became a list open with their existing
     // qualification/format pair as the first row, so nothing has to be re-keyed.
@@ -1673,6 +1696,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   const cancelCoachCardEdit = () => {
     setEditingCoachCard(null);
+    setOrgWorkUnlocked(false);
     setCoachDraft({});
   };
 
@@ -2460,9 +2484,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     e.preventDefault();
 
     // Verify limit rules
-    let min = 3000, max = 4000;
-    if (owWorkType === "Hiring Support") { min = 1500; max = 2500; }
-    else if (owWorkType.includes("Course Development") || owWorkType.includes("Mentoring")) { min = 3500; max = 5500; }
+    const band = orgWorkBand(owWorkType) || { min: 3000, max: 4000 };
+    const { min, max } = band;
     
     if (owAmount < min || owAmount > max) {
       showToast(`Amount outside permitted guidelines. Permitted range: ₹${min} to ₹${max}`, "warning");
@@ -2847,7 +2870,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * no blank form to line up by hand.
    */
   const handleDownloadScoreTemplate = () => {
-    const month = importMonth || currentPeriodMonth;
+    const month = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
     const records = [...historicMonths, ...currentMonth].filter(r => r.period_month === month);
     if (records.length === 0) {
       showToast(`No score cards exist for ${month}.`, "warning");
@@ -2914,7 +2937,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       // The month chosen on screen decides where the rows land. A file carrying
       // a different Period Month is still applied to the chosen one — the
       // person uploading said which month this is for — but they are told.
-      const month = importMonth || currentPeriodMonth;
+      const month = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
       const otherMonths = new Set();
       for (const cols of parsed) {
         const coachId = cols[0];
@@ -3227,6 +3250,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // the calendar rollover carries through every view.
   const openPeriod = currentMonth[0] || getPeriodForDate(new Date());
   const currentPeriodMonth = openPeriod.period_month;
+
+  // The month the template and the bulk upload act on: whatever the table is
+  // filtered to, or the open payroll period when it is showing all months.
+  // Declared here because it reads currentPeriodMonth, just above.
+  const bulkMonth = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
   const currentPeriodRange = `${new Date(openPeriod.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} - ${new Date(openPeriod.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
 
   return (
@@ -4542,6 +4570,62 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("First Certification", textField("date_of_first_relevant_certification", "date"))}
                           {editItem("Phone", textField("phone"))}
                           {editItem("Email", textField("email", "email"))}
+                          {editItem(
+                            "Org Work",
+                            !isOrgWorkEligible(coachDraft.coach_category ?? coach.coach_category) ? (
+                              <span className="detail-readonly">
+                                Not applicable
+                                <small>only Flexi and Flexi-Fixed coaches are org-work eligible</small>
+                              </span>
+                            ) :
+                            !orgWorkUnlocked ? (
+                              <button
+                                type="button"
+                                className="dynamic-lock-btn org-work-lock"
+                                title="Click to change what this coach is put on"
+                                onClick={() => {
+                                  const current = coachDraft.org_work_types || [];
+                                  const proceed = window.confirm(
+                                    `Org work decides what this coach is put on and what it is worth ` +
+                                    `(currently ₹${orgWorkRate(current).toLocaleString('en-IN')}).\n\n` +
+                                    `Do you want to change it?`
+                                  );
+                                  if (proceed) setOrgWorkUnlocked(true);
+                                }}
+                              >
+                                <span>
+                                  {(coachDraft.org_work_types || []).length
+                                    ? `${(coachDraft.org_work_types || []).length} selected · ₹${orgWorkRate(coachDraft.org_work_types).toLocaleString('en-IN')}`
+                                    : 'None selected'}
+                                </span>
+                                <i className="bx bx-lock-alt"></i>
+                              </button>
+                            ) : (
+                            <div className="org-work-picker">
+                              {ORG_WORK_TYPES.map(t => {
+                                const chosen = (coachDraft.org_work_types || []).includes(t.value);
+                                return (
+                                  <label key={t.value} className={`org-work-option${chosen ? ' is-chosen' : ''}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={chosen}
+                                      onChange={(e) => setCoachField('org_work_types',
+                                        e.target.checked
+                                          ? [...(coachDraft.org_work_types || []), t.value]
+                                          : (coachDraft.org_work_types || []).filter(x => x !== t.value))}
+                                    />
+                                    <span>{t.value}</span>
+                                    <small>₹{t.min.toLocaleString('en-IN')}–{t.max.toLocaleString('en-IN')}</small>
+                                  </label>
+                                );
+                              })}
+                              <p className="org-work-rate">
+                                Org rate: <strong>₹{orgWorkRate(coachDraft.org_work_types).toLocaleString('en-IN')}</strong>
+                                <span className="text-muted"> at the band minimum · pick as many as apply</span>
+                              </p>
+                            </div>
+                            )
+                          )}
                           {editItem("Status", selectField("status", COACH_STATUSES))}
                         </>
                       ) : (
@@ -4558,6 +4642,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {detailRow("First Certification", formatDate(coach.date_of_first_relevant_certification))}
                           {detailRow("Phone", coach.phone)}
                           {detailRow("Email", coach.email)}
+                          {detailRow(
+                            "Org Work",
+                            !isOrgWorkEligible(coach.coach_category)
+                              ? 'Not applicable — Flexi & Flexi-Fixed only'
+                              : (coach.org_work_types || []).length
+                                ? `${coach.org_work_types.join(', ')} · ₹${orgWorkRate(coach.org_work_types).toLocaleString('en-IN')}`
+                                : 'None selected'
+                          )}
                           {detailRow("Status", coach.status)}
                         </>
                       )}
@@ -5368,36 +5460,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <option value="All">All Months</option>
                       {months.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
-                    {/* Template, import and export follow the view itself —
-                        the template holds manual fields only, and the export
-                        already withholds pay columns per role. */}
-                    <select
-                      className="header-select"
-                      value={importMonth || currentPeriodMonth}
-                      onChange={(e) => setImportMonth(e.target.value)}
-                      title="The month a template covers and an import is applied to"
-                    >
-                      {[...new Set([
-                        currentPeriodMonth,
-                        ...[...historicMonths, ...currentMonth].map(r => r.period_month)
-                      ])].map(m => (
-                        <option key={m} value={m}>
-                          {m}{m === currentPeriodMonth ? ' (open)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
-                            title="A filled-in CSV of this month's cards — edit it and import it back">
-                      <i className="bx bx-download"></i> Template
-                    </button>
-                    <label className="btn btn-primary" style={{ marginBottom: 0 }}
-                           title="Apply an edited template">
-                      <i className="bx bx-upload"></i> Import CSV
-                      <input
-                        type="file" accept=".csv,text/csv" style={{ display: 'none' }}
-                        onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
-                      />
-                    </label>
                     <button className="btn btn-secondary" onClick={handleExportScoreTracker} title="Download CSV">
                       <i className="bx bx-download"></i> Export CSV
                     </button>
@@ -5441,13 +5503,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 <div className="card score-tracker-card">
                   {/* One column group at a time, as the score card does, so the
-                      table reads without running off the side. */}
-                  <ScorecardTabs
-                    groups={trackerTabs}
-                    active={trackerActive?.key}
-                    onChange={setTrackerTab}
-                    weights={{}}
-                  />
+                      table reads without running off the side. The bulk controls
+                      sit with it: they act on this table, not the page. */}
+                  <div className="tracker-tabs-row">
+                    <ScorecardTabs
+                      groups={trackerTabs}
+                      active={trackerActive?.key}
+                      onChange={setTrackerTab}
+                      weights={{}}
+                    />
+                    <div className="tracker-bulk-controls">
+                      {/* Both name the month they act on, taken from the month
+                          filter above — so there is one month control, and it
+                          is the one that filters. */}
+                      <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
+                              title={`A filled-in CSV of ${bulkMonth}'s cards — edit it and upload it back`}>
+                        <i className="bx bx-download"></i> Template · {bulkMonth}
+                      </button>
+                      <label className="btn btn-primary" style={{ marginBottom: 0 }}
+                             title={`Apply an edited template to ${bulkMonth}`}>
+                        <i className="bx bx-upload"></i> Bulk Upload · {bulkMonth}
+                        <input
+                          type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                          onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
+                        />
+                      </label>
+                    </div>
+                  </div>
                   <div className="table-container score-tracker-container">
                     <table className="data-table score-tracker-table">
                       <thead>
@@ -6228,7 +6310,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(coach.id, e.period_month)}>
                                       <i className="bx bx-file-blank"></i> Payslip
                                     </button>
-                                    {coach.coach_category === 'Flexi-Fixed' && (currentRole === 'Super Admin' || currentRole === 'HR Manager') && (
+                                    {isOrgWorkEligible(coach.coach_category) && (currentRole === 'Super Admin' || currentRole === 'HR Manager') && (
                                       <button className="btn btn-teal" onClick={() => handleOpenOrgWorkModal(coach.id)} disabled={payrollLocked}>
                                         <i className="bx bx-plus-circle"></i> Org Work
                                       </button>

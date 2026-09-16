@@ -511,9 +511,10 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const streakBonusesEarned = Math.floor(currentStreak / streakThreshold);
   const streakBonusPay = streakBonusesEarned * streakBonusAmount;
 
-  // 5. Org Work Pay (Flexi-Fixed only)
+  // 5. Org Work Pay — the flexible categories only. A Fixed coach's salary
+  //    already covers work off the floor.
   let orgWorkPay = 0;
-  if (coach.coach_category === 'Flexi-Fixed') {
+  if (coach.coach_category === 'Flexi-Fixed' || coach.coach_category === 'Flexi') {
     orgWorkPay = orgWorkItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   }
 
