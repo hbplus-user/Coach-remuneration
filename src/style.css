@@ -3041,30 +3041,63 @@ form {
   background: var(--bg-main);
   border: 1px solid var(--border-color);
 }
+.bulk-preview-card { max-width: min(1200px, 96vw); width: 96vw; }
+.bulk-preview-body { padding: 0 1.5rem; }
+.bulk-file-note { font-size: .82rem; margin: .75rem 0 .4rem; }
 .bulk-summary {
   display: flex;
   flex-wrap: wrap;
   gap: .5rem 1rem;
-  margin-bottom: .9rem;
+  margin-bottom: .75rem;
   font-size: .88rem;
   font-weight: 600;
 }
 .bulk-ok   { color: #5c7a68; }
 .bulk-warn { color: #a9674d; }
 .bulk-bad  { color: var(--brand-rust); }
-.bulk-preview-table { max-height: 320px; overflow: auto; margin-bottom: .75rem; }
-.bulk-issues {
-  margin: 0 0 .5rem;
-  padding: .6rem .9rem;
-  list-style: none;
-  font-size: .8rem;
-  line-height: 1.7;
-  border-radius: 8px;
-  background: rgba(159, 64, 34, .06);
+
+/* The sheet itself: rows are coaches, columns are fields. */
+.bulk-grid-wrap { max-height: 52vh; overflow: auto; border: 1px solid var(--border-color); border-radius: 8px; }
+.bulk-grid { font-size: .8rem; }
+.bulk-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  white-space: normal;
+  min-width: 96px;
+  font-size: .68rem;
+  background: var(--bg-surface-header);
 }
+.bulk-grid td, .bulk-grid th { padding: .35rem .5rem; }
+.bulk-sticky { position: sticky; left: 0; z-index: 1; background: var(--bg-surface); }
+.bulk-grid thead .bulk-sticky { z-index: 3; background: var(--bg-surface-header); }
+.bulk-cell {
+  width: 72px;
+  padding: .25rem .35rem;
+  text-align: right;
+  font: inherit;
+  border-radius: 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+}
+.bulk-cell:focus { outline: 2px solid var(--accent-teal); outline-offset: -1px; }
+.bulk-cell.is-changed { background: rgba(116, 116, 64, .14); border-color: rgba(116, 116, 64, .5); font-weight: 700; }
+.bulk-cell.is-error { background: rgba(159, 64, 34, .10); border-color: var(--brand-rust); color: var(--brand-rust); font-weight: 700; }
+.bulk-row-skipped td { opacity: .55; }
+.bulk-row-error td:first-child { box-shadow: inset 3px 0 0 var(--brand-rust); }
+.bulk-status { white-space: nowrap; font-size: .75rem; font-weight: 600; }
+
+.bulk-issues { margin: .6rem 0 0; font-size: .8rem; }
+.bulk-legend { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; font-size: .75rem; }
+.bulk-swatch { display: inline-block; width: 14px; height: 14px; margin-left: .6rem; border-radius: 3px; border: 1px solid; }
+.bulk-swatch.is-changed { background: rgba(116, 116, 64, .14); border-color: rgba(116, 116, 64, .5); }
+.bulk-swatch.is-error { background: rgba(159, 64, 34, .10); border-color: var(--brand-rust); }
 .bulk-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: .5rem;
-  margin-top: 1rem;
+  padding: 1rem 1.5rem 1.25rem;
 }
+.bulk-block-note { margin-right: auto; font-size: .8rem; color: var(--brand-rust); }

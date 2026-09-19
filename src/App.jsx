@@ -2945,10 +2945,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   /**
-   * Read a file into a preview. Validates every cell and sorts rows into
-   * changes, skipped (locked month, no card for that month) and rejected
-   * (not a number, negative, over the field's max, unknown coach). Writes
-   * nothing — accepting the preview does that.
+   * A cell's value as typed, checked against its field. Empty means "leave it
+   * as it is"; anything else must be a non-negative number within the max.
+   */
+  const checkBulkCell = (field, raw) => {
+    const text = raw === null || raw === undefined ? '' : String(raw).trim();
+    if (text === '') return { value: null, error: null };
+    const n = Number(text);
+    if (!Number.isFinite(n)) return { value: null, error: `"${text}" is not a number` };
+    if (n < 0) return { value: null, error: `${n} is below 0` };
+    if (field.max !== undefined && n > field.max) return { value: null, error: `${n} is above max ${field.max}` };
+    return { value: n, error: null };
+  };
+
+  /**
+   * Read a file into an editable grid: one row per coach, one column per
+   * field, as the template is laid out. A row that cannot take values (locked
+   * month, no card for the month) is shown but not editable. Writes nothing.
    */
   const buildBulkPreview = (file, { tab: tabKey, month }) => {
     if (!file) return;
@@ -2971,40 +2984,64 @@ export default function App({ session = null, profile = null, onSignOut = null }
         return;
       }
 
-      const changes = [], skipped = [], rejected = [];
+      const rows = [], unknown = [];
       for (const cols of lines.slice(1).map(parseCsvLine)) {
         const coachId = cols[0];
         if (!coachId) continue;
         const coach = coaches.find(c => c.id === coachId);
-        if (!coach) { rejected.push({ coachId, reason: 'unknown coach ID' }); continue; }
+        if (!coach) { unknown.push(coachId); continue; }
 
-        let target = coach;
+        let target = coach, skip = null;
         if (tab.scope === 'period') {
           target = [...historicMonths, ...currentMonth]
             .find(r => r.coach_id === coachId && r.period_month === month);
-          if (!target) { skipped.push({ coachId, name: coach.name, reason: `no score card for ${month}` }); continue; }
-          if (target.status === 'FINANCE_LOCKED') { skipped.push({ coachId, name: coach.name, reason: `${month} is locked` }); continue; }
+          if (!target) skip = `no score card for ${month}`;
+          else if (target.status === 'FINANCE_LOCKED') skip = `${month} is locked`;
         }
 
+        const cells = {};
         for (const f of tab.fields) {
-          const i = colIndex[f.key];
-          if (i === undefined) continue;
-          const raw = cols[i];
-          if (raw === undefined || raw === '') continue;
-          const n = Number(raw);
-          if (!Number.isFinite(n)) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: "${raw}" is not a number` }); continue; }
-          if (n < 0) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: ${n} is below 0` }); continue; }
-          if (f.max !== undefined && n > f.max) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: ${n} is above max ${f.max}` }); continue; }
-          const current = target[f.key];
-          if (current !== null && current !== undefined && current !== '' && Number(current) === n) continue;
-          changes.push({ coachId, name: coach.name, key: f.key, label: f.label, current, next: n });
+          const current = target ? target[f.key] : null;
+          const fromFile = colIndex[f.key] !== undefined ? cols[colIndex[f.key]] : undefined;
+          cells[f.key] = {
+            current: current === '' || current === undefined ? null : current,
+            raw: fromFile !== undefined && fromFile !== '' ? fromFile : (current ?? '')
+          };
         }
+        rows.push({ coachId, name: coach.name, skip, cells });
       }
 
       setBulkDialog(null);
-      setBulkPreview({ tab: tabKey, month, scope: tab.scope, fileName: file.name, changes, skipped, rejected });
+      setBulkPreview({ tab: tabKey, month, scope: tab.scope, fileName: file.name, fields: tab.fields, rows, unknown });
     };
     reader.readAsText(file);
+  };
+
+  const editBulkCell = (rowIndex, key, raw) =>
+    setBulkPreview(pv => ({
+      ...pv,
+      rows: pv.rows.map((r, i) => i !== rowIndex ? r : {
+        ...r, cells: { ...r.cells, [key]: { ...r.cells[key], raw } }
+      })
+    }));
+
+  // Everything the grid currently says: what would change, and what is wrong.
+  const summariseBulkPreview = (pv) => {
+    let changes = 0, errors = 0;
+    const patches = new Map();
+    for (const row of pv.rows) {
+      if (row.skip) continue;
+      for (const f of pv.fields) {
+        const cell = row.cells[f.key];
+        const { value, error } = checkBulkCell(f, cell.raw);
+        if (error) { errors++; continue; }
+        if (value === null) continue;
+        if (cell.current !== null && Number(cell.current) === value) continue;
+        changes++;
+        patches.set(row.coachId, { ...(patches.get(row.coachId) || {}), [f.key]: value });
+      }
+    }
+    return { changes, errors, patches };
   };
 
   const rescore = (coach, record) => {
@@ -3014,15 +3051,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
     return { ...record, hb_score: calc.hbScore, band: getPerformanceBand(calc.hbScore).label };
   };
 
-  const applyBulkPreview = () => {
+  /**
+   * Apply the grid. With errors present this refuses unless bypassed; a
+   * bypass applies every valid change and leaves the error cells out.
+   */
+  const applyBulkPreview = (bypass = false) => {
     const pv = bulkPreview;
-    if (!pv || pv.changes.length === 0) { setBulkPreview(null); return; }
-
-    // coachId -> { field: value }
-    const patches = new Map();
-    for (const ch of pv.changes) {
-      patches.set(ch.coachId, { ...(patches.get(ch.coachId) || {}), [ch.key]: ch.next });
+    if (!pv) return;
+    const { changes, errors, patches } = summariseBulkPreview(pv);
+    if (errors && !bypass) {
+      showToast(`${errors} cell${errors === 1 ? ' has' : 's have'} an error — fix ${errors === 1 ? 'it' : 'them'}, or bypass to apply the rest.`, "error");
+      return;
     }
+    if (changes === 0) { showToast("Nothing to apply — no value differs from what is recorded.", "warning"); return; }
 
     if (pv.scope === 'profile') {
       const updatedCoaches = coaches.map(c => patches.has(c.id) ? { ...c, ...patches.get(c.id) } : c);
@@ -3049,14 +3090,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setHistoricMonths(prev => patchList(prev));
     }
 
-    const coachCount = patches.size;
+    const skipped = pv.rows.filter(r => r.skip).length;
     const where = pv.scope === 'profile' ? 'coach profiles' : pv.month;
-    logAudit("Bulk Upload Applied",
-      `${pv.tab}: ${pv.changes.length} change${pv.changes.length === 1 ? '' : 's'} across ${coachCount} coach${coachCount === 1 ? '' : 'es'} → ${where}` +
-      ` from ${pv.fileName}` +
-      (pv.skipped.length ? `; ${pv.skipped.length} skipped` : '') +
-      (pv.rejected.length ? `; ${pv.rejected.length} rejected` : ''));
-    showToast(`${pv.changes.length} change${pv.changes.length === 1 ? '' : 's'} applied to ${where}.`);
+    logAudit(bypass ? "Bulk Upload Applied (errors bypassed)" : "Bulk Upload Applied",
+      `${pv.tab}: ${changes} change${changes === 1 ? '' : 's'} across ${patches.size} coach${patches.size === 1 ? '' : 'es'} → ${where} from ${pv.fileName}` +
+      (skipped ? `; ${skipped} row${skipped === 1 ? '' : 's'} skipped` : '') +
+      (errors ? `; ${errors} error cell${errors === 1 ? '' : 's'} bypassed and not applied` : '') +
+      (pv.unknown.length ? `; ${pv.unknown.length} unknown coach ID${pv.unknown.length === 1 ? '' : 's'}` : ''));
+    showToast(`${changes} change${changes === 1 ? '' : 's'} applied to ${where}` +
+      (errors ? ` — ${errors} error cell${errors === 1 ? '' : 's'} left out.` : '.'));
     setBulkPreview(null);
   };
 
@@ -7742,64 +7784,113 @@ HB+_030,185,0,96`} />
 
       {bulkPreview && (() => {
         const tabLabel = SCORE_TRACKER_GROUPS.find(g => g.key === bulkPreview.tab)?.label || bulkPreview.tab;
-        const coachCount = new Set(bulkPreview.changes.map(c => c.coachId)).size;
+        const { changes, errors, patches } = summariseBulkPreview(bulkPreview);
+        const skipped = bulkPreview.rows.filter(r => r.skip).length;
         return (
           <div className="modal-backdrop active-modal">
-            <div className="modal-card modal-large">
+            <div className="modal-card modal-large bulk-preview-card">
               <div className="modal-header">
                 <h3>Review upload — {tabLabel} · {bulkPreview.scope === 'profile' ? 'coach profiles' : bulkPreview.month}</h3>
                 <i className="bx bx-x modal-close-btn" onClick={cancelBulkPreview}></i>
               </div>
-              <div className="modal-body">
-                <p className="text-muted" style={{ fontSize: '0.82rem', marginTop: 0 }}>
-                  {bulkPreview.fileName} — nothing has been saved yet.
+              <div className="bulk-preview-body">
+                <p className="text-muted bulk-file-note">
+                  {bulkPreview.fileName} — nothing has been saved yet. Every value can be edited here.
                 </p>
                 <div className="bulk-summary">
-                  <span className="bulk-ok">✓ {bulkPreview.changes.length} change{bulkPreview.changes.length === 1 ? '' : 's'} across {coachCount} coach{coachCount === 1 ? '' : 'es'}</span>
-                  {bulkPreview.skipped.length > 0 && <span className="bulk-warn">⚠ {bulkPreview.skipped.length} skipped</span>}
-                  {bulkPreview.rejected.length > 0 && <span className="bulk-bad">✗ {bulkPreview.rejected.length} rejected</span>}
+                  <span className="bulk-ok">✓ {changes} change{changes === 1 ? '' : 's'} across {patches.size} coach{patches.size === 1 ? '' : 'es'}</span>
+                  {errors > 0 && <span className="bulk-bad">✗ {errors} error{errors === 1 ? '' : 's'}</span>}
+                  {skipped > 0 && <span className="bulk-warn">⚠ {skipped} skipped</span>}
+                  {bulkPreview.unknown.length > 0 && <span className="bulk-bad">✗ {bulkPreview.unknown.length} unknown coach ID{bulkPreview.unknown.length === 1 ? '' : 's'}</span>}
                 </div>
 
-                {bulkPreview.changes.length > 0 && (
-                  <div className="table-container bulk-preview-table">
-                    <table className="data-table">
-                      <thead>
-                        <tr><th>Coach</th><th>Field</th><th className="num-col">Current</th><th className="num-col">New</th></tr>
-                      </thead>
-                      <tbody>
-                        {bulkPreview.changes.map((c, i) => (
-                          <tr key={i}>
-                            <td><strong>{c.coachId}</strong> {c.name}</td>
-                            <td>{c.label}</td>
-                            <td className="num-col text-muted">{c.current ?? '—'}</td>
-                            <td className="num-col"><strong>{c.next}</strong></td>
+                {/* One row per coach, one column per field — the template's own
+                    layout, so it reads like the sheet it came from. */}
+                <div className="table-container bulk-grid-wrap">
+                  <table className="data-table bulk-grid">
+                    <thead>
+                      <tr>
+                        <th className="bulk-sticky">Coach ID</th>
+                        <th>Coach Name</th>
+                        {bulkPreview.fields.map(f => <th key={f.key} className="num-col">{f.label}</th>)}
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkPreview.rows.map((row, i) => {
+                        const rowErrors = row.skip ? 0 : bulkPreview.fields
+                          .filter(f => checkBulkCell(f, row.cells[f.key].raw).error).length;
+                        return (
+                          <tr key={row.coachId} className={row.skip ? 'bulk-row-skipped' : (rowErrors ? 'bulk-row-error' : '')}>
+                            <td className="bulk-sticky"><strong>{row.coachId}</strong></td>
+                            <td>{row.name}</td>
+                            {bulkPreview.fields.map(f => {
+                              const cell = row.cells[f.key];
+                              const { value, error } = checkBulkCell(f, cell.raw);
+                              const changed = !error && value !== null && !(cell.current !== null && Number(cell.current) === value);
+                              return (
+                                <td key={f.key} className="num-col">
+                                  {row.skip ? (
+                                    <span className="text-muted">{cell.raw === '' ? '—' : cell.raw}</span>
+                                  ) : (
+                                    <input
+                                      className={`bulk-cell${error ? ' is-error' : ''}${changed ? ' is-changed' : ''}`}
+                                      value={cell.raw}
+                                      onChange={(e) => editBulkCell(i, f.key, e.target.value)}
+                                      title={error
+                                        ? error
+                                        : changed ? `Was ${cell.current ?? '—'}` : 'Unchanged'}
+                                    />
+                                  )}
+                                </td>
+                              );
+                            })}
+                            <td className="bulk-status">
+                              {row.skip
+                                ? <span className="bulk-warn">⚠ {row.skip}</span>
+                                : rowErrors
+                                  ? <span className="bulk-bad">✗ {rowErrors} to fix</span>
+                                  : <span className="bulk-ok">✓ ready</span>}
+                            </td>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {[...bulkPreview.skipped.map(r => ({ ...r, kind: 'warn' })), ...bulkPreview.rejected.map(r => ({ ...r, kind: 'bad' }))].length > 0 && (
-                  <ul className="bulk-issues">
-                    {bulkPreview.skipped.map((r, i) => (
-                      <li key={`s${i}`} className="bulk-warn">⚠ {r.coachId}{r.name ? ` ${r.name}` : ''} — {r.reason}</li>
-                    ))}
-                    {bulkPreview.rejected.map((r, i) => (
-                      <li key={`r${i}`} className="bulk-bad">✗ {r.coachId}{r.name ? ` ${r.name}` : ''} — {r.reason}</li>
-                    ))}
-                  </ul>
-                )}
-                <p className="text-muted" style={{ fontSize: '0.78rem' }}>
-                  Skipped and rejected rows are left out; everything else is applied. Fix a rejected row in the file and upload again to include it.
-                </p>
-
-                <div className="bulk-actions">
-                  <button className="btn btn-secondary" onClick={cancelBulkPreview}>Cancel</button>
-                  <button className="btn btn-primary" disabled={bulkPreview.changes.length === 0} onClick={applyBulkPreview}>
-                    <i className="bx bx-check"></i> Accept &amp; Apply
-                  </button>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
+
+                {bulkPreview.unknown.length > 0 && (
+                  <p className="bulk-issues bulk-bad">
+                    ✗ Not in the system, left out: {bulkPreview.unknown.join(', ')}
+                  </p>
+                )}
+
+                <p className="bulk-legend">
+                  <span className="bulk-swatch is-changed"></span> changed
+                  <span className="bulk-swatch is-error"></span> needs fixing — hover it for why
+                  <span className="text-muted"> · greyed rows cannot be changed for this month</span>
+                </p>
+              </div>
+
+              <div className="bulk-actions">
+                {errors > 0 && (
+                  <span className="bulk-block-note">
+                    Fix the {errors} highlighted cell{errors === 1 ? '' : 's'} to upload, or bypass to apply everything else.
+                  </span>
+                )}
+                <button className="btn btn-secondary" onClick={cancelBulkPreview}>Cancel</button>
+                {errors > 0 && (
+                  <button className="btn btn-danger" disabled={changes === 0}
+                          title="Apply every valid change and leave the error cells out"
+                          onClick={() => applyBulkPreview(true)}>
+                    Bypass &amp; Apply {changes}
+                  </button>
+                )}
+                <button className="btn btn-primary" disabled={errors > 0 || changes === 0}
+                        title={errors ? 'Fix the errors first, or use Bypass' : undefined}
+                        onClick={() => applyBulkPreview(false)}>
+                  <i className="bx bx-check"></i> Accept &amp; Apply
+                </button>
               </div>
             </div>
           </div>
