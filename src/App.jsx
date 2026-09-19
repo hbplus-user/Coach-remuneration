@@ -3063,7 +3063,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       showToast(`${errors} cell${errors === 1 ? ' has' : 's have'} an error — fix ${errors === 1 ? 'it' : 'them'}, or bypass to apply the rest.`, "error");
       return;
     }
-    if (changes === 0) { showToast("Nothing to apply — no value differs from what is recorded.", "warning"); return; }
+    if (changes === 0) {
+      // Nothing differs from what is recorded, so there is nothing to write —
+      // but the upload is valid and is accepted as such.
+      logAudit("Bulk Upload Applied",
+        `${pv.tab}: ${pv.fileName} matched what is recorded — no changes needed`);
+      showToast("Saved — every value already matches what is recorded.");
+      setBulkPreview(null);
+      return;
+    }
 
     if (pv.scope === 'profile') {
       const updatedCoaches = coaches.map(c => patches.has(c.id) ? { ...c, ...patches.get(c.id) } : c);
@@ -7886,7 +7894,7 @@ HB+_030,185,0,96`} />
                     Bypass &amp; Apply {changes}
                   </button>
                 )}
-                <button className="btn btn-primary" disabled={errors > 0 || changes === 0}
+                <button className="btn btn-primary" disabled={errors > 0}
                         title={errors ? 'Fix the errors first, or use Bypass' : undefined}
                         onClick={() => applyBulkPreview(false)}>
                   <i className="bx bx-check"></i> Accept &amp; Apply
