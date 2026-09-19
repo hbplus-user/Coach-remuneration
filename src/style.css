@@ -3032,3 +3032,39 @@ form {
     grid-column: 1 / -1;
   }
 }
+
+/* Bulk upload: the month/file dialog and the review before anything lands. */
+.bulk-scope-note {
+  padding: .6rem .8rem;
+  border-radius: 8px;
+  font-size: .82rem;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+}
+.bulk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+  margin-bottom: .9rem;
+  font-size: .88rem;
+  font-weight: 600;
+}
+.bulk-ok   { color: #5c7a68; }
+.bulk-warn { color: #a9674d; }
+.bulk-bad  { color: var(--brand-rust); }
+.bulk-preview-table { max-height: 320px; overflow: auto; margin-bottom: .75rem; }
+.bulk-issues {
+  margin: 0 0 .5rem;
+  padding: .6rem .9rem;
+  list-style: none;
+  font-size: .8rem;
+  line-height: 1.7;
+  border-radius: 8px;
+  background: rgba(159, 64, 34, .06);
+}
+.bulk-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: .5rem;
+  margin-top: 1rem;
+}

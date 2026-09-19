@@ -1158,6 +1158,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [scorecardTab, setScorecardTab] = useState("core");
   const [penaltyVariant, setPenaltyVariant] = useState("V1");
   const [trackerTab, setTrackerTab] = useState("experience");
+  // Bulk upload: the month/file dialog, then the preview that must be accepted.
+  const [bulkDialog, setBulkDialog] = useState(null);   // { mode, tab, month }
+  const [bulkPreview, setBulkPreview] = useState(null); // { tab, month, scope, fileName, changes, skipped, rejected }
   // Which period a template is drawn for and an upload is applied to. Blank
   // means the open payroll period, so it always starts on the live month.
   // Org work decides what a coach is put on and what it is worth, so it is
@@ -2846,67 +2849,110 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setScorePage(1);
   };
 
-  // The manual columns, in the order the template writes them. Everything else
-  // on a score card is calculated, so it is not the importer's business.
-  const IMPORT_COLUMNS = [
-    { key: 'prof_appearance',    label: 'Professional Appearance (max 20)' },
-    { key: 'client_engagement',  label: 'Client Rating (max 20)' },
-    { key: 'safety',             label: 'Safety & Cleanliness (max 15)' },
-    { key: 'punctuality',        label: 'Punctuality & Documentation (max 10)' },
-    { key: 'team_conduct',       label: 'Team Conduct (max 15)' },
-    { key: 'communication',      label: 'Communication & Responsiveness (max 20)' },
-    { key: 'meetings_scheduled', label: 'Meetings Scheduled' },
-    { key: 'meetings_attended',  label: 'Meetings Attended' },
-    { key: 'sessions_completed', label: 'Sessions Completed' },
-    { key: 'night_sessions',     label: 'Night Sessions' },
-    { key: 'five_star_streak',   label: '5-Star Streak' }
-  ];
+  // ---------------------------------------------------------------------
+  // Bulk upload. Tab-aware: each Score Tracker tab owns a set of manual
+  // fields, and a template or upload covers exactly that set. Two scopes:
+  //   period  — keyed in per month on the score card
+  //   profile — one-time values on the coach record, which re-score every
+  //             unlocked month, so they take no month
+  // Nothing is written until the preview is accepted.
+  // ---------------------------------------------------------------------
+  const BULK_TABS = {
+    experience: { scope: 'profile', fields: [
+      { key: 'freelance_past_exp_with_document',    label: 'Past Experience With Document (yrs)' },
+      { key: 'freelance_past_exp_without_document', label: 'Past Experience Without Document (yrs)' },
+      { key: 'non_coaching_exp_years',              label: 'Non-Coaching Experience (yrs)', max: 10 }
+    ]},
+    technical: { scope: 'profile', fields: [
+      { key: 'education_score_override', label: 'Non-Tech Educational Score (max 10)', max: 10 }
+    ]},
+    performance: { scope: 'period', fields: [
+      { key: 'prof_appearance',    label: 'Professional Appearance (max 20)', max: 20 },
+      { key: 'client_engagement',  label: 'Client Rating (max 20)', max: 20 },
+      { key: 'safety',             label: 'Safety & Cleanliness (max 15)', max: 15 },
+      { key: 'punctuality',        label: 'Punctuality & Documentation (max 10)', max: 10 },
+      { key: 'team_conduct',       label: 'Team Conduct (max 15)', max: 15 },
+      { key: 'communication',      label: 'Communication & Responsiveness (max 20)', max: 20 },
+      { key: 'meetings_scheduled', label: 'Meetings Scheduled' },
+      { key: 'meetings_attended',  label: 'Meetings Attended' }
+    ]},
+    sessions: { scope: 'period', fields: [
+      { key: 'sessions_completed', label: 'Sessions Completed' },
+      { key: 'night_sessions',     label: 'Night Sessions' }
+    ]},
+    incentives: { scope: 'period', fields: [
+      { key: 'five_star_streak', label: '5-Star Streak' }
+    ]}
+  };
 
   const csvCell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 
-  /**
-   * A filled-in template: every coach's row for a period, carrying whatever is
-   * already recorded. Editing and re-importing it is the round trip — there is
-   * no blank form to line up by hand.
-   */
-  const handleDownloadScoreTemplate = () => {
-    const month = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
-    const records = [...historicMonths, ...currentMonth].filter(r => r.period_month === month);
-    if (records.length === 0) {
+  // Quoted cells may contain commas, so split on commas outside quotes.
+  const parseCsvLine = (line) => (line.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
+    .slice(0, -1)
+    .map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+
+  const bulkPeriods = () => [...new Set([
+    currentPeriodMonth,
+    ...[...historicMonths, ...currentMonth].map(r => r.period_month)
+  ])];
+
+  const openBulkDialog = (mode, tabKey) => {
+    const tab = BULK_TABS[tabKey];
+    if (!tab) {
+      showToast("This tab has no manual fields to enter — its values are calculated.", "warning");
+      return;
+    }
+    setBulkDialog({ mode, tab: tabKey, month: currentPeriodMonth });
+  };
+
+  // A template pre-filled with what is already recorded, so people edit
+  // numbers rather than type from blank.
+  const downloadBulkTemplate = ({ tab: tabKey, month }) => {
+    const tab = BULK_TABS[tabKey];
+    const rows = [...coaches]
+      .filter(c => c.status !== 'Exited')
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(coach => {
+        if (tab.scope === 'profile') {
+          return [coach.id, coach.name, ...tab.fields.map(f => coach[f.key] ?? '')];
+        }
+        const rec = [...historicMonths, ...currentMonth]
+          .find(r => r.coach_id === coach.id && r.period_month === month);
+        if (!rec) return null;
+        return [coach.id, coach.name, ...tab.fields.map(f => rec[f.key] ?? '')];
+      })
+      .filter(Boolean);
+
+    if (rows.length === 0) {
       showToast(`No score cards exist for ${month}.`, "warning");
       return;
     }
-
-    const header = ['Coach ID', 'Coach Name', 'Period Month', ...IMPORT_COLUMNS.map(c => c.label)];
-    const rows = records
-      .map(r => {
-        const coach = coaches.find(c => c.id === r.coach_id);
-        if (!coach) return null;
-        return [coach.id, coach.name, r.period_month,
-          ...IMPORT_COLUMNS.map(c => r[c.key] ?? '')];
-      })
-      .filter(Boolean)
-      .sort((a, b) => a[0].localeCompare(b[0]));
-
+    const header = ['Coach ID', 'Coach Name', ...tab.fields.map(f => f.label)];
     const csv = [header, ...rows].map(line => line.map(csvCell).join(',')).join('\n');
+    const label = tabKey.charAt(0).toUpperCase() + tabKey.slice(1);
+    const suffix = tab.scope === 'profile' ? 'Profile' : month.replace(' ', '_');
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(`data:text/csv;charset=utf-8,${csv}`));
-    link.setAttribute('download', `HB_Score_Import_Template_${month.replace(' ', '_')}.csv`);
+    link.setAttribute('download', `HB_${label}_Template_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
 
-    logAudit("Score Template Downloaded", `Downloaded the ${month} score import template (${rows.length} coaches)`);
-    showToast(`${month} template downloaded — ${rows.length} coaches.`);
+    logAudit("Bulk Template Downloaded",
+      `Downloaded the ${label} template${tab.scope === 'profile' ? '' : ` for ${month}`} (${rows.length} coaches)`);
+    setBulkDialog(null);
   };
 
   /**
-   * Apply an edited template. Rows are matched on coach id and period month, so
-   * a file can carry more than one month. A locked card is left alone: the lock
-   * means it is settled, and an import is not an exception to that.
+   * Read a file into a preview. Validates every cell and sorts rows into
+   * changes, skipped (locked month, no card for that month) and rejected
+   * (not a number, negative, over the field's max, unknown coach). Writes
+   * nothing — accepting the preview does that.
    */
-  const handleImportScoreCSV = (file) => {
+  const buildBulkPreview = (file, { tab: tabKey, month }) => {
     if (!file) return;
+    const tab = BULK_TABS[tabKey];
     const reader = new FileReader();
     reader.onload = () => {
       const lines = String(reader.result).split(/\r?\n/).filter(l => l.trim());
@@ -2914,89 +2960,111 @@ export default function App({ session = null, profile = null, onSignOut = null }
         showToast("That file has no rows under its header.", "error");
         return;
       }
-
-      // Quoted cells may contain commas, so split on commas outside quotes.
-      const parse = (line) => (line.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
-        .slice(0, -1)
-        .map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
-
-      const header = parse(lines[0]);
+      const header = parseCsvLine(lines[0]).map(h => h.toLowerCase());
       const colIndex = {};
-      IMPORT_COLUMNS.forEach(c => {
-        const i = header.findIndex(h => h.toLowerCase() === c.label.toLowerCase());
-        if (i >= 0) colIndex[c.key] = i;
+      tab.fields.forEach(f => {
+        const i = header.indexOf(f.label.toLowerCase());
+        if (i >= 0) colIndex[f.key] = i;
       });
       if (Object.keys(colIndex).length === 0) {
-        showToast("No recognisable columns — download the template and edit that.", "error");
+        showToast("None of this tab's columns are in that file — download this tab's template and edit that.", "error");
         return;
       }
 
-      const parsed = lines.slice(1).map(parse).filter(cols => cols[0]);
-      const updates = new Map();   // "coachId|month" -> { field: value }
-      const unknown = [];
-      // The month chosen on screen decides where the rows land. A file carrying
-      // a different Period Month is still applied to the chosen one — the
-      // person uploading said which month this is for — but they are told.
-      const month = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
-      const otherMonths = new Set();
-      for (const cols of parsed) {
+      const changes = [], skipped = [], rejected = [];
+      for (const cols of lines.slice(1).map(parseCsvLine)) {
         const coachId = cols[0];
-        if (cols[2] && cols[2] !== month) otherMonths.add(cols[2]);
-        if (!coaches.some(c => c.id === coachId)) { unknown.push(coachId); continue; }
-        const patch = {};
-        for (const [key, i] of Object.entries(colIndex)) {
+        if (!coachId) continue;
+        const coach = coaches.find(c => c.id === coachId);
+        if (!coach) { rejected.push({ coachId, reason: 'unknown coach ID' }); continue; }
+
+        let target = coach;
+        if (tab.scope === 'period') {
+          target = [...historicMonths, ...currentMonth]
+            .find(r => r.coach_id === coachId && r.period_month === month);
+          if (!target) { skipped.push({ coachId, name: coach.name, reason: `no score card for ${month}` }); continue; }
+          if (target.status === 'FINANCE_LOCKED') { skipped.push({ coachId, name: coach.name, reason: `${month} is locked` }); continue; }
+        }
+
+        for (const f of tab.fields) {
+          const i = colIndex[f.key];
+          if (i === undefined) continue;
           const raw = cols[i];
           if (raw === undefined || raw === '') continue;
           const n = Number(raw);
-          if (Number.isFinite(n)) patch[key] = n;
+          if (!Number.isFinite(n)) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: "${raw}" is not a number` }); continue; }
+          if (n < 0) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: ${n} is below 0` }); continue; }
+          if (f.max !== undefined && n > f.max) { rejected.push({ coachId, name: coach.name, reason: `${f.label}: ${n} is above max ${f.max}` }); continue; }
+          const current = target[f.key];
+          if (current !== null && current !== undefined && current !== '' && Number(current) === n) continue;
+          changes.push({ coachId, name: coach.name, key: f.key, label: f.label, current, next: n });
         }
-        if (Object.keys(patch).length) updates.set(`${coachId}|${month}`, patch);
       }
 
-      let applied = 0, locked = 0;
-      const patchList = (list) => list.map(r => {
-        const patch = updates.get(`${r.coach_id}|${r.period_month}`);
-        if (!patch) return r;
-        if (r.status === 'FINANCE_LOCKED') { locked++; return r; }
-
-        const updated = { ...r, ...patch };
-        // Attendance follows the meetings, and the score follows everything.
-        const scheduled = Number(updated.meetings_scheduled) || 0;
-        if (scheduled > 0) {
-          updated.attendance_pct = Math.round(
-            ((Number(updated.meetings_attended) || 0) / scheduled) * 10000) / 100;
-        }
-        const coach = coaches.find(c => c.id === r.coach_id);
-        const vCfg = variants.find(v => v.id === coach?.variant_id);
-        if (coach && vCfg) {
-          const calc = computeHBPlusScore(coach, updated, vCfg);
-          updated.hb_score = calc.hbScore;
-          updated.band = getPerformanceBand(calc.hbScore).label;
-        }
-        applied++;
-        return updated;
-      });
-
-      setCurrentMonth(prev => patchList(prev));
-      setHistoricMonths(prev => patchList(prev));
-
-      const notes = [];
-      if (locked) notes.push(`${locked} locked and left alone`);
-      if (unknown.length) notes.push(`${unknown.length} unknown coach id${unknown.length > 1 ? 's' : ''}`);
-      if (otherMonths.size) {
-        notes.push(`the file named ${[...otherMonths].join(', ')} — applied to ${month}`);
-      }
-      logAudit("Score Cards Imported",
-        `Imported ${applied} score card${applied === 1 ? '' : 's'} into ${month} from CSV` +
-        (notes.length ? ` — ${notes.join(', ')}` : ''));
-      showToast(
-        applied
-          ? `${applied} score card${applied === 1 ? '' : 's'} updated${notes.length ? ` · ${notes.join(' · ')}` : ''}.`
-          : `Nothing applied${notes.length ? ` — ${notes.join(', ')}` : '.'}`,
-        applied ? "success" : "warning"
-      );
+      setBulkDialog(null);
+      setBulkPreview({ tab: tabKey, month, scope: tab.scope, fileName: file.name, changes, skipped, rejected });
     };
     reader.readAsText(file);
+  };
+
+  const rescore = (coach, record) => {
+    const vCfg = variants.find(v => v.id === coach?.variant_id);
+    if (!coach || !vCfg) return record;
+    const calc = computeHBPlusScore(coach, record, vCfg);
+    return { ...record, hb_score: calc.hbScore, band: getPerformanceBand(calc.hbScore).label };
+  };
+
+  const applyBulkPreview = () => {
+    const pv = bulkPreview;
+    if (!pv || pv.changes.length === 0) { setBulkPreview(null); return; }
+
+    // coachId -> { field: value }
+    const patches = new Map();
+    for (const ch of pv.changes) {
+      patches.set(ch.coachId, { ...(patches.get(ch.coachId) || {}), [ch.key]: ch.next });
+    }
+
+    if (pv.scope === 'profile') {
+      const updatedCoaches = coaches.map(c => patches.has(c.id) ? { ...c, ...patches.get(c.id) } : c);
+      setCoaches(updatedCoaches);
+      // Profile values feed every month's score. Re-score the unlocked ones;
+      // a locked month is settled and keeps the score it was locked with.
+      const reScoreList = (list) => list.map(r => {
+        if (!patches.has(r.coach_id) || r.status === 'FINANCE_LOCKED') return r;
+        return rescore(updatedCoaches.find(c => c.id === r.coach_id), r);
+      });
+      setCurrentMonth(prev => reScoreList(prev));
+      setHistoricMonths(prev => reScoreList(prev));
+    } else {
+      const patchList = (list) => list.map(r => {
+        if (r.period_month !== pv.month || !patches.has(r.coach_id) || r.status === 'FINANCE_LOCKED') return r;
+        const updated = { ...r, ...patches.get(r.coach_id) };
+        const scheduled = Number(updated.meetings_scheduled) || 0;
+        if (scheduled > 0) {
+          updated.attendance_pct = Math.round(((Number(updated.meetings_attended) || 0) / scheduled) * 10000) / 100;
+        }
+        return rescore(coaches.find(c => c.id === r.coach_id), updated);
+      });
+      setCurrentMonth(prev => patchList(prev));
+      setHistoricMonths(prev => patchList(prev));
+    }
+
+    const coachCount = patches.size;
+    const where = pv.scope === 'profile' ? 'coach profiles' : pv.month;
+    logAudit("Bulk Upload Applied",
+      `${pv.tab}: ${pv.changes.length} change${pv.changes.length === 1 ? '' : 's'} across ${coachCount} coach${coachCount === 1 ? '' : 'es'} → ${where}` +
+      ` from ${pv.fileName}` +
+      (pv.skipped.length ? `; ${pv.skipped.length} skipped` : '') +
+      (pv.rejected.length ? `; ${pv.rejected.length} rejected` : ''));
+    showToast(`${pv.changes.length} change${pv.changes.length === 1 ? '' : 's'} applied to ${where}.`);
+    setBulkPreview(null);
+  };
+
+  const cancelBulkPreview = () => {
+    if (bulkPreview) {
+      logAudit("Bulk Upload Discarded", `Discarded ${bulkPreview.fileName} for ${bulkPreview.tab} without applying it`);
+    }
+    setBulkPreview(null);
   };
 
   const handleExportScoreTracker = () => {
@@ -3250,11 +3318,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // the calendar rollover carries through every view.
   const openPeriod = currentMonth[0] || getPeriodForDate(new Date());
   const currentPeriodMonth = openPeriod.period_month;
-
-  // The month the template and the bulk upload act on: whatever the table is
-  // filtered to, or the open payroll period when it is showing all months.
-  // Declared here because it reads currentPeriodMonth, just above.
-  const bulkMonth = scoreMonthFilter === 'All' ? currentPeriodMonth : scoreMonthFilter;
   const currentPeriodRange = `${new Date(openPeriod.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} - ${new Date(openPeriod.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
 
   return (
@@ -5513,21 +5576,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       weights={{}}
                     />
                     <div className="tracker-bulk-controls">
-                      {/* Both name the month they act on, taken from the month
-                          filter above — so there is one month control, and it
-                          is the one that filters. */}
-                      <button className="btn btn-secondary" onClick={handleDownloadScoreTemplate}
-                              title={`A filled-in CSV of ${bulkMonth}'s cards — edit it and upload it back`}>
-                        <i className="bx bx-download"></i> Template · {bulkMonth}
-                      </button>
-                      <label className="btn btn-primary" style={{ marginBottom: 0 }}
-                             title={`Apply an edited template to ${bulkMonth}`}>
-                        <i className="bx bx-upload"></i> Bulk Upload · {bulkMonth}
-                        <input
-                          type="file" accept=".csv,text/csv" style={{ display: 'none' }}
-                          onChange={(ev) => { handleImportScoreCSV(ev.target.files[0]); ev.target.value = ''; }}
-                        />
-                      </label>
+                      {/* Both act on the tab you are on: its manual fields only.
+                          The month is chosen in the dialog each opens. */}
+                      {(() => {
+                        const hasFields = Boolean(BULK_TABS[trackerActive?.key]);
+                        const why = hasFields ? '' : `${trackerActive?.label} is calculated — nothing to enter`;
+                        return (
+                          <>
+                            <button className="btn btn-secondary" disabled={!hasFields}
+                                    title={why || `Download the ${trackerActive?.label} template`}
+                                    onClick={() => openBulkDialog('template', trackerActive?.key)}>
+                              <i className="bx bx-download"></i> Template · {trackerActive?.label}
+                            </button>
+                            <button className="btn btn-primary" disabled={!hasFields}
+                                    title={why || `Upload ${trackerActive?.label} values`}
+                                    onClick={() => openBulkDialog('upload', trackerActive?.key)}>
+                              <i className="bx bx-upload"></i> Bulk Upload
+                            </button>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="table-container score-tracker-container">
@@ -7624,6 +7692,120 @@ HB+_030,185,0,96`} />
       })()}
 
       {/* Modal: Payslip print layout preview */}
+      {/* Bulk: choose the month (and the file), then review before anything lands. */}
+      {bulkDialog && (() => {
+        const tab = BULK_TABS[bulkDialog.tab];
+        const tabLabel = SCORE_TRACKER_GROUPS.find(g => g.key === bulkDialog.tab)?.label || bulkDialog.tab;
+        const isProfile = tab?.scope === 'profile';
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card">
+              <div className="modal-header">
+                <h3>{bulkDialog.mode === 'template' ? 'Download Template' : 'Bulk Upload'} — {tabLabel}</h3>
+                <i className="bx bx-x modal-close-btn" onClick={() => setBulkDialog(null)}></i>
+              </div>
+              <div className="modal-body">
+                <p className="text-muted" style={{ fontSize: '0.85rem', marginTop: 0 }}>
+                  Manual fields only: {tab.fields.map(f => f.label).join(', ')}.
+                </p>
+                {isProfile ? (
+                  <p className="bulk-scope-note">
+                    These are one-time values on the coach profile, so they take no month.
+                    Applying them re-scores every month that is not locked.
+                  </p>
+                ) : (
+                  <div className="form-group">
+                    <label>Which month is this for?</label>
+                    <select value={bulkDialog.month} onChange={(e) => setBulkDialog(d => ({ ...d, month: e.target.value }))}>
+                      {bulkPeriods().map(m => (
+                        <option key={m} value={m}>{m}{m === currentPeriodMonth ? ' (current payroll)' : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {bulkDialog.mode === 'template' ? (
+                  <button className="btn btn-primary" onClick={() => downloadBulkTemplate(bulkDialog)}>
+                    <i className="bx bx-download"></i> Download {isProfile ? '' : `${bulkDialog.month} `}template
+                  </button>
+                ) : (
+                  <label className="btn btn-primary" style={{ marginBottom: 0 }}>
+                    <i className="bx bx-upload"></i> Choose file to preview
+                    <input type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                           onChange={(ev) => { buildBulkPreview(ev.target.files[0], bulkDialog); ev.target.value = ''; }} />
+                  </label>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {bulkPreview && (() => {
+        const tabLabel = SCORE_TRACKER_GROUPS.find(g => g.key === bulkPreview.tab)?.label || bulkPreview.tab;
+        const coachCount = new Set(bulkPreview.changes.map(c => c.coachId)).size;
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card modal-large">
+              <div className="modal-header">
+                <h3>Review upload — {tabLabel} · {bulkPreview.scope === 'profile' ? 'coach profiles' : bulkPreview.month}</h3>
+                <i className="bx bx-x modal-close-btn" onClick={cancelBulkPreview}></i>
+              </div>
+              <div className="modal-body">
+                <p className="text-muted" style={{ fontSize: '0.82rem', marginTop: 0 }}>
+                  {bulkPreview.fileName} — nothing has been saved yet.
+                </p>
+                <div className="bulk-summary">
+                  <span className="bulk-ok">✓ {bulkPreview.changes.length} change{bulkPreview.changes.length === 1 ? '' : 's'} across {coachCount} coach{coachCount === 1 ? '' : 'es'}</span>
+                  {bulkPreview.skipped.length > 0 && <span className="bulk-warn">⚠ {bulkPreview.skipped.length} skipped</span>}
+                  {bulkPreview.rejected.length > 0 && <span className="bulk-bad">✗ {bulkPreview.rejected.length} rejected</span>}
+                </div>
+
+                {bulkPreview.changes.length > 0 && (
+                  <div className="table-container bulk-preview-table">
+                    <table className="data-table">
+                      <thead>
+                        <tr><th>Coach</th><th>Field</th><th className="num-col">Current</th><th className="num-col">New</th></tr>
+                      </thead>
+                      <tbody>
+                        {bulkPreview.changes.map((c, i) => (
+                          <tr key={i}>
+                            <td><strong>{c.coachId}</strong> {c.name}</td>
+                            <td>{c.label}</td>
+                            <td className="num-col text-muted">{c.current ?? '—'}</td>
+                            <td className="num-col"><strong>{c.next}</strong></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {[...bulkPreview.skipped.map(r => ({ ...r, kind: 'warn' })), ...bulkPreview.rejected.map(r => ({ ...r, kind: 'bad' }))].length > 0 && (
+                  <ul className="bulk-issues">
+                    {bulkPreview.skipped.map((r, i) => (
+                      <li key={`s${i}`} className="bulk-warn">⚠ {r.coachId}{r.name ? ` ${r.name}` : ''} — {r.reason}</li>
+                    ))}
+                    {bulkPreview.rejected.map((r, i) => (
+                      <li key={`r${i}`} className="bulk-bad">✗ {r.coachId}{r.name ? ` ${r.name}` : ''} — {r.reason}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="text-muted" style={{ fontSize: '0.78rem' }}>
+                  Skipped and rejected rows are left out; everything else is applied. Fix a rejected row in the file and upload again to include it.
+                </p>
+
+                <div className="bulk-actions">
+                  <button className="btn btn-secondary" onClick={cancelBulkPreview}>Cancel</button>
+                  <button className="btn btn-primary" disabled={bulkPreview.changes.length === 0} onClick={applyBulkPreview}>
+                    <i className="bx bx-check"></i> Accept &amp; Apply
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {activeModal === 'payslip-preview' && (() => {
         const coach = coaches.find(c => c.id === selectedCoachId);
         if (!coach) return null;
