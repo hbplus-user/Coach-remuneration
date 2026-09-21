@@ -192,12 +192,14 @@ const SCORE_TRACKER_GROUPS = [
     ]
   },
   {
-    key: "sessions", label: "Session Counts", tone: "indigo",
+    key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", decimals: 0, sortable: true },
       { key: "night_sessions", label: "Night Sessions", decimals: 0 },
+      { key: "streak", label: "5-Star Streak", decimals: 0 },
       { key: "threshold", label: "Threshold", decimals: 0 },
-      { key: "extra_sessions", label: "Extra Sessions", decimals: 0, emphasis: true }
+      { key: "extra_sessions", label: "Extra Sessions", decimals: 0, emphasis: true },
+      { key: "violations", label: "Violations in Period", decimals: 0 }
     ]
   },
   {
@@ -208,11 +210,10 @@ const SCORE_TRACKER_GROUPS = [
     ]
   },
   {
-    key: "incentives", label: "Incentives & Bonuses", tone: "green",
+    key: "bonuses", label: "Bonuses", tone: "indigo",
     columns: [
       { key: "milestone", label: "Milestone Incentive", money: true },
-      { key: "consistency", label: "Consistency Bonus", money: true },
-      { key: "streak", label: "5-Star Streak Count", decimals: 0 }
+      { key: "consistency", label: "Consistency Bonus", money: true }
     ]
   }
 ];
@@ -2820,6 +2821,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
           night_sessions: record.night_sessions,
           threshold,
           extra_sessions: pay.extraSessions,
+          violations: inPeriod.length,
           late_count: inPeriod.filter(v => v.type && v.type.includes('Late Arrival')).length,
           noshow_count: inPeriod.filter(v => v.type && v.type.includes('No-Show')).length,
           milestone: pay.milestoneIncentive,
@@ -2887,12 +2889,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
       { key: 'meetings_scheduled', label: 'Meetings Scheduled' },
       { key: 'meetings_attended',  label: 'Meetings Attended' }
     ]},
-    sessions: { scope: 'period', fields: [
+    incentive: { scope: 'period', fields: [
       { key: 'sessions_completed', label: 'Sessions Completed' },
-      { key: 'night_sessions',     label: 'Night Sessions' }
-    ]},
-    incentives: { scope: 'period', fields: [
-      { key: 'five_star_streak', label: '5-Star Streak' }
+      { key: 'night_sessions',     label: 'Night Sessions' },
+      { key: 'five_star_streak',   label: '5-Star Streak' }
     ]}
   };
 
@@ -2903,10 +2903,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
     .slice(0, -1)
     .map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
 
-  const bulkPeriods = () => [...new Set([
-    currentPeriodMonth,
-    ...[...historicMonths, ...currentMonth].map(r => r.period_month)
-  ])];
+  // Showrunner uploads into the cycle they are running, so the month list
+  // offers only that one; other roles may correct a closed month.
+  const bulkPeriods = () => (currentRole === 'Showrunner'
+    ? [currentPeriodMonth]
+    : [...new Set([
+        currentPeriodMonth,
+        ...[...historicMonths, ...currentMonth].map(r => r.period_month)
+      ])]);
 
   const openBulkDialog = (mode, tabKey) => {
     const tab = BULK_TABS[tabKey];
@@ -4162,6 +4166,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const canLock = LOCK_ROLES.includes(currentRole);
             const canManage = PROFILE_PAY_ROLES.includes(currentRole);
             const canEditScores = SCORE_EDIT_ROLES.includes(currentRole);
+            // Showrunner keys the month as it runs, so their edits are confined
+            // to the pay cycle that is still open. Closed months are history to
+            // them; HR, Finance and Reporting can still correct those.
+            const currentCycleOnly = currentRole === 'Showrunner';
 
             // One row per evaluated period. Takes the coach/record pair so an
             // in-progress edit can be re-scored live from the draft values.
@@ -4375,7 +4383,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       // A locked card is read-only for every role, Super Admin
                       // included. The way back in is the padlock on Record
                       // Status, which leaves an audit entry behind it.
-                      const mayEdit = canEditScores && !isLocked;
+                      const mayEdit = canEditScores && !isLocked
+                        && (!currentCycleOnly || run.period_month === currentPeriodMonth);
 
                       return (
                         <tr
