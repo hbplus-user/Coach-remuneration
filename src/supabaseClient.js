@@ -353,6 +353,30 @@ export async function loadState() {
   };
 }
 
+/**
+ * Just the lock state, cheap enough to poll. A lock set by one person has to
+ * reach everyone else's open tab without a reload, but re-reading the whole
+ * state would fight with whatever they are editing, so this reads only the
+ * columns that say what is locked.
+ */
+export async function loadLockState() {
+  if (!supabase) return null;
+
+  const [periods, cycles] = await Promise.all([
+    supabase.from('performance_records').select('coach_id, period_month, status'),
+    supabase.from('payroll_cycles').select('period_month, locked')
+  ]);
+
+  const failed = [periods, cycles].find(r => r.error);
+  if (failed) throw failed.error;
+
+  const openCycle = (cycles.data ?? []).find(c => !c.locked) ?? (cycles.data ?? [])[0];
+  return {
+    statuses: new Map((periods.data ?? []).map(r => [`${r.coach_id}|${r.period_month}`, r.status])),
+    payrollLocked: openCycle?.locked ?? false
+  };
+}
+
 /** True when the project is reachable but empty — i.e. the seed has not run. */
 export async function isDatabaseEmpty() {
   if (!supabase) return false;

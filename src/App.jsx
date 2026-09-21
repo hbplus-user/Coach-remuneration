@@ -14,7 +14,7 @@ import {
 } from './data.js';
 
 import {
-  supabase, isSupabaseConfigured, loadState, syncState, isDatabaseEmpty,
+  supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
   listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES
 } from './supabaseClient.js';
 
@@ -1232,6 +1232,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // flag belongs to; `lastSynced` is the snapshot syncState() diffs against.
   const [openPeriodMonth, setOpenPeriodMonth] = useState(null);
   const lastSynced = useRef(null);
+  // True while a local write is queued or in flight, so the lock poller does
+  // not read the pre-write value and undo it.
+  const pendingWrite = useRef(false);
+  // The row open in the score card editor, read by the lock poller without
+  // making it a dependency and tearing the timer down on every keystroke.
+  const editingRef = useRef(null);
 
   const applyState = (next) => {
     setVariants(withSeedVariants(next.variants));
@@ -1415,6 +1421,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     if (!isSupabaseConfigured || !session) return;
 
+    pendingWrite.current = true;
     const timer = setTimeout(async () => {
       try {
         const errors = await syncState(lastSynced.current, STATE);
@@ -1428,11 +1435,80 @@ export default function App({ session = null, profile = null, onSignOut = null }
       } catch (e) {
         setSyncError(e.message || String(e));
         console.error("Supabase sync failed", e);
+      } finally {
+        pendingWrite.current = false;
       }
     }, 700);
 
     return () => clearTimeout(timer);
   }, [variants, certifications, educationLevels, educationFormats, coaches, historicMonths, currentMonth, orgWork, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
+
+  // -------------------------------------------------------------------------
+  // Lock state follows the database without a reload. Locking is how one person
+  // tells everyone else a month is settled, so a stale padlock is the one piece
+  // of state worth re-reading on a timer. Only `status` is taken, so an edit in
+  // progress on the same row is untouched.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isStateLoaded || !isSupabaseConfigured || !session) return;
+
+    let alive = true;
+
+    const pull = async () => {
+      if (!alive || pendingWrite.current || document.hidden) return;
+      let remote;
+      try {
+        remote = await loadLockState();
+      } catch (e) {
+        // A failed poll is not worth a banner — the next one may well succeed.
+        console.error("Lock poll failed", e);
+        return;
+      }
+      if (!alive || !remote || pendingWrite.current) return;
+
+      // Applying the remote status would otherwise look like a local edit and
+      // be written straight back, so the sync baseline moves with it.
+      const rebase = (list, key) => {
+        let changed = false;
+        const next = list.map(r => {
+          const status = remote.statuses.get(`${r.coach_id}|${r.period_month}`);
+          if (status === undefined || status === r.status) return r;
+          changed = true;
+          return { ...r, status };
+        });
+        if (changed && lastSynced.current) lastSynced.current[key] = next;
+        return changed ? next : list;
+      };
+
+      // Someone else locking the row under an open editor would otherwise let
+      // it save into a settled month, so the editor closes and the draft goes.
+      const editing = editingRef.current;
+      if (editing && remote.statuses.get(editing) === 'FINANCE_LOCKED') {
+        cancelScoreRowEdit();
+        showToast("That month was just locked by someone else — your edit was not saved.", "warning");
+      }
+
+      setCurrentMonth(prev => rebase(prev, 'currentMonth'));
+      setHistoricMonths(prev => rebase(prev, 'historicMonths'));
+      setPayrollLocked(prev => {
+        if (remote.payrollLocked === prev) return prev;
+        if (lastSynced.current) lastSynced.current.payrollLocked = remote.payrollLocked;
+        return remote.payrollLocked;
+      });
+    };
+
+    const timer = setInterval(pull, 15000);
+    // Coming back to the tab is when a stale padlock is most likely, and most
+    // noticeable, so that pulls straight away rather than waiting out the timer.
+    const onVisible = () => { if (!document.hidden) pull(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isStateLoaded, session]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
@@ -1898,6 +1974,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Score Management: open one period's row for editing, seeded from the record
   // plus the coach's one-time profile entries.
   const beginScoreRowEdit = (coach, run, pane = 'main') => {
+    editingRef.current = `${run.coach_id}|${run.period_month}`;
     setEditingScorePeriod(run.period_month);
     setEditingScorePane(pane);
     setScoreDraft({
@@ -2010,6 +2087,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   const cancelScoreRowEdit = () => {
+    editingRef.current = null;
     setEditingScorePeriod(null);
     setEditingScorePane(null);
     setScoreDraft({});
