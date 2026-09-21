@@ -218,6 +218,14 @@ const SCORE_TRACKER_GROUPS = [
   }
 ];
 
+// A record carries its cell overrides in `overrides`, keyed by column. Two
+// underscore-prefixed keys are reserved for record state rather than a cell —
+// REOPENED_KEY marks a month an admin has unlocked after it was locked — so
+// everything that counts or lists overrides skips them.
+const REOPENED_KEY = '__reopened';
+const overrideKeys = (overrides) => Object.keys(overrides || {}).filter(k => !k.startsWith('__'));
+const wasReopened = (run) => Boolean((run?.overrides || {})[REOPENED_KEY]);
+
 const SCORE_TRACKER_COLUMNS = SCORE_TRACKER_GROUPS.flatMap(g => g.columns);
 
 // A few columns carry the same field under a different key.
@@ -1916,7 +1924,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       overrides: { ...(run.overrides || {}) }
     });
     // Cells already carrying an override stay open; the rest re-lock.
-    setUnlockedDynamicKeys(Object.keys(run.overrides || {}));
+    setUnlockedDynamicKeys(overrideKeys(run.overrides));
   };
 
   // Clicking a calculated cell asks before handing control over to the user.
@@ -1934,7 +1942,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Drop every hand-entered dynamic value on the open row, back to calculated.
   const clearScoreRowOverrides = () => {
-    setScoreDraft(prev => ({ ...prev, overrides: {} }));
+    setScoreDraft(prev => ({
+      ...prev,
+      overrides: prev.overrides?.[REOPENED_KEY] ? { [REOPENED_KEY]: true } : {}
+    }));
     setUnlockedDynamicKeys([]);
     showToast("Every dynamic cell is back to its calculated value.", "info");
   };
@@ -1977,10 +1988,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (!proceed) return;
 
     const nextStatus = locking ? 'FINANCE_LOCKED' : 'DRAFT';
+    // Unlocking is what hands a closed month back to the roles that are
+    // otherwise held to the open pay cycle, so the record remembers it was
+    // reopened. Locking it again withdraws that.
+    const nextOverrides = (r) => {
+      const next = { ...(r.overrides || {}) };
+      if (locking) delete next[REOPENED_KEY];
+      else next[REOPENED_KEY] = true;
+      return next;
+    };
     // The record lives in whichever list holds its period, so both are mapped.
     const apply = (list) => list.map(r =>
       (r.coach_id === run.coach_id && r.period_month === run.period_month)
-        ? { ...r, status: nextStatus }
+        ? { ...r, status: nextStatus, overrides: nextOverrides(r) }
         : r);
     setCurrentMonth(prev => apply(prev));
     setHistoricMonths(prev => apply(prev));
@@ -2085,7 +2105,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     setCoaches(prev => prev.map(c => (c.id === coach.id ? updatedCoach : c)));
 
-    const overrideCount = Object.keys(updatedRecord.overrides).length;
+    const overrideCount = overrideKeys(updatedRecord.overrides).length;
     logAudit("Score Card Edited", `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}${overrideCount ? `, ${overrideCount} manual override(s)` : ''}`);
     showToast(`${run.period_month} score card saved. HB+ Score: ${finalScore}`);
     cancelScoreRowEdit();
@@ -2903,14 +2923,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
     .slice(0, -1)
     .map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
 
-  // Showrunner uploads into the cycle they are running, so the month list
-  // offers only that one; other roles may correct a closed month.
-  const bulkPeriods = () => (currentRole === 'Showrunner'
-    ? [currentPeriodMonth]
-    : [...new Set([
-        currentPeriodMonth,
-        ...[...historicMonths, ...currentMonth].map(r => r.period_month)
-      ])]);
+  // Showrunner uploads into the cycle they are running, plus any closed month
+  // an admin has unlocked for them; other roles may correct any month.
+  const bulkPeriods = () => {
+    const all = [...historicMonths, ...currentMonth];
+    const allowed = currentRole === 'Showrunner'
+      ? all.filter(r => r.period_month === currentPeriodMonth || wasReopened(r))
+      : all;
+    return [...new Set([currentPeriodMonth, ...allowed.map(r => r.period_month)])];
+  };
 
   const openBulkDialog = (mode, tabKey) => {
     const tab = BULK_TABS[tabKey];
@@ -4383,8 +4404,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       // A locked card is read-only for every role, Super Admin
                       // included. The way back in is the padlock on Record
                       // Status, which leaves an audit entry behind it.
+                      const isReopened = wasReopened(run);
                       const mayEdit = canEditScores && !isLocked
-                        && (!currentCycleOnly || run.period_month === currentPeriodMonth);
+                        && (!currentCycleOnly
+                            || run.period_month === currentPeriodMonth
+                            || isReopened);
 
                       return (
                         <tr
@@ -4488,7 +4512,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <button className="btn-row-icon icon-save" title="Save this score card" aria-label="Save" onClick={() => saveScoreRowEdit(coach, run)}>
                                   <i className="bx bx-check"></i>
                                 </button>
-                                {Object.keys(scoreDraft.overrides || {}).length > 0 && (
+                                {overrideKeys(scoreDraft.overrides).length > 0 && (
                                   <button className="btn-row-icon icon-reset" title="Return every dynamic cell to its calculated value" aria-label="Reset overrides" onClick={clearScoreRowOverrides}>
                                     <i className="bx bx-reset"></i>
                                   </button>
@@ -4513,7 +4537,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   ? (canLock
                                       ? 'Locked — unlock it on Record Status to edit'
                                       : 'Locked — ask someone who can unlock it')
-                                  : 'Read-only for your role'}
+                                  : currentCycleOnly
+                                    ? `Closed cycle — you edit ${currentPeriodMonth}. Ask an admin to unlock this month.`
+                                    : 'Read-only for your role'}
                               >
                                 <i className="bx bx-lock-alt"></i>
                               </span>
