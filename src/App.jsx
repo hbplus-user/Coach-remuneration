@@ -1322,15 +1322,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const activeCoaches = coaches.filter(c => c.status === "Active");
-    // Closing the pay cycle locks the period it closes. Nothing edits a locked
-    // card, so a month that has rolled over is settled unless someone unlocks
-    // it by hand on Record Status — which is audited.
+    // Closing a cycle does not lock anything. Locking is a deliberate act on
+    // Record Status, so a month that has rolled over can still be completed —
+    // data often arrives after the calendar has moved on.
     const rolledIntoHistory = [
-      ...currentMonth.map(r => ({ ...r, status: 'FINANCE_LOCKED' })),
-      ...closed.flatMap(period => activeCoaches.map(c => ({
-        ...blankPeriodRecord(c.id, period),
-        status: 'FINANCE_LOCKED'
-      })))
+      ...currentMonth,
+      ...closed.flatMap(period => activeCoaches.map(c => blankPeriodRecord(c.id, period)))
     ];
 
     setHistoricMonths(prev => [...prev, ...rolledIntoHistory]);
@@ -1340,7 +1337,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const opened = closed.length + 1;
     logAudit(
       "Period Rolled Over",
-      `Calendar advanced past ${openPeriod.period_month}. Locked ${rolledIntoHistory.length} score card${rolledIntoHistory.length > 1 ? 's' : ''} on close, and opened ${livePeriod.period_month} (${opened} period${opened > 1 ? 's' : ''} created) with blank score cards for ${activeCoaches.length} active coaches.`
+      `Calendar advanced past ${openPeriod.period_month}. Opened ${livePeriod.period_month} (${opened} period${opened > 1 ? 's' : ''} created) with blank score cards for ${activeCoaches.length} active coaches. Closed periods are left unlocked — locking is manual.`
     );
     showToast(`New performance period opened: ${livePeriod.period_month}.`, "info");
   }, [isStateLoaded, coaches.length]);
@@ -4149,6 +4146,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const coachVios = violations.filter(v => v.coach_id === coach.id);
             const activeVio = coachVios.filter(v => v.status !== 'Appeal_Approved');
             const canManage = currentRole === "Super Admin" || currentRole === "HR Manager";
+            // Showrunner enters performance data but owns none of the money:
+            // they can record a score card, not lock one or touch a profile.
+            const canEditScores = canManage || currentRole === "Showrunner";
 
             // One row per evaluated period. Takes the coach/record pair so an
             // in-progress edit can be re-scored live from the draft values.
@@ -4362,7 +4362,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       // A locked card is read-only for every role, Super Admin
                       // included. The way back in is the padlock on Record
                       // Status, which leaves an audit entry behind it.
-                      const mayEdit = canManage && !isLocked;
+                      const mayEdit = canEditScores && !isLocked;
 
                       return (
                         <tr
@@ -4490,7 +4490,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 title={isLocked
                                   ? (canManage
                                       ? 'Locked — unlock it on Record Status to edit'
-                                      : 'Locked at the close of the pay cycle')
+                                      : 'Locked — ask a Super Admin or HR Manager to unlock it')
                                   : 'Read-only for your role'}
                               >
                                 <i className="bx bx-lock-alt"></i>
