@@ -87,6 +87,20 @@ const REPORTING_MANAGERS = ["RM_01", "RM_02", "RM_03"];
 // Super Admin sees except what a coach is paid and where it is paid to.
 const HIDES_PAY = (role) => role === 'Showrunner';
 
+// Who may record a score card. Everyone who works a pay cycle enters
+// performance data; locking it, and everything to do with a coach's profile
+// or pay, stays with Super Admin and HR Manager.
+const SCORE_EDIT_ROLES = [
+  'Super Admin', 'HR Manager', 'Reporting Manager', 'Finance', 'Showrunner'
+];
+
+// Settling a period: who may lock a score card, and unlock one again.
+const LOCK_ROLES = ['Super Admin', 'HR Manager', 'Finance', 'Reporting Manager'];
+
+// A coach's own record and what they are paid — profile, bank details,
+// payslips, and overriding a rate. Narrower than locking on purpose.
+const PROFILE_PAY_ROLES = ['Super Admin', 'HR Manager', 'Finance'];
+
 const OFFERED_VARIANT_IDS = ['V1', 'V3', 'V5', 'V6'];
 
 /**
@@ -1949,8 +1963,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // cell. handleLockCycle() locks a whole month at once; this is the per-row
   // equivalent, for the cases that need correcting after the fact.
   const toggleRecordLock = (coach, run) => {
-    if (currentRole !== "Super Admin" && currentRole !== "HR Manager") {
-      showToast("Only Super Admin and HR Manager can lock a score card.", "error");
+    if (!LOCK_ROLES.includes(currentRole)) {
+      showToast("Your role cannot lock or unlock a score card.", "error");
       return;
     }
 
@@ -4145,10 +4159,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
             const coachVios = violations.filter(v => v.coach_id === coach.id);
             const activeVio = coachVios.filter(v => v.status !== 'Appeal_Approved');
-            const canManage = currentRole === "Super Admin" || currentRole === "HR Manager";
-            // Showrunner enters performance data but owns none of the money:
-            // they can record a score card, not lock one or touch a profile.
-            const canEditScores = canManage || currentRole === "Showrunner";
+            const canLock = LOCK_ROLES.includes(currentRole);
+            const canManage = PROFILE_PAY_ROLES.includes(currentRole);
+            const canEditScores = SCORE_EDIT_ROLES.includes(currentRole);
 
             // One row per evaluated period. Takes the coach/record pair so an
             // in-progress edit can be re-scored live from the draft values.
@@ -4432,7 +4445,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   // finance-locked, open means still editable. The written
                                   // status stays available on hover and to screen readers.
                                   <div className="status-cell">
-                                    {canManage ? (
+                                    {canLock ? (
                                       <button
                                         type="button"
                                         className={`status-lock-btn${isLocked ? ' is-locked' : ''}`}
@@ -4488,9 +4501,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <span
                                 className="btn-row-icon icon-locked"
                                 title={isLocked
-                                  ? (canManage
+                                  ? (canLock
                                       ? 'Locked — unlock it on Record Status to edit'
-                                      : 'Locked — ask a Super Admin or HR Manager to unlock it')
+                                      : 'Locked — ask someone who can unlock it')
                                   : 'Read-only for your role'}
                               >
                                 <i className="bx bx-lock-alt"></i>
@@ -5262,7 +5275,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             lockCoach
                             periodOptions={allRuns.map(r => r.period_month)}
                             onPeriodChange={setPayCalcPeriod}
-                            canOverridePay={currentRole === 'Super Admin' || currentRole === 'HR Manager'}
+                            canOverridePay={PROFILE_PAY_ROLES.includes(currentRole)}
                             seed={{
                               key: `${coach.id}-${selected.period_month}`,
                               periodMonth: selected.period_month,
@@ -5988,7 +6001,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     coachOptions={run.map(r => r.coach)}
                     selectedCoachId={payCalcCoachId}
                     onCoachChange={setPayCalcCoachId}
-                    canOverridePay={currentRole === 'Super Admin' || currentRole === 'HR Manager'}
+                    canOverridePay={PROFILE_PAY_ROLES.includes(currentRole)}
                     seed={selected ? {
                       key: `${selected.coach.id}-${period}`,
                       periodMonth: period,
