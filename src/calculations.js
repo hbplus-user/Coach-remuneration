@@ -378,6 +378,13 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
 /**
  * Resolve Penalty Consequence and Deductible Amount based on variant rules
  */
+/**
+ * Whether a violation's penalty is actually charged. A successful appeal or a
+ * waiver settles the incident without taking the money.
+ */
+export const isPenaltyChargeable = (v) =>
+  v?.status !== 'Appeal_Approved' && v?.status !== 'Waived';
+
 export function getPenaltyConsequence(variantId, violationType, occurrenceNo, penaltyMatrix) {
   const variantMatrix = penaltyMatrix[variantId] || penaltyMatrix['default'];
   const rules = variantMatrix[violationType];
@@ -561,8 +568,13 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     sessionPay = 0; // Not session based
   }
 
-  // 8. Total penalty from active violations this month
-  const penaltyDeductions = activeViolationsForMonth.reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+  // 8. Total penalty from active violations this month.
+  //    A waived incident stays on the record — it still counts towards the
+  //    occurrence history that sets the next one's consequence — but waiving it
+  //    is the decision not to charge for it, so it is not deducted.
+  const penaltyDeductions = activeViolationsForMonth
+    .filter(isPenaltyChargeable)
+    .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
 
   // 9. GROSS PAY CALCULATION
   const grossPay = basePay + extraSessionPay + sessionPay + nightSessionPay + 

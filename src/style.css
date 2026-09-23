@@ -3101,3 +3101,95 @@ form {
   padding: 1rem 1.5rem 1.25rem;
 }
 .bulk-block-note { margin-right: auto; font-size: .8rem; color: var(--brand-rust); }
+
+/* ---------------------------------------------------------------------------
+   Penalty breakdown. The Penalty row opens into the incidents behind it, so a
+   deduction can be traced to what caused it without leaving the pay screen.
+   The detail rows span both columns and lay their own four-column grid inside,
+   which keeps them off the two-column rhythm of the rows above.
+--------------------------------------------------------------------------- */
+.calc-penalty-toggle {
+  display: block;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.calc-penalty-toggle:hover {
+  color: var(--text-primary);
+}
+.calc-penalty-toggle i {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+.calc-penalty-toggle .calc-hint {
+  margin-left: 18px;
+}
+.calc-table .calc-penalty-detail td {
+  padding: 0;
+  background-color: rgba(239, 68, 68, 0.05);
+  border-top: none;
+}
+.calc-penalty-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem 7rem 6rem;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.45rem 0.9rem 0.45rem 1.8rem;
+  font-size: 0.78rem;
+}
+.calc-penalty-line > span:nth-child(2),
+.calc-penalty-line > span:nth-child(3) {
+  color: var(--text-muted);
+}
+.calc-penalty-line > span:last-child {
+  text-align: right;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--accent-red, #ef4444);
+}
+.calc-penalty-line strong {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.calc-penalty-line small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin-top: 1px;
+}
+.calc-penalty-detail-head .calc-penalty-line {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+.calc-penalty-detail-head .calc-penalty-line > span:last-child {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.calc-penalty-detail-foot .calc-penalty-line {
+  border-top: 1px solid var(--border-color);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+/* A waived incident stays on the list — it is part of the history — but it is
+   not money, so it does not read as an amount. */
+.calc-penalty-waived {
+  color: var(--text-muted) !important;
+  font-weight: 500 !important;
+}
+.calc-penalty-note {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0.5rem 0.9rem 0.6rem 1.8rem;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--accent-amber);
+}

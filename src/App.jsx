@@ -24,6 +24,7 @@ import {
   computeMonthlyPay, 
   getViolationOccurrenceNumber, 
   getPenaltyConsequence,
+  isPenaltyChargeable,
   getQuarterLabel,
   calculateTenureYears,
   getEducationScore,
@@ -439,6 +440,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   // Both pay fields start locked. Taking one over is a deliberate act, as it is
   // for a calculated cell on the score card.
   const [unlockedPay, setUnlockedPay] = useState({ rate: false, base: false });
+  // The incidents behind the penalty figure. Derived from the seed rather than
+  // held in state, so they follow the coach and period without a second sync.
+  const [penaltyOpen, setPenaltyOpen] = useState(false);
 
   // Re-seed when the caller points the calculator somewhere new — a different
   // coach or period — AND when the record it is already showing changes. Keying
@@ -555,6 +559,104 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       onChange={(e) => { setter(e.target.value); onSeedChange?.(); }}
     />
   );
+
+  // A deduction with no explanation is the one line on a payslip people
+  // dispute, so the Penalty row opens into the incidents it is made of: the
+  // date, what happened, which occurrence it was, and what each one cost.
+  const penaltyItems = seed?.penaltyItems ?? [];
+  const recordedPenalty = penaltyItems
+    .filter(isPenaltyChargeable)
+    .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+  // Penalty is an editable input, so the figure on screen can be moved away
+  // from what the incidents add up to. Saying so beats quietly disagreeing.
+  const penaltyEdited = penaltyItems.length > 0
+    && Math.round(penaltyTotal) !== Math.round(recordedPenalty);
+
+  const penaltyRow = () => {
+    const rows = [
+      <tr key="penalty">
+        <td className="calc-label">
+          {penaltyItems.length > 0 ? (
+            <button
+              type="button"
+              className="calc-penalty-toggle"
+              aria-expanded={penaltyOpen}
+              onClick={() => setPenaltyOpen(open => !open)}
+            >
+              <i className={`bx ${penaltyOpen ? 'bx-chevron-down' : 'bx-chevron-right'}`}></i>
+              Penalty (₹)
+              <span className="calc-hint">
+                {penaltyItems.length} incident{penaltyItems.length === 1 ? '' : 's'} — click to see {penaltyItems.length === 1 ? 'it' : 'them'}
+              </span>
+            </button>
+          ) : (
+            <>Penalty (₹)<span className="calc-hint">no incidents recorded in this period</span></>
+          )}
+        </td>
+        <td className="calc-output-cell">− {rupees(penaltyTotal)}</td>
+      </tr>
+    ];
+
+    if (!penaltyOpen || penaltyItems.length === 0) return rows;
+
+    rows.push(
+      <tr key="penalty-head" className="calc-penalty-detail calc-penalty-detail-head">
+        <td colSpan={2}>
+          <div className="calc-penalty-line">
+            <span>Incident</span><span>Occurrence</span><span>Status</span><span>Amount</span>
+          </div>
+        </td>
+      </tr>
+    );
+
+    penaltyItems.forEach((v, i) => {
+      const waived = !isPenaltyChargeable(v);
+      rows.push(
+        <tr key={`penalty-${v.id ?? i}`} className="calc-penalty-detail">
+          <td colSpan={2}>
+            <div className="calc-penalty-line">
+              <span>
+                <strong>{v.type}</strong>
+                <small>
+                  {v.incident_date
+                    ? new Date(v.incident_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                    : '—'}
+                  {v.incident_time ? ` · ${v.incident_time}` : ''}
+                </small>
+                {v.consequence && <small>{v.consequence}</small>}
+              </span>
+              <span>#{v.occurrence_no ?? 1}</span>
+              <span>{String(v.status || '').replace(/_/g, ' ')}</span>
+              <span className={waived ? 'calc-penalty-waived' : ''}>
+                {waived ? 'Waived' : `− ${rupees(v.penalty_amount)}`}
+              </span>
+            </div>
+          </td>
+        </tr>
+      );
+    });
+
+    rows.push(
+      <tr key="penalty-foot" className="calc-penalty-detail calc-penalty-detail-foot">
+        <td colSpan={2}>
+          <div className="calc-penalty-line">
+            <span>Recorded incidents total</span><span></span><span></span>
+            <span>− {rupees(recordedPenalty)}</span>
+          </div>
+          {penaltyEdited && (
+            <p className="calc-penalty-note">
+              <i className="bx bx-error"></i>
+              The Penalty input has been changed to {rupees(penaltyTotal)}, so this
+              breakdown no longer matches what is being deducted. Clear the input to
+              go back to the recorded incidents.
+            </p>
+          )}
+        </td>
+      </tr>
+    );
+
+    return rows;
+  };
 
   return (
     <div className="pay-calc-grid">
@@ -688,7 +790,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
             {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
             {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi & Flexi-Fixed only")}
-            {outputRow("Penalty (₹)", `− ${rupees(penaltyTotal)}`)}
+            {penaltyRow()}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
             {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
             {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
@@ -3260,7 +3362,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const pay = computeMonthlyPay(coach, record, { hbScore: score }, periodVios, vConfig, periodOrgWork);
 
       return {
-        coach, record, vConfig, score, band, pay,
+        coach, record, vConfig, score, band, pay, periodVios,
         recorded: MANUAL_PERIOD_FIELDS.some(f => record[f] !== null && record[f] !== undefined)
       };
     }).filter(Boolean).sort((a, b) => a.coach.id.localeCompare(b.coach.id));
@@ -5377,7 +5479,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               streak: Number(selected.five_star_streak) || 0,
                               consistency: (Number(selected.attendance_pct) >= 95 && periodVios.length === 0) ? "YES" : "NO",
                               orgWorkPay: periodOrgWork.reduce((sum, o) => sum + (Number(o.amount) || 0), 0),
-                              penalties: periodVios.reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
+                              penalties: periodVios
+                                .filter(isPenaltyChargeable)
+                                .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
+                              penaltyItems: periodVios,
                               baseOverride: coach.coach_category === 'Flexi-Fixed'
                                 ? (coach.flexi_fixed_base_salary ?? "")
                                 : (coach.fixed_salary_override ?? "")
@@ -6106,6 +6211,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       consistency: selected.pay.consistencyEligible ? "YES" : "NO",
                       orgWorkPay: selected.pay.orgWorkPay,
                       penalties: selected.pay.penaltyDeductions,
+                      penaltyItems: selected.periodVios || [],
                       baseOverride: selected.coach.coach_category === 'Flexi-Fixed'
                         ? (selected.coach.flexi_fixed_base_salary ?? "")
                         : (selected.coach.fixed_salary_override ?? "")
