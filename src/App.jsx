@@ -564,6 +564,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   // dispute, so the Penalty row opens into the incidents it is made of: the
   // date, what happened, which occurrence it was, and what each one cost.
   const penaltyItems = seed?.penaltyItems ?? [];
+  const penaltyOtherCount = seed?.penaltyOtherCount ?? 0;
   const recordedPenalty = penaltyItems
     .filter(isPenaltyChargeable)
     .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
@@ -590,7 +591,15 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               </span>
             </button>
           ) : (
-            <>Penalty (₹)<span className="calc-hint">no incidents recorded in this period</span></>
+            <>
+              Penalty (₹)
+              <span className="calc-hint">
+                {seed?.periodRange
+                  ? `no incidents dated ${seed.periodRange}`
+                  : 'not seeded from a coach — key a figure in on the left'}
+                {penaltyOtherCount > 0 && ` · this coach has ${penaltyOtherCount} incident${penaltyOtherCount === 1 ? '' : 's'} outside these dates`}
+              </span>
+            </>
           )}
         </td>
         <td className="calc-output-cell">− {rupees(penaltyTotal)}</td>
@@ -1755,8 +1764,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Open Log Violation Modal
   const handleOpenViolationModal = (coachId = "") => {
-    const firstCoach = coachId || (coaches.length > 0 ? coaches[0].id : "");
-    setVioCoachId(firstCoach);
+    setVioCoachId(coachId);
     setVioType("Late Arrival (<5 min)");
     setVioDate(new Date().toISOString().substring(0, 10));
     setVioTime(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
@@ -2582,6 +2590,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const coach = coaches.find(c => c.id === vioCoachId);
+    // The select is `required` with an empty first option, so this is only
+    // reachable if that is bypassed — but recording an incident against nobody
+    // would fail with a blank screen rather than a message.
+    if (!coach) {
+      showToast("Choose the coach this incident is being recorded against.", "error");
+      return;
+    }
     const occurrence = getViolationOccurrenceNumber(vioCoachId, vioType, vioDate, violations) + 1;
     const consequenceObj = getPenaltyConsequence(coach.variant_id, vioType, occurrence, PENALTY_MATRIX);
 
@@ -3350,9 +3365,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (!vConfig) return null;
 
       const { score, band } = resolvePeriodScore(coach, record, vConfig);
-      const periodVios = violations.filter(v =>
-        v.coach_id === coach.id &&
-        v.status !== 'Appeal_Approved' &&
+      const coachVios = violations.filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved');
+      const periodVios = coachVios.filter(v =>
         new Date(v.incident_date) >= new Date(record.period_start) &&
         new Date(v.incident_date) <= new Date(record.period_end)
       );
@@ -3362,7 +3376,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const pay = computeMonthlyPay(coach, record, { hbScore: score }, periodVios, vConfig, periodOrgWork);
 
       return {
-        coach, record, vConfig, score, band, pay, periodVios,
+        coach, record, vConfig, score, band, pay, periodVios, coachVios,
         recorded: MANUAL_PERIOD_FIELDS.some(f => record[f] !== null && record[f] !== undefined)
       };
     }).filter(Boolean).sort((a, b) => a.coach.id.localeCompare(b.coach.id));
@@ -5483,6 +5497,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 .filter(isPenaltyChargeable)
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
                               penaltyItems: periodVios,
+                              penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
                               baseOverride: coach.coach_category === 'Flexi-Fixed'
                                 ? (coach.flexi_fixed_base_salary ?? "")
                                 : (coach.fixed_salary_override ?? "")
@@ -6212,6 +6227,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       orgWorkPay: selected.pay.orgWorkPay,
                       penalties: selected.pay.penaltyDeductions,
                       penaltyItems: selected.periodVios || [],
+                      penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
                       baseOverride: selected.coach.coach_category === 'Flexi-Fixed'
                         ? (selected.coach.flexi_fixed_base_salary ?? "")
                         : (selected.coach.fixed_salary_override ?? "")
@@ -7774,6 +7790,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       setVioCoachId(e.target.value);
                       setVioType("Late Arrival (<5 min)"); // reset type
                     }} required>
+                      <option value="">Choose a coach…</option>
                       {coaches.map(c => (
                         <option key={c.id} value={c.id}>{c.id} - {c.name}</option>
                       ))}
@@ -7823,6 +7840,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <p>Historical Occurrences (Tracking Window): <strong>{occurrence}</strong></p>
                   <p>Consequence Rule: <strong className="text-red">{consequenceObj.consequence}</strong></p>
                   <p>Penalty Amount: <strong>₹{finalAmount.toLocaleString('en-IN')}</strong></p>
+                  <p>
+                    Deducted on: <strong>{vioDate ? getPeriodForDate(new Date(vioDate)).period_month : '—'}</strong>
+                    {vioDate && <span className="text-muted"> — the period the incident date falls in, not the month it is recorded</span>}
+                  </p>
                 </div>
 
                 <div className="modal-footer">
