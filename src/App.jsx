@@ -1676,6 +1676,60 @@ export default function App({ session = null, profile = null, onSignOut = null }
   }, [variants, certifications, educationLevels, educationFormats, coaches, historicMonths, currentMonth, orgWork, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
 
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Backfill missing periods.
+  //
+  // The pay cycle runs 16th to 15th, and each month must be there to be paid:
+  // "May 2026" is 16 Apr – 15 May and is paid in May. A month can go missing —
+  // an earlier defect deleted whichever month was open when the calendar
+  // rolled, which is why June and September could be absent while July and
+  // August were not — and a gap in the cycle is invisible until someone looks
+  // for a payslip that was never there.
+  //
+  // Gaps are filled per coach, only between that coach's earliest record and
+  // the open period, so nobody is given history from before they joined.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isStateLoaded || coaches.length === 0 || currentMonth.length === 0) return;
+
+    const openMonth = currentMonth[0].period_month;
+    const all = [...historicMonths, ...currentMonth];
+    if (all.length === 0) return;
+
+    const earliest = all.reduce((min, r) =>
+      (!min || new Date(r.period_start) < new Date(min.period_start)) ? r : min, null);
+
+    // Every period from the earliest on record up to the open one, in order.
+    const chain = [{
+      period_month: earliest.period_month,
+      period_start: earliest.period_start,
+      period_end: earliest.period_end
+    }];
+    while (chain[chain.length - 1].period_month !== openMonth && chain.length < 120) {
+      chain.push(getNextPeriod(chain[chain.length - 1].period_end));
+    }
+    if (chain[chain.length - 1].period_month !== openMonth) return; // bad clock
+
+    const held = new Set(all.map(r => draftKey(r.coach_id, r.period_month)));
+    const missing = [];
+    for (const coach of coaches.filter(c => c.status === "Active")) {
+      const firstIdx = chain.findIndex(p => held.has(draftKey(coach.id, p.period_month)));
+      if (firstIdx === -1) continue; // no history at all — the rollover owns this
+      for (const period of chain.slice(firstIdx)) {
+        if (period.period_month === openMonth) continue;
+        if (held.has(draftKey(coach.id, period.period_month))) continue;
+        missing.push(blankPeriodRecord(coach.id, period));
+      }
+    }
+    if (missing.length === 0) return;
+
+    setHistoricMonths(prev => [...prev, ...missing]);
+    const months = [...new Set(missing.map(r => r.period_month))];
+    logAudit("Missing Periods Restored",
+      `Created ${missing.length} blank score card${missing.length === 1 ? '' : 's'} for ${months.join(', ')}, which had no record.`);
+    showToast(`${months.join(', ')} ${months.length === 1 ? 'was' : 'were'} missing from the cycle — blank score cards added.`, "warning");
+  }, [isStateLoaded, coaches.length, currentMonth.length]);
+
   // Lock state follows the database without a reload. Locking is how one person
   // tells everyone else a month is settled, so a stale padlock is the one piece
   // of state worth re-reading on a timer. Only `status` is taken, so an edit in
