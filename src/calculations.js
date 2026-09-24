@@ -435,12 +435,15 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const sessionsCompleted = Number(monthData.sessions_completed) || 0;
   const nightSessions = Number(monthData.night_sessions) || 0;
   
-  // The rate actually used. A hand-entered override wins over everything; a
-  // Fixed coach otherwise derives theirs below.
-  let effectiveRate = Number(coach.per_session_override) > 0
-    ? Number(coach.per_session_override)
-    : (rates.per_session || 0);
-  const rateIsOverridden = Number(coach.per_session_override) > 0;
+  // What a coach is paid is a decision about a month, not about the coach for
+  // all time: May's rate is May's, and a figure entered now must not reach back
+  // and change a month already settled. So the month's own figure wins, then
+  // anything standing on the profile, and the band only where neither is set.
+  const positive = (v) => (Number(v) > 0 ? Number(v) : null);
+  const setRate = positive(monthData.per_session_override)
+    ?? positive(coach.per_session_override);
+  let effectiveRate = setRate ?? (rates.per_session || 0);
+  const rateIsOverridden = setRate !== null;
 
   let basePay = 0;
   let extraSessions = 0;
@@ -450,7 +453,9 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
 
   // 1. Calculate Base and Session Pay based on Coach Category
   if (coach.coach_category === 'Fixed') {
-    basePay = Number(coach.fixed_salary_override) || rates.std_fixed || 0;
+    basePay = positive(monthData.fixed_pay_override)
+      ?? positive(coach.fixed_salary_override)
+      ?? rates.std_fixed ?? 0;
 
     // extra sessions
     const threshold = rates.threshold || (variantConfig.discipline === 'Yoga' ? 117 : 156);
@@ -464,7 +469,9 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     extraSessionPay = nonFunctional ? 0 : extraSessions * effectiveRate;
   } else if (coach.coach_category === 'Flexi-Fixed') {
     // Flexi-Fixed has a fixed pay component + per-session for all sessions
-    basePay = Number(coach.flexi_fixed_base_salary) || rates.min_fixed || 0;
+    basePay = positive(monthData.fixed_pay_override)
+      ?? positive(coach.flexi_fixed_base_salary)
+      ?? rates.min_fixed ?? 0;
     sessionPay = sessionsCompleted * effectiveRate;
     // Reference Table C: fixed pay + per session on every session. Sessions
     // past the 96 threshold are rewarded by the milestone (Table D), not by

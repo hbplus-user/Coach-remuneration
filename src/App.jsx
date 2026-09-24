@@ -917,13 +917,14 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               <span>
                 <strong>Not saved yet</strong>
                 <small>
-                  This only models the month until it is saved to {seed.coachName || 'the coach'} —
-                  setting {changes.join(' and ')}. It applies to every month that is not locked.
+                  This only models {seed.periodMonth} until it is saved —
+                  setting {changes.join(' and ')} for {seed.coachName || 'this coach'}.
+                  It applies to {seed.periodMonth} alone; other months keep their own figures.
                 </small>
               </span>
               <button
                 className="btn btn-primary btn-sm"
-                onClick={() => onSavePayOverrides(seed.coachId, { base: nextBase, rate: nextRate })}
+                onClick={() => onSavePayOverrides(seed.coachId, seed.periodMonth, { base: nextBase, rate: nextRate })}
               >
                 Save to profile
               </button>
@@ -2126,32 +2127,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * it back, so a rate set for a coach reverted to the band rate and the coach
    * carried on being paid the band. This is what makes it stick.
    */
-  const savePayOverrides = (coachId, { base, rate }) => {
+  const savePayOverrides = (coachId, periodMonth, { base, rate }) => {
     const coach = coaches.find(c => c.id === coachId);
     if (!coach) return;
     if (!PROFILE_PAY_ROLES.includes(currentRole)) {
       showToast("Your role cannot change what a coach is paid.", "error");
       return;
     }
+    const record = [...currentMonth, ...historicMonths]
+      .find(r => r.coach_id === coachId && r.period_month === periodMonth);
+    if (!record) {
+      showToast("That month has no score card to set pay against.", "error");
+      return;
+    }
+    if (record.status === 'FINANCE_LOCKED') {
+      showToast(`${periodMonth} is locked — unlock it to change what it pays.`, "error");
+      return;
+    }
 
-    const isFlexiFixed = coach.coach_category === 'Flexi-Fixed';
-    const baseField = isFlexiFixed ? 'flexi_fixed_base_salary' : 'fixed_salary_override';
     const lines = [
-      `Base pay: ${base === null ? 'band rate' : `₹${base.toLocaleString('en-IN')}`}`,
+      `Fixed pay: ${base === null ? 'band rate' : `₹${base.toLocaleString('en-IN')}`}`,
       `Per-session rate: ${rate === null ? 'band rate' : `₹${rate.toLocaleString('en-IN')}`}`
     ].join('\n');
     const proceed = window.confirm(
-      `Change what ${coach.name} is paid?\n\n${lines}\n\n` +
-      `This applies to every month that is not already locked, not just this one.`
+      `Set what ${coach.name} is paid for ${periodMonth}?\n\n${lines}\n\n` +
+      `This applies to ${periodMonth} only. Other months keep their own figures.`
     );
     if (!proceed) return;
 
-    setCoaches(prev => prev.map(c => (c.id === coachId
-      ? { ...c, [baseField]: base, per_session_override: rate }
-      : c)));
-    logAudit("Coach Pay Overridden",
-      `Set pay overrides for ${coach.name} (${coach.id}) — ${lines.replace(/\n/g, '; ')}`);
-    showToast(`Saved. ${coach.name} is now on these rates.`, "success");
+    const applyTo = (list) => list.map(r =>
+      (r.coach_id === coachId && r.period_month === periodMonth)
+        ? { ...r, fixed_pay_override: base, per_session_override: rate }
+        : r);
+    setCurrentMonth(applyTo);
+    setHistoricMonths(applyTo);
+
+    logAudit("Month Pay Set",
+      `Set ${periodMonth} pay for ${coach.name} (${coach.id}) — ${lines.replace(/\n/g, '; ')}`);
+    showToast(`Saved. ${coach.name}'s ${periodMonth} pay is set.`, "success");
   };
 
   // Open Payslip Modal
@@ -6018,10 +6031,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
                               penaltyItems: periodVios,
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
-                              baseOverride: coach.coach_category === 'Flexi-Fixed'
-                                ? (coach.flexi_fixed_base_salary ?? "")
-                                : (coach.fixed_salary_override ?? ""),
-                              rateOverride: coach.per_session_override ?? ""
+                              baseOverride: selected.fixed_pay_override
+                                ?? (coach.coach_category === 'Flexi-Fixed'
+                                  ? (coach.flexi_fixed_base_salary ?? "")
+                                  : (coach.fixed_salary_override ?? "")),
+                              rateOverride: selected.per_session_override
+                                ?? (coach.per_session_override ?? "")
                             }}
                           />
                         </>
@@ -6752,10 +6767,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       penalties: selected.pay.penaltyDeductions,
                       penaltyItems: selected.periodVios || [],
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
-                      baseOverride: selected.coach.coach_category === 'Flexi-Fixed'
-                        ? (selected.coach.flexi_fixed_base_salary ?? "")
-                        : (selected.coach.fixed_salary_override ?? ""),
-                      rateOverride: selected.coach.per_session_override ?? ""
+                      baseOverride: selected.record.fixed_pay_override
+                        ?? (selected.coach.coach_category === 'Flexi-Fixed'
+                          ? (selected.coach.flexi_fixed_base_salary ?? "")
+                          : (selected.coach.fixed_salary_override ?? "")),
+                      rateOverride: selected.record.per_session_override
+                        ?? (selected.coach.per_session_override ?? "")
                     } : { key: `manual-${period}` }}
                   />
                 </div>

@@ -48,7 +48,9 @@ const PERIOD_COLS = [
   'client_engagement', 'safety', 'punctuality', 'team_conduct', 'communication',
   'meetings_scheduled', 'meetings_attended', 'attendance_pct', 'sessions_completed',
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
-  'five_star_streak', 'hb_score', 'band', 'status', 'overrides'
+  'five_star_streak', 'hb_score', 'band', 'status', 'overrides',
+  // Pay set for this month specifically, which the band must not overwrite.
+  'fixed_pay_override', 'per_session_override'
 ];
 
 const COACH_COLS = [
@@ -77,7 +79,7 @@ const blanksToNull = (row, keys) => {
 const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
-  'per_session_override'
+  'per_session_override', 'fixed_pay_override'
 ];
 
 const MAPPERS = {
