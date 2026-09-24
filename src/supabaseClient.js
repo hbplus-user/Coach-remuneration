@@ -60,7 +60,7 @@ const COACH_COLS = [
   'reporting_manager_id', 'assigned_property', 'status', 'bank_account',
   'bank_holder_name', 'bank_name', 'bank_ifsc', 'bank_branch',
   'bank_account_type', 'bank_upi', 'pan_number',
-  'fixed_salary_override', 'flexi_fixed_base_salary', 'certifications',
+  'fixed_salary_override', 'flexi_fixed_base_salary', 'per_session_override', 'certifications',
   'five_star_streak'
 ];
 
@@ -76,7 +76,8 @@ const blanksToNull = (row, keys) => {
 
 const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
-  'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary'
+  'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
+  'per_session_override'
 ];
 
 const MAPPERS = {

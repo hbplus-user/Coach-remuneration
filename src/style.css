@@ -3250,3 +3250,37 @@ form {
   font-size: 0.78rem;
   white-space: nowrap;
 }
+
+/* A pay override that has been typed but not committed to the coach. It looks
+   identical to a saved one on screen, so the difference has to be stated. */
+.calc-save-override {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--accent-amber);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(245, 158, 11, 0.08);
+}
+.calc-save-override > i {
+  font-size: 1.15rem;
+  color: var(--accent-amber);
+}
+.calc-save-override > span {
+  flex: 1;
+  min-width: 0;
+}
+.calc-save-override strong {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.calc-save-override small {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

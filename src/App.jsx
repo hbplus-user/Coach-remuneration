@@ -471,7 +471,7 @@ const resolvePeriodScore = (coach, record, vConfig) => {
  * editable; the breakdown below is driven by computeMonthlyPay so it can never
  * drift from the payroll the rest of the app produces.
  */
-function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange, canOverridePay = false }) {
+function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange, canOverridePay = false, onSavePayOverrides }) {
   const [coachName, setCoachName] = useState(seed?.coachName ?? "");
   const [variantId, setVariantId] = useState(seed?.variantId ?? "V1");
   const [category, setCategory] = useState(seed?.category ?? "Fixed");
@@ -806,7 +806,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 alone — so the field is not offered for that category. */}
             {category !== "Flexi" && inputRow("Base / Fixed Pay (₹)", (
               !canOverridePay
-                ? <span className="calc-static">{rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}</span>
+                ? <span className="calc-static">{rupees(pay.basePay)}</span>
                 : unlockedPay.base
                   ? (
                     <input
@@ -853,6 +853,43 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
           </tbody>
         </table>
+        {canOverridePay && onSavePayOverrides && seed?.coachId && (() => {
+          const savedBase = seed.baseOverride === "" || seed.baseOverride == null
+            ? null : Number(seed.baseOverride);
+          const savedRate = seed.rateOverride === "" || seed.rateOverride == null
+            ? null : Number(seed.rateOverride);
+          const nextBase = baseOverride === "" ? null : Number(baseOverride);
+          const nextRate = rateOverride === "" ? null : Number(rateOverride);
+          if (nextBase === savedBase && nextRate === savedRate) return null;
+
+          const describe = (value, what) => value === null
+            ? `${what} back to the band rate`
+            : `${what} ${rupees(value)}`;
+          const changes = [
+            nextBase !== savedBase ? describe(nextBase, 'base pay') : null,
+            nextRate !== savedRate ? describe(nextRate, 'per-session rate') : null
+          ].filter(Boolean);
+
+          return (
+            <div className="calc-save-override">
+              <i className="bx bx-lock-open-alt"></i>
+              <span>
+                <strong>Not saved yet</strong>
+                <small>
+                  This only models the month until it is saved to {seed.coachName || 'the coach'} —
+                  setting {changes.join(' and ')}. It applies to every month that is not locked.
+                </small>
+              </span>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => onSavePayOverrides(seed.coachId, { base: nextBase, rate: nextRate })}
+              >
+                Save to profile
+              </button>
+            </div>
+          );
+        })()}
+
         <p className="calc-notes">
           Night premium is ₹60/session for Flexi &amp; Flexi-Fixed only. Milestone slabs: Fixed 156 → ₹1,000, 182 → ₹2,000; Flexi / Flexi-Fixed 96 → ₹1,152, 135 → ₹2,025, 186 → ₹3,640.
           Consistency bonus is ₹500 with zero violations and zero no-shows. The 5-star streak resets on any violation or no-show.
@@ -1928,6 +1965,41 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setAppealTargetType(type);
     setAppealReason("");
     setActiveModal("appeal");
+  };
+
+  /**
+   * Commit a pay override from the calculator onto the coach.
+   *
+   * Until now the calculator could only model a different rate: nothing wrote
+   * it back, so a rate set for a coach reverted to the band rate and the coach
+   * carried on being paid the band. This is what makes it stick.
+   */
+  const savePayOverrides = (coachId, { base, rate }) => {
+    const coach = coaches.find(c => c.id === coachId);
+    if (!coach) return;
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast("Your role cannot change what a coach is paid.", "error");
+      return;
+    }
+
+    const isFlexiFixed = coach.coach_category === 'Flexi-Fixed';
+    const baseField = isFlexiFixed ? 'flexi_fixed_base_salary' : 'fixed_salary_override';
+    const lines = [
+      `Base pay: ${base === null ? 'band rate' : `₹${base.toLocaleString('en-IN')}`}`,
+      `Per-session rate: ${rate === null ? 'band rate' : `₹${rate.toLocaleString('en-IN')}`}`
+    ].join('\n');
+    const proceed = window.confirm(
+      `Change what ${coach.name} is paid?\n\n${lines}\n\n` +
+      `This applies to every month that is not already locked, not just this one.`
+    );
+    if (!proceed) return;
+
+    setCoaches(prev => prev.map(c => (c.id === coachId
+      ? { ...c, [baseField]: base, per_session_override: rate }
+      : c)));
+    logAudit("Coach Pay Overridden",
+      `Set pay overrides for ${coach.name} (${coach.id}) — ${lines.replace(/\n/g, '; ')}`);
+    showToast(`Saved. ${coach.name} is now on these rates.`, "success");
   };
 
   // Open Payslip Modal
@@ -5720,6 +5792,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </p>
                           <PayCalculator
                             variants={variants}
+                            onSavePayOverrides={savePayOverrides}
                             coachOptions={[coach]}
                             selectedCoachId={coach.id}
                             lockCoach
@@ -5730,6 +5803,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               key: `${coach.id}-${selected.period_month}`,
                               periodMonth: selected.period_month,
                               periodRange: `${new Date(selected.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+                              coachId: coach.id,
                               coachName: coach.name,
                               variantId: coach.variant_id,
                               category: coach.coach_category,
@@ -5746,7 +5820,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
                               baseOverride: coach.coach_category === 'Flexi-Fixed'
                                 ? (coach.flexi_fixed_base_salary ?? "")
-                                : (coach.fixed_salary_override ?? "")
+                                : (coach.fixed_salary_override ?? ""),
+                              rateOverride: coach.per_session_override ?? ""
                             }}
                           />
                         </>
@@ -6452,6 +6527,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 <div className="card">
                   <PayCalculator
                     variants={variants}
+                    onSavePayOverrides={savePayOverrides}
                     coachOptions={run.map(r => r.coach)}
                     selectedCoachId={payCalcCoachId}
                     onCoachChange={setPayCalcCoachId}
@@ -6462,6 +6538,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       periodRange: selected.record.period_start
                         ? `${new Date(selected.record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
                         : undefined,
+                      coachId: selected.coach.id,
                       coachName: selected.coach.name,
                       variantId: selected.coach.variant_id,
                       category: selected.coach.coach_category,
@@ -6476,7 +6553,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
                       baseOverride: selected.coach.coach_category === 'Flexi-Fixed'
                         ? (selected.coach.flexi_fixed_base_salary ?? "")
-                        : (selected.coach.fixed_salary_override ?? "")
+                        : (selected.coach.fixed_salary_override ?? ""),
+                      rateOverride: selected.coach.per_session_override ?? ""
                     } : { key: `manual-${period}` }}
                   />
                 </div>
