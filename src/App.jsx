@@ -32,6 +32,7 @@ import {
   EDUCATION_TIERS,
   getHighestEducationEntry,
   amountInWords,
+  fixedPerSessionRate,
   payslipEarnings,
   getPeriodForDate,
   getNextPeriod
@@ -542,6 +543,23 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   // penalty total is applied at the end instead of through a violations list.
   // The override travels on the coach, so every category honours it the same
   // way — including Fixed, whose rate is otherwise derived from its own pay.
+  const bandLabels = PAY_BANDS.map(b => b.label);
+  const nextBandLabel = (() => {
+    const i = bandLabels.indexOf(band.label);
+    return i >= 0 && i < bandLabels.length - 1 ? bandLabels[i + 1] : null;
+  })();
+  const forecastFor = (label) => {
+    const r = label ? vConfig.rates[category]?.[label] : null;
+    if (!r) return null;
+    const base = category === 'Fixed' ? r.std_fixed : r.min_fixed;
+    // A Fixed coach's session rate comes from their own monthly pay, not the
+    // band's column, so the forecast has to be derived the same way.
+    const rate = category === 'Fixed' ? fixedPerSessionRate(base) : r.per_session;
+    return { label, base: base ?? 0, rate: rate ?? 0 };
+  };
+  const forecastNow = forecastFor(band.label);
+  const forecastNext = forecastFor(nextBandLabel);
+
   const rateOverrideNum = rateOverride !== "" && Number.isFinite(Number(rateOverride))
     ? Math.max(0, Number(rateOverride))
     : null;
@@ -823,8 +841,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                   : payLock('rate', 'Per-Session Rate', rupees(pay.perSessionRate),
                       rateOverride !== "" ? rupees(rateOverride) : rupees(pay.perSessionRate))
             ), !canOverridePay
-                 ? "from the band rate"
-                 : unlockedPay.rate ? "leave blank to use the band rate" : "click to override")}
+                 ? (rateOverrideNum !== null ? "set for this coach" : "no figure set — using the band rate")
+                 : unlockedPay.rate ? "leave blank to fall back to the band rate" : "click to set")}
             {/* A Flexi coach has no fixed component — they are paid per session
                 alone — so the field is not offered for that category. */}
             {category !== "Flexi" && inputRow("Base / Fixed Pay (₹)", (
@@ -844,8 +862,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                       baseOverride !== "" ? rupees(baseOverride)
                         : rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed))
             ), !canOverridePay
-                 ? "from the band rate"
-                 : unlockedPay.base ? "leave blank to use the band rate" : "click to override")}
+                 ? (baseOverride !== "" ? "set for this coach" : "no figure set — using the band rate")
+                 : unlockedPay.base ? "leave blank to fall back to the band rate" : "click to set")}
           </tbody>
         </table>
       </div>
@@ -912,6 +930,60 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             </div>
           );
         })()}
+
+        {forecastNow && (
+          <div className="calc-forecast">
+            <div className="calc-forecast-head">
+              Forecast from HB+ Score <span>does not affect pay</span>
+            </div>
+            <table className="data-table calc-table">
+              <tbody>
+                <tr>
+                  <td className="calc-label">
+                    Forecast Fixed Pay (₹)
+                    <span className="calc-hint">on this month's score — {band.label}</span>
+                  </td>
+                  <td className="calc-output-cell">{rupees(forecastNow.base)}</td>
+                </tr>
+                <tr>
+                  <td className="calc-label">
+                    Forecast Per-Session Rate (₹)
+                    <span className="calc-hint">
+                      {category === 'Fixed' ? 'forecast fixed pay ÷ 26 ÷ 6' : `band rate for ${band.label}`}
+                    </span>
+                  </td>
+                  <td className="calc-output-cell">{rupees(forecastNow.rate)}</td>
+                </tr>
+                {forecastNext ? (
+                  <>
+                    <tr>
+                      <td className="calc-label">
+                        Next Band Fixed Pay (₹)
+                        <span className="calc-hint">if the score reaches {forecastNext.label}</span>
+                      </td>
+                      <td className="calc-output-cell">{rupees(forecastNext.base)}</td>
+                    </tr>
+                    <tr>
+                      <td className="calc-label">
+                        Next Band Per-Session Rate (₹)
+                        <span className="calc-hint">
+                          + {rupees(forecastNext.base - forecastNow.base)} a month on the fixed component
+                        </span>
+                      </td>
+                      <td className="calc-output-cell">{rupees(forecastNext.rate)}</td>
+                    </tr>
+                  </>
+                ) : (
+                  <tr>
+                    <td className="calc-label" colSpan={2}>
+                      <span className="calc-hint">Already in the top band — nothing above this one.</span>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <p className="calc-notes">
           Night premium is ₹60/session for Flexi &amp; Flexi-Fixed only. Milestone slabs: Fixed 156 → ₹1,000, 182 → ₹2,000; Flexi / Flexi-Fixed 96 → ₹1,152, 135 → ₹2,025, 186 → ₹3,640.

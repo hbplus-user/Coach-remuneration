@@ -3311,3 +3311,37 @@ form {
   line-height: 1.5;
   color: var(--text-muted);
 }
+
+/* Forecast figures. What the score says the pay would be worth, kept visibly
+   apart from the pay itself so the two are never read as the same thing. */
+.calc-forecast {
+  margin-top: 1rem;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.calc-forecast-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  background-color: var(--bg-main);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.calc-forecast-head span {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+.calc-forecast .calc-table {
+  border: none;
+}
+.calc-forecast .calc-output-cell {
+  color: var(--text-secondary);
+}
