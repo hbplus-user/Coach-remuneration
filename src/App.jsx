@@ -2375,6 +2375,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (!proceed) return;
     }
 
+    // Every manual cell is coerced to a number below, so an untouched draft
+    // saves a month as all zeros — which then reads as recorded, scores as
+    // zero, and is indistinguishable from figures somebody meant to enter.
+    // Saving a month into that state is almost always an accident.
+    const manualDraftKeys = ['prof_appearance', 'client_engagement', 'safety', 'punctuality',
+      'team_conduct', 'communication', 'meetings_scheduled', 'meetings_attended',
+      'sessions', 'night_sessions', 'streak'];
+    const allBlank = manualDraftKeys.every(k => {
+      const v = draft[k];
+      return v === null || v === undefined || v === '' || Number(v) === 0;
+    });
+    if (allBlank && !opts.quiet) {
+      const proceed = window.confirm(
+        `Nothing has been entered on ${run.period_month}.\n\n` +
+        `Saving now records every figure as zero, which scores the month at 0 ` +
+        `rather than leaving it unrecorded. Save it as zeros anyway?`
+      );
+      if (!proceed) return;
+    }
+    if (allBlank && opts.quiet && !isRecorded(run)) return;
+
     const scheduled = Number(draft.meetings_scheduled) || 0;
     const attended = Math.min(Number(draft.meetings_attended) || 0, scheduled);
     const attendancePct = scheduled > 0 ? (attended / scheduled) * 100 : 0;
