@@ -8384,8 +8384,14 @@ HB+_030,185,0,96`} />
         if (!coach) return null;
         
         const vConfig = findVariant(variants, coach.variant_id);
-        const dataset = payslipPeriod === currentPeriodMonth ? currentMonth : historicMonths;
-        const e = dataset.find(x => x.coach_id === selectedCoachId);
+        // Matching on the coach alone returned whichever record happened to
+        // come first, so every historic payslip showed one arbitrary month's
+        // figures under the heading of the month that was asked for. The month
+        // is part of the identity of the record, and which array holds it
+        // depends on whether the cycle has rolled, so both are searched.
+        const e = [...currentMonth, ...historicMonths].find(
+          x => x.coach_id === selectedCoachId && x.period_month === payslipPeriod
+        );
         if (!e) return null;
 
         const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
