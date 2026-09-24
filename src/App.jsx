@@ -1462,6 +1462,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // current one aside here instead of discarding it, and opening that month
   // again hands it straight back.
   const [pendingDrafts, setPendingDrafts] = useState({});
+  // "", "saving" or the time of the last automatic save, for the line that
+  // tells the person whether what they typed is safe yet.
+  const [autoSaveAt, setAutoSaveAt] = useState("");
   const draftKey = (coachId, periodMonth) => `${coachId}|${periodMonth}`;
   // The live draft, mirrored so it can be read outside a render without
   // reaching into a state updater to do it.
@@ -2466,6 +2469,36 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   useEffect(() => { scoreDraftRef.current = scoreDraft; }, [scoreDraft]);
 
+  // -------------------------------------------------------------------------
+  // Auto-save. Typing into a score card and walking away should not lose it,
+  // so a pause in typing commits what is there. It runs silently and refuses
+  // anything that would need a decision — an override, or a month with nothing
+  // in it — leaving those to the Save button, which still confirms as before.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const key = editingRef.current;
+    if (!key || !editingScorePeriod) return;
+    if (!scoreDraft || Object.keys(scoreDraft).length === 0) return;
+
+    const [coachId, periodMonth] = key.split('|');
+    const coach = coaches.find(c => c.id === coachId);
+    const run = [...currentMonth, ...historicMonths]
+      .find(r => r.coach_id === coachId && r.period_month === periodMonth);
+    if (!coach || !run || run.status === 'FINANCE_LOCKED') return;
+    if (!SCORE_EDIT_ROLES.includes(currentRole)) return;
+
+    const timer = setTimeout(() => {
+      setAutoSaveAt("saving");
+      const saved = saveScoreRowEdit(coach, run, scoreDraftRef.current,
+        { quiet: true, auto: true, keepOpen: true });
+      setAutoSaveAt(saved
+        ? new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+        : "");
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [scoreDraft, editingScorePeriod]);
+
   // Park the open draft under its own row, so it survives moving away.
   const stashOpenDraft = () => {
     const key = editingRef.current;
@@ -2511,9 +2544,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return Number.isNaN(value) || value < 0 || (ceiling !== null && value > ceiling);
     });
     if (invalid.length > 0) {
-      showToast(`Cannot save — ${invalid.map(c => c.label).join(', ')} ${invalid.length > 1 ? 'are' : 'is'} out of range.`, "danger");
+      if (!opts.auto) {
+        showToast(`Cannot save — ${invalid.map(c => c.label).join(', ')} ${invalid.length > 1 ? 'are' : 'is'} out of range.`, "danger");
+      }
       return;
     }
+
+    // Taking over a calculated cell is a decision, and a decision cannot be
+    // made by a timer, so auto-save leaves those to the Save button.
+    if (opts.auto && overriddenCols.length > 0) return;
 
     if (overriddenCols.length > 0) {
       const list = overriddenCols.map(c => `• ${c.label}: ${overrides[c.key]}`).join('\n');
@@ -2595,8 +2634,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     setCoaches(prev => prev.map(c => (c.id === coach.id ? updatedCoach : c)));
 
+    // An automatic save fires on every pause in typing, so logging each one
+    // would bury the audit trail in its own noise. The entry is written when
+    // the edit is finished by hand, which is the act worth recording.
     const overrideCount = overrideKeys(updatedRecord.overrides).length;
-    logAudit("Score Card Edited", `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}${overrideCount ? `, ${overrideCount} manual override(s)` : ''}`);
+    if (!opts.auto) {
+      logAudit("Score Card Edited", `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}${overrideCount ? `, ${overrideCount} manual override(s)` : ''}`);
+    }
     if (!opts.quiet) showToast(`${run.period_month} score card saved. HB+ Score: ${finalScore}`);
 
     const key = draftKey(coach.id, run.period_month);
@@ -2606,7 +2650,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       delete rest[key];
       return rest;
     });
-    if (editingRef.current === key) {
+    if (editingRef.current === key && !opts.keepOpen) {
       editingRef.current = null;
       setEditingScorePeriod(null);
       setEditingScorePane(null);
@@ -5780,7 +5824,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <i className="bx bx-save"></i>
                             <span>
                               <strong>{keys.size} unsaved score card{keys.size === 1 ? '' : 's'}</strong>
-                              <small>{months.join(', ')} — kept in this browser only until saved</small>
+                              <small>
+                                {months.join(', ')} — {autoSaveAt === 'saving'
+                                  ? 'saving…'
+                                  : autoSaveAt
+                                    ? `saved automatically at ${autoSaveAt}; Save to finish and close`
+                                    : 'saved automatically a couple of seconds after you stop typing'}
+                              </small>
                             </span>
                             <button
                               className="btn btn-primary btn-sm"
