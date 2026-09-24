@@ -601,7 +601,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
 
   const num = (value, setter, max) => (
     <input
-      type="number" min="0" max={max}
+      type="number" min="0" max={max} step="any"
       className="calc-input"
       value={value}
       onChange={(e) => { setter(e.target.value); onSeedChange?.(); }}
@@ -791,7 +791,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 : unlockedPay.rate
                   ? (
                     <input
-                      type="number" min="0" className="calc-input" value={rateOverride}
+                      type="number" min="0" step="any" className="calc-input" value={rateOverride}
                       placeholder={`Std ${rupees(pay.perSessionRate)}`}
                       autoFocus
                       onChange={(e) => setRateOverride(e.target.value)}
@@ -810,7 +810,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 : unlockedPay.base
                   ? (
                     <input
-                      type="number" min="0" className="calc-input" value={baseOverride}
+                      type="number" min="0" step="any" className="calc-input" value={baseOverride}
                       placeholder={`Std ${rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed)}`}
                       autoFocus
                       onChange={(e) => setBaseOverride(e.target.value)}
