@@ -2200,6 +2200,76 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * it back, so a rate set for a coach reverted to the band rate and the coach
    * carried on being paid the band. This is what makes it stick.
    */
+  /**
+   * Pin a month's pay for every coach, in one go.
+   *
+   * A month with no figures of its own is paid from its band, which means the
+   * number on screen is computed rather than stored — there is nothing for a
+   * later month to inherit. This writes what that month currently works out to
+   * onto its own records, so it becomes the figure the months after it carry.
+   *
+   * Existing figures are left alone: this fills in what was never set, rather
+   * than overwriting decisions someone has already made.
+   */
+  const pinMonthPayForAll = (periodMonth) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast("Your role cannot change what coaches are paid.", "error");
+      return;
+    }
+
+    const records = [...currentMonth, ...historicMonths]
+      .filter(r => r.period_month === periodMonth);
+    const updates = new Map();
+    let locked = 0;
+    let already = 0;
+
+    for (const record of records) {
+      const coach = coaches.find(c => c.id === record.coach_id);
+      if (!coach || coach.status !== 'Active') continue;
+      if (record.status === 'FINANCE_LOCKED') { locked += 1; continue; }
+      if (record.fixed_pay_override != null && record.per_session_override != null) {
+        already += 1;
+        continue;
+      }
+      const vConfig = findVariant(variants, coach.variant_id);
+      const { score } = resolvePeriodScore(coach, record, vConfig);
+      const pay = computeMonthlyPay(coach, carryPay(record), { hbScore: score }, [], vConfig, []);
+      updates.set(record.coach_id, {
+        fixed_pay_override: record.fixed_pay_override ?? pay.basePay,
+        per_session_override: record.per_session_override ?? pay.perSessionRate
+      });
+    }
+
+    if (updates.size === 0) {
+      showToast(already > 0
+        ? `Every ${periodMonth} record already has its pay set.`
+        : `No ${periodMonth} records to set pay on.`, "info");
+      return;
+    }
+
+    const proceed = window.confirm(
+      `Fix ${periodMonth}'s pay for ${updates.size} coach${updates.size === 1 ? '' : 'es'}?\n\n` +
+      `Each one's ${periodMonth} fixed pay and per-session rate are written onto ` +
+      `${periodMonth} as they stand today. Every later month without figures of ` +
+      `its own then carries them, and the benchmark score stops moving them.\n\n` +
+      `Months before ${periodMonth} are untouched` +
+      `${already ? `, and ${already} record${already === 1 ? '' : 's'} already set ${already === 1 ? 'is' : 'are'} left alone` : ''}` +
+      `${locked ? `. ${locked} locked record${locked === 1 ? ' is' : 's are'} skipped` : ''}.`
+    );
+    if (!proceed) return;
+
+    const applyTo = (list) => list.map(r =>
+      (r.period_month === periodMonth && updates.has(r.coach_id))
+        ? { ...r, ...updates.get(r.coach_id) }
+        : r);
+    setCurrentMonth(applyTo);
+    setHistoricMonths(applyTo);
+
+    logAudit("Month Pay Fixed For All",
+      `Wrote ${periodMonth} pay onto ${updates.size} coach record(s); later months without their own figures now carry them.`);
+    showToast(`${periodMonth} pay fixed for ${updates.size} coach${updates.size === 1 ? '' : 'es'} — later months now carry it.`, "success");
+  };
+
   const savePayOverrides = (coachId, periodMonth, { base, rate }) => {
     const coach = coaches.find(c => c.id === coachId);
     if (!coach) return;
@@ -6812,6 +6882,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       Choose a coach in the form below to load {period}'s figures automatically, or pick manual entry to model a case from scratch.
                     </p>
                   </div>
+                  {PROFILE_PAY_ROLES.includes(currentRole) && (
+                    <button
+                      className="btn btn-secondary"
+                      title={`Write ${period}'s fixed pay and per-session rate onto every coach's ${period} record, so later months carry them`}
+                      onClick={() => pinMonthPayForAll(period)}
+                    >
+                      <i className="bx bx-lock-alt"></i> Fix {period} pay for all coaches
+                    </button>
+                  )}
                 </div>
 
                 <div className="card">
