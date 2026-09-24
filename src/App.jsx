@@ -1376,6 +1376,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // The row open in the score card editor, read by the lock poller without
   // making it a dependency and tearing the timer down on every keystroke.
   const editingRef = useRef(null);
+  // Score card edits that have been started but not yet saved, keyed
+  // "<coach_id>|<period_month>". Switching rows, tabs or coaches sets the
+  // current one aside here instead of discarding it, and opening that month
+  // again hands it straight back.
+  const [pendingDrafts, setPendingDrafts] = useState({});
+  const draftKey = (coachId, periodMonth) => `${coachId}|${periodMonth}`;
+  // The live draft, mirrored so it can be read outside a render without
+  // reaching into a state updater to do it.
+  const scoreDraftRef = useRef({});
 
   const applyState = (next) => {
     setVariants(withSeedVariants(next.variants));
@@ -1647,6 +1656,28 @@ export default function App({ session = null, profile = null, onSignOut = null }
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [isStateLoaded, session]);
+
+  // Moving to another coach leaves the editor pointing at a row that is no
+  // longer on screen, so it closes — with the draft set aside, not dropped.
+  useEffect(() => {
+    if (!editingRef.current) return;
+    stashOpenDraft();
+    editingRef.current = null;
+    setEditingScorePeriod(null);
+    setEditingScorePane(null);
+    setScoreDraft({});
+    setUnlockedDynamicKeys([]);
+  }, [currentCoachContext]);
+
+  // A draft only lives in this tab, so closing it would take the work with it.
+  useEffect(() => {
+    const open = editingRef.current ? 1 : 0;
+    const count = Object.keys(pendingDrafts).length + open;
+    if (count === 0) return;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [pendingDrafts, editingScorePeriod]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
@@ -2111,9 +2142,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Score Management: open one period's row for editing, seeded from the record
   // plus the coach's one-time profile entries.
   const beginScoreRowEdit = (coach, run, pane = 'main') => {
-    editingRef.current = `${run.coach_id}|${run.period_month}`;
+    const key = draftKey(run.coach_id, run.period_month);
+    // Whatever was open goes to the side rather than over the side.
+    stashOpenDraft();
+
+    editingRef.current = key;
     setEditingScorePeriod(run.period_month);
     setEditingScorePane(pane);
+
+    const pending = pendingDrafts[key];
+    if (pending) {
+      setScoreDraft(pending);
+      setUnlockedDynamicKeys(overrideKeys(pending.overrides));
+      showToast(`Picked up where you left off on ${run.period_month}.`, "info");
+      return;
+    }
+
     setScoreDraft({
       prof_appearance: run.prof_appearance ?? 0,
       client_engagement: run.client_engagement ?? 0,
@@ -2223,7 +2267,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
     );
   };
 
+  useEffect(() => { scoreDraftRef.current = scoreDraft; }, [scoreDraft]);
+
+  // Park the open draft under its own row, so it survives moving away.
+  const stashOpenDraft = () => {
+    const key = editingRef.current;
+    const draft = scoreDraftRef.current;
+    if (!key || !draft || Object.keys(draft).length === 0) return;
+    setPendingDrafts(prev => ({ ...prev, [key]: draft }));
+  };
+
+  // Cancel is the deliberate "throw this away", so it drops the stash too.
   const cancelScoreRowEdit = () => {
+    const key = editingRef.current;
+    if (key) {
+      setPendingDrafts(prev => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
     editingRef.current = null;
     setEditingScorePeriod(null);
     setEditingScorePane(null);
@@ -4605,6 +4669,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       // included. The way back in is the padlock on Record
                       // Status, which leaves an audit entry behind it.
                       const mayEdit = canEditScores && !isLocked;
+                      const hasPendingDraft = Boolean(pendingDrafts[draftKey(run.coach_id, run.period_month)]);
 
                       return (
                         <tr
@@ -4719,12 +4784,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </div>
                             ) : mayEdit ? (
                               <button
-                                className={`btn-row-icon ${row.isBlank ? 'icon-record' : 'icon-edit'}`}
-                                title={row.isBlank ? `Record the ${run.period_month} score card` : `Edit the ${run.period_month} score card`}
+                                className={[
+                                  'btn-row-icon',
+                                  row.isBlank ? 'icon-record' : 'icon-edit',
+                                  hasPendingDraft ? 'has-pending-draft' : ''
+                                ].filter(Boolean).join(' ')}
+                                title={hasPendingDraft
+                                  ? `Unsaved changes on ${run.period_month} — open it to carry on`
+                                  : row.isBlank ? `Record the ${run.period_month} score card` : `Edit the ${run.period_month} score card`}
                                 aria-label={row.isBlank ? 'Record score card' : 'Edit score card'}
                                 onClick={() => beginScoreRowEdit(coach, run, paneId)}
                               >
-                                <i className={row.isBlank ? 'bx bx-plus' : 'bx bx-edit'}></i>
+                                <i className={hasPendingDraft ? 'bx bx-edit-alt' : (row.isBlank ? 'bx bx-plus' : 'bx bx-edit')}></i>
                               </button>
                             ) : (
                               <span

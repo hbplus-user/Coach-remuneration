@@ -3193,3 +3193,20 @@ form {
   line-height: 1.5;
   color: var(--accent-amber);
 }
+
+/* A row holding an edit that was started but not saved. The dot is what makes
+   a set-aside draft findable again without opening every month in turn. */
+.btn-row-icon.has-pending-draft {
+  position: relative;
+  color: var(--accent-amber);
+}
+.btn-row-icon.has-pending-draft::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent-amber);
+}
