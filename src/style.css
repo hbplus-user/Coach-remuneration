@@ -3284,3 +3284,30 @@ form {
   line-height: 1.5;
   color: var(--text-muted);
 }
+
+/* A month that was never rated. The pay below is arithmetically right and
+   still wrong, so the reason sits above the inputs rather than in a footnote. */
+.calc-unrated-note {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--accent-amber);
+  border-top: none;
+  background-color: rgba(245, 158, 11, 0.08);
+}
+.calc-unrated-note > i {
+  font-size: 1.05rem;
+  color: var(--accent-amber);
+}
+.calc-unrated-note strong {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+.calc-unrated-note small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

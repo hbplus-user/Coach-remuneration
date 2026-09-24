@@ -397,6 +397,15 @@ const SCORE_DRIVING_OVERRIDES = OVERRIDABLE_KEYS.filter(
 
 // Fields an RM / the app keys in each period. A rolled-over period starts with
 // these null so the row reads empty until someone actually records the month.
+// The six cells that make up Core Performance, worth 28% of the score. All
+// zero means nobody has rated the month — either it was never filled in, or a
+// blank save wrote zeros over it — and the score is then held down by the
+// largest single weighting with nothing on screen to say why.
+const CORE_PERFORMANCE_FIELDS = ['prof_appearance', 'client_engagement', 'safety',
+  'punctuality', 'team_conduct', 'communication'];
+const hasCorePerformance = (record) => CORE_PERFORMANCE_FIELDS
+  .some(f => Number(record?.[f]) > 0);
+
 // True once anything has actually been recorded against the month.
 const isRecorded = (record) => MANUAL_PERIOD_FIELDS
   .some(f => record?.[f] !== null && record?.[f] !== undefined);
@@ -719,6 +728,20 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     <div className="pay-calc-grid">
       <div className="pay-calc-col">
         <div className="calc-section-title calc-section-input">Input Parameters <span>Fill these cells only</span></div>
+        {seed?.coachId && seed.coreRecorded === false && (
+          <div className="calc-unrated-note">
+            <i className="bx bx-error"></i>
+            <span>
+              <strong>{seed.periodMonth} has no Core Performance ratings.</strong>
+              <small>
+                Those six cells carry 28% of the score, so it sits at {seed.score ?? 0} and
+                the band pays accordingly. They are not entered here — this screen only reads
+                the score card. Open {seed.periodMonth} on the Coach Master score card,
+                Core Performance tab, and record them there.
+              </small>
+            </span>
+          </div>
+        )}
         <table className="data-table calc-table">
           <tbody>
             {/* Which period the figures below belong to. Read-only: it follows
@@ -5857,6 +5880,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               key: `${coach.id}-${selected.period_month}`,
                               periodMonth: selected.period_month,
                               periodRange: `${new Date(selected.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+                              coreRecorded: hasCorePerformance(selected),
                               coachId: coach.id,
                               coachName: coach.name,
                               variantId: coach.variant_id,
@@ -6592,6 +6616,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       periodRange: selected.record.period_start
                         ? `${new Date(selected.record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
                         : undefined,
+                      coreRecorded: hasCorePerformance(selected.record),
                       coachId: selected.coach.id,
                       coachName: selected.coach.name,
                       variantId: selected.coach.variant_id,
