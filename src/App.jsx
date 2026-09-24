@@ -600,6 +600,20 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setUnlockedPay(prev => ({ ...prev, [key]: true }));
   };
 
+  // Where a pay figure came from. Three figures look identical on screen — one
+  // set for this month, one carried from an earlier month, and the band's own
+  // — and which it is decides whether editing here changes anything.
+  const paySourceHint = (from, unlocked) => {
+    if (unlocked) return "leave blank to fall back to the band rate";
+    if (!from || from === 'band') {
+      return canOverridePay ? "band rate — click to set" : "band rate, nothing set";
+    }
+    if (from === 'month') {
+      return canOverridePay ? "set for this month — click to change" : "set for this month";
+    }
+    return canOverridePay ? `carried from ${from} — click to change` : `carried from ${from}`;
+  };
+
   const payLock = (key, label, standard, current) => (
     <button
       type="button"
@@ -840,9 +854,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                   )
                   : payLock('rate', 'Per-Session Rate', rupees(pay.perSessionRate),
                       rateOverride !== "" ? rupees(rateOverride) : rupees(pay.perSessionRate))
-            ), !canOverridePay
-                 ? (rateOverrideNum !== null ? "set for this coach" : "no figure set — using the band rate")
-                 : unlockedPay.rate ? "leave blank to fall back to the band rate" : "click to set")}
+            ), paySourceHint(seed?.payFrom?.rateFrom, unlockedPay.rate))}
             {/* A Flexi coach has no fixed component — they are paid per session
                 alone — so the field is not offered for that category. */}
             {category !== "Flexi" && inputRow("Base / Fixed Pay (₹)", (
@@ -861,9 +873,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                       rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed),
                       baseOverride !== "" ? rupees(baseOverride)
                         : rupees(category === 'Fixed' ? rates.std_fixed : rates.min_fixed))
-            ), !canOverridePay
-                 ? (baseOverride !== "" ? "set for this coach" : "no figure set — using the band rate")
-                 : unlockedPay.base ? "leave blank to fall back to the band rate" : "click to set")}
+            ), paySourceHint(seed?.payFrom?.fixedFrom, unlockedPay.base))}
           </tbody>
         </table>
       </div>
@@ -2132,23 +2142,39 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * It only ever looks backwards, which is what keeps a settled month settled
    * — setting July's pay cannot reach back and change May.
    */
-  const carryPay = (record) => {
-    if (!record) return record;
-    if (record.fixed_pay_override != null && record.per_session_override != null) return record;
+  const resolvePay = (record) => {
+    const out = {
+      fixed: record?.fixed_pay_override ?? null,
+      rate: record?.per_session_override ?? null,
+      fixedFrom: record?.fixed_pay_override != null ? 'month' : 'band',
+      rateFrom: record?.per_session_override != null ? 'month' : 'band'
+    };
+    if (!record || (out.fixed != null && out.rate != null)) return out;
 
     const earlier = [...historicMonths, ...currentMonth]
       .filter(r => r.coach_id === record.coach_id
         && new Date(r.period_start) < new Date(record.period_start))
       .sort((a, b) => new Date(b.period_start) - new Date(a.period_start));
 
-    let fixed = record.fixed_pay_override;
-    let rate = record.per_session_override;
     for (const r of earlier) {
-      if (fixed == null && r.fixed_pay_override != null) fixed = r.fixed_pay_override;
-      if (rate == null && r.per_session_override != null) rate = r.per_session_override;
-      if (fixed != null && rate != null) break;
+      if (out.fixed == null && r.fixed_pay_override != null) {
+        out.fixed = r.fixed_pay_override;
+        out.fixedFrom = r.period_month;
+      }
+      if (out.rate == null && r.per_session_override != null) {
+        out.rate = r.per_session_override;
+        out.rateFrom = r.period_month;
+      }
+      if (out.fixed != null && out.rate != null) break;
     }
-    if (fixed === record.fixed_pay_override && rate === record.per_session_override) return record;
+    return out;
+  };
+
+  const carryPay = (record) => {
+    if (!record) return record;
+    const { fixed, rate } = resolvePay(record);
+    if (fixed === (record.fixed_pay_override ?? null)
+      && rate === (record.per_session_override ?? null)) return record;
     return { ...record, fixed_pay_override: fixed, per_session_override: rate };
   };
 
@@ -6064,6 +6090,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
                               penaltyItems: periodVios,
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
+                              payFrom: resolvePay(selected),
                               baseOverride: carryPay(selected).fixed_pay_override
                                 ?? (coach.coach_category === 'Flexi-Fixed'
                                   ? (coach.flexi_fixed_base_salary ?? "")
@@ -6800,6 +6827,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       penalties: selected.pay.penaltyDeductions,
                       penaltyItems: selected.periodVios || [],
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
+                      payFrom: resolvePay(selected.record),
                       baseOverride: carryPay(selected.record).fixed_pay_override
                         ?? (selected.coach.coach_category === 'Flexi-Fixed'
                           ? (selected.coach.flexi_fixed_base_salary ?? "")
