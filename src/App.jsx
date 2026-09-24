@@ -919,7 +919,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 <small>
                   This only models {seed.periodMonth} until it is saved —
                   setting {changes.join(' and ')} for {seed.coachName || 'this coach'}.
-                  It applies to {seed.periodMonth} alone; other months keep their own figures.
+                  {seed.periodMonth} and the months after it carry these figures;
+                  earlier months are untouched.
                 </small>
               </span>
               <button
@@ -2121,6 +2122,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   /**
+   * Fill in a month's pay from the last month that had it set.
+   *
+   * Pay is set on a month, but it is not re-entered every month: a figure set
+   * in May is what June and July are on until something replaces it. So a
+   * month without its own figure inherits from the most recent earlier month
+   * that has one.
+   *
+   * It only ever looks backwards, which is what keeps a settled month settled
+   * — setting July's pay cannot reach back and change May.
+   */
+  const carryPay = (record) => {
+    if (!record) return record;
+    if (record.fixed_pay_override != null && record.per_session_override != null) return record;
+
+    const earlier = [...historicMonths, ...currentMonth]
+      .filter(r => r.coach_id === record.coach_id
+        && new Date(r.period_start) < new Date(record.period_start))
+      .sort((a, b) => new Date(b.period_start) - new Date(a.period_start));
+
+    let fixed = record.fixed_pay_override;
+    let rate = record.per_session_override;
+    for (const r of earlier) {
+      if (fixed == null && r.fixed_pay_override != null) fixed = r.fixed_pay_override;
+      if (rate == null && r.per_session_override != null) rate = r.per_session_override;
+      if (fixed != null && rate != null) break;
+    }
+    if (fixed === record.fixed_pay_override && rate === record.per_session_override) return record;
+    return { ...record, fixed_pay_override: fixed, per_session_override: rate };
+  };
+
+  /**
    * Commit a pay override from the calculator onto the coach.
    *
    * Until now the calculator could only model a different rate: nothing wrote
@@ -2151,7 +2183,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     ].join('\n');
     const proceed = window.confirm(
       `Set what ${coach.name} is paid for ${periodMonth}?\n\n${lines}\n\n` +
-      `This applies to ${periodMonth} only. Other months keep their own figures.`
+      `${periodMonth} and every month after it carry these figures, until a ` +
+      `later month is given its own. Months before ${periodMonth} are untouched.`
     );
     if (!proceed) return;
 
@@ -3452,7 +3485,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         const calc = computeHBPlusScore(coach, record, vConfig);
         const hbScore = record.hb_score != null ? record.hb_score : calc.hbScore;
         const band = record.band || getPerformanceBand(hbScore).label;
-        const pay = computeMonthlyPay(coach, record, { hbScore }, inPeriod, vConfig, coachOrgWork);
+        const pay = computeMonthlyPay(coach, carryPay(record), { hbScore }, inPeriod, vConfig, coachOrgWork);
         const threshold = vConfig.rates[coach.coach_category]?.[band]?.threshold
           ?? (coach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96);
 
@@ -3847,7 +3880,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const periodOrgWork = orgWork.filter(o =>
         o.coach_id === coach.id && o.period_month === periodMonth && o.status === 'Approved'
       );
-      const pay = computeMonthlyPay(coach, record, { hbScore: score }, periodVios, vConfig, periodOrgWork);
+      const pay = computeMonthlyPay(coach, carryPay(record), { hbScore: score }, periodVios, vConfig, periodOrgWork);
 
       return {
         coach, record, vConfig, score, band, pay, periodVios, coachVios,
@@ -3909,7 +3942,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
       const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
-      const pay = computeMonthlyPay(coach, e, calcScoreObj, activeVio, vConfig, coachOrgWork);
+      const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
       const scoreVal = calcScoreObj.hbScore || calcScoreObj.hb_score;
       const bandVal = calcScoreObj.band || getPerformanceBand(scoreVal).label;
@@ -4420,7 +4453,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === m.period_month && o.status === 'Approved');
 
                         const calc = m.hb_score != null ? m : computeHBPlusScore(coach, m, vConfig);
-                        const pay = computeMonthlyPay(coach, m, calc, activeVio, vConfig, coachOrgWork);
+                        const pay = computeMonthlyPay(coach, carryPay(m), calc, activeVio, vConfig, coachOrgWork);
 
                         grossTotal += pay.grossPay;
                         milestoneTotal += pay.milestoneIncentive;
@@ -4726,7 +4759,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 const bandVal = run.band || getPerformanceBand(scoreVal).label;
                                 const monthVios = violations.filter(v => v.coach_id === currentSelectedCoach.id && new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && v.status !== 'Appeal_Approved');
                                 const coachOrgWork = orgWork.filter(o => o.coach_id === currentSelectedCoach.id && o.period_month === run.period_month && o.status === 'Approved');
-                                const pay = computeMonthlyPay(currentSelectedCoach, run, { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
+                                const pay = computeMonthlyPay(currentSelectedCoach, carryPay(run), { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
                                 const isLocked = run.status === 'FINANCE_LOCKED';
                                 
                                 return (
@@ -6031,11 +6064,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
                               penaltyItems: periodVios,
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
-                              baseOverride: selected.fixed_pay_override
+                              baseOverride: carryPay(selected).fixed_pay_override
                                 ?? (coach.coach_category === 'Flexi-Fixed'
                                   ? (coach.flexi_fixed_base_salary ?? "")
                                   : (coach.fixed_salary_override ?? "")),
-                              rateOverride: selected.per_session_override
+                              rateOverride: carryPay(selected).per_session_override
                                 ?? (coach.per_session_override ?? "")
                             }}
                           />
@@ -6071,7 +6104,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             const bandVal = run.band || getPerformanceBand(scoreVal).label;
                             const monthVios = coachVios.filter(v => new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && v.status !== 'Appeal_Approved');
                             const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === run.period_month && o.status === 'Approved');
-                            const pay = computeMonthlyPay(coach, run, { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
+                            const pay = computeMonthlyPay(coach, carryPay(run), { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
                             const isLocked = run.status === 'FINANCE_LOCKED';
 
                             return (
@@ -6767,11 +6800,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       penalties: selected.pay.penaltyDeductions,
                       penaltyItems: selected.periodVios || [],
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
-                      baseOverride: selected.record.fixed_pay_override
+                      baseOverride: carryPay(selected.record).fixed_pay_override
                         ?? (selected.coach.coach_category === 'Flexi-Fixed'
                           ? (selected.coach.flexi_fixed_base_salary ?? "")
                           : (selected.coach.fixed_salary_override ?? "")),
-                      rateOverride: selected.record.per_session_override
+                      rateOverride: carryPay(selected.record).per_session_override
                         ?? (selected.coach.per_session_override ?? "")
                     } : { key: `manual-${period}` }}
                   />
@@ -7093,7 +7126,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
                   const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
-                  const pay = computeMonthlyPay(coach, e, calcScoreObj, activeVio, vConfig, coachOrgWork);
+                  const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
                   sumGross += pay.grossPay;
                   sumIncentives += pay.milestoneIncentive;
@@ -7168,7 +7201,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
                             const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
-                            const pay = computeMonthlyPay(coach, e, calcScoreObj, activeVio, vConfig, coachOrgWork);
+                            const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
                             const incSum = pay.milestoneIncentive + pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
 
@@ -8694,7 +8727,7 @@ HB+_030,185,0,96`} />
         const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
         const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
-        const pay = computeMonthlyPay(coach, e, calcScoreObj, activeVio, vConfig, coachOrgWork);
+        const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
         const earningsSum = pay.basePay + pay.extraSessionPay + pay.sessionPay + pay.nightSessionPay + pay.milestoneIncentive + 
                             pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + 
