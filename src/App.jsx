@@ -611,6 +611,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     if (from === 'month') {
       return canOverridePay ? "set for this month — click to change" : "set for this month";
     }
+    if (from === 'profile') {
+      return canOverridePay ? "set on the coach profile — click to change" : "set on the coach profile";
+    }
     return canOverridePay ? `carried from ${from} — click to change` : `carried from ${from}`;
   };
 
@@ -876,34 +879,6 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             ), paySourceHint(seed?.payFrom?.fixedFrom, unlockedPay.base))}
           </tbody>
         </table>
-      </div>
-
-      <div className="pay-calc-col">
-        <div className="calc-section-title calc-section-output">Computed Pay Breakdown <span>{band.label}</span></div>
-        <table className="data-table calc-table">
-          <tbody>
-            {outputRow("Base / Fixed Pay (₹)", rupees(pay.basePay),
-              category === 'Flexi' ? "not paid to Flexi" : (baseOverride !== "" ? "entered above" : null))}
-            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
-              rateOverrideNum !== null ? "entered above" : null)}
-            {outputRow("Sessions for the month", Number(sessions) || 0)}
-            {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
-            {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
-            {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay))}
-            {/* Only Flexi and Flexi-Fixed are paid per session on every session;
-                for Fixed the row is always ₹0, so it is not shown. */}
-            {category !== "Fixed" && outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay))}
-            {outputRow("Night Session Premium (₹)", rupees(pay.nightSessionPay), "₹60/session, Flexi & Flexi-Fixed only")}
-            {outputRow("Milestone Incentive (₹)", rupees(pay.milestoneIncentive))}
-            {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
-            {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
-            {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi & Flexi-Fixed only")}
-            {penaltyRow()}
-            {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
-            {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
-            {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
-          </tbody>
-        </table>
         {canOverridePay && onSavePayOverrides && seed?.coachId && (() => {
           const savedBase = seed.baseOverride === "" || seed.baseOverride == null
             ? null : Number(seed.baseOverride);
@@ -937,12 +912,39 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                 className="btn btn-primary btn-sm"
                 onClick={() => onSavePayOverrides(seed.coachId, seed.periodMonth, { base: nextBase, rate: nextRate })}
               >
-                Save to profile
+                Save {seed.periodMonth}
               </button>
             </div>
           );
         })()}
+      </div>
 
+      <div className="pay-calc-col">
+        <div className="calc-section-title calc-section-output">Computed Pay Breakdown <span>{band.label}</span></div>
+        <table className="data-table calc-table">
+          <tbody>
+            {outputRow("Base / Fixed Pay (₹)", rupees(pay.basePay),
+              category === 'Flexi' ? "not paid to Flexi" : (baseOverride !== "" ? "entered above" : null))}
+            {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
+              rateOverrideNum !== null ? "entered above" : null)}
+            {outputRow("Sessions for the month", Number(sessions) || 0)}
+            {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
+            {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
+            {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay))}
+            {/* Only Flexi and Flexi-Fixed are paid per session on every session;
+                for Fixed the row is always ₹0, so it is not shown. */}
+            {category !== "Fixed" && outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay))}
+            {outputRow("Night Session Premium (₹)", rupees(pay.nightSessionPay), "₹60/session, Flexi & Flexi-Fixed only")}
+            {outputRow("Milestone Incentive (₹)", rupees(pay.milestoneIncentive))}
+            {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
+            {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
+            {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi & Flexi-Fixed only")}
+            {penaltyRow()}
+            {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
+            {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
+            {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
+          </tbody>
+        </table>
         {forecastNow && (
           <div className="calc-forecast">
             <div className="calc-forecast-head">
@@ -2166,6 +2168,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
         out.rateFrom = r.period_month;
       }
       if (out.fixed != null && out.rate != null) break;
+    }
+
+    const coach = coaches.find(c => c.id === record.coach_id);
+    const profileBase = coach?.coach_category === 'Flexi-Fixed'
+      ? coach?.flexi_fixed_base_salary
+      : coach?.fixed_salary_override;
+    if (out.fixed == null && profileBase != null) {
+      out.fixed = profileBase;
+      out.fixedFrom = 'profile';
+    }
+    if (out.rate == null && coach?.per_session_override != null) {
+      out.rate = coach.per_session_override;
+      out.rateFrom = 'profile';
     }
     return out;
   };
