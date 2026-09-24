@@ -3210,3 +3210,43 @@ form {
   border-radius: 50%;
   background-color: var(--accent-amber);
 }
+
+/* Unsaved score card edits. They live in the browser until saved, and can span
+   several months, so the count and the way to commit them sit above the table
+   rather than only on whichever row happens to be open. */
+.unsaved-drafts-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--accent-amber);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(245, 158, 11, 0.08);
+}
+.unsaved-drafts-bar > i {
+  font-size: 1.15rem;
+  color: var(--accent-amber);
+}
+.unsaved-drafts-bar > span {
+  flex: 1;
+  min-width: 0;
+}
+.unsaved-drafts-bar strong {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.unsaved-drafts-bar small {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+/* Compact buttons for inline bars, where a full-size control would dominate. */
+.btn.btn-sm {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}

@@ -401,6 +401,20 @@ export async function syncState(prev, next) {
   if (!supabase) return [];
   const errors = [];
 
+  // `historicMonths` and `currentMonth` are two views of one table, sharing one
+  // key space. Deciding deletions per collection meant a row that had simply
+  // moved between them — which is what closing a cycle does to every record —
+  // was upserted by the collection that gained it and then deleted by the one
+  // that lost it, destroying the month's data. Deletions are therefore judged
+  // against every collection writing to that table, not just this one.
+  const liveKeysByTable = new Map();
+  for (const name of SYNCED_COLLECTIONS) {
+    const map = MAPPERS[name];
+    if (!liveKeysByTable.has(map.table)) liveKeysByTable.set(map.table, new Set());
+    const live = liveKeysByTable.get(map.table);
+    for (const item of next?.[name] ?? []) live.add(map.key(item));
+  }
+
   for (const name of SYNCED_COLLECTIONS) {
     const map = MAPPERS[name];
     const before = prev?.[name] ?? [];
@@ -416,7 +430,8 @@ export async function syncState(prev, next) {
       if (!old || !sameRow(map.toRow(old), map.toRow(item))) upserts.push(map.toRow(item));
     }
 
-    const removed = [...beforeByKey.keys()].filter(k => !afterByKey.has(k));
+    const stillLive = liveKeysByTable.get(map.table) ?? afterByKey;
+    const removed = [...beforeByKey.keys()].filter(k => !stillLive.has(k));
 
     if (upserts.length) {
       const { error } = map.insertOnly

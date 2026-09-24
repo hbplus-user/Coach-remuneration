@@ -397,6 +397,27 @@ const SCORE_DRIVING_OVERRIDES = OVERRIDABLE_KEYS.filter(
 
 // Fields an RM / the app keys in each period. A rolled-over period starts with
 // these null so the row reads empty until someone actually records the month.
+// True once anything has actually been recorded against the month.
+const isRecorded = (record) => MANUAL_PERIOD_FIELDS
+  .some(f => record?.[f] !== null && record?.[f] !== undefined);
+
+/**
+ * Collapse period records that share a coach and month.
+ *
+ * Two rows for one coach and month must never both survive: on the way to the
+ * database the later one wins, so a blank sitting behind a recorded row would
+ * silently overwrite it. Where they collide the recorded one is kept.
+ */
+const dedupePeriodRecords = (records) => {
+  const byKey = new Map();
+  for (const r of records || []) {
+    const key = `${r.coach_id}|${r.period_month}`;
+    const held = byKey.get(key);
+    if (!held || (!isRecorded(held) && isRecorded(r))) byKey.set(key, r);
+  }
+  return [...byKey.values()];
+};
+
 const MANUAL_PERIOD_FIELDS = [
   "prof_appearance", "client_engagement", "safety", "punctuality",
   "team_conduct", "communication", "meetings_scheduled", "meetings_attended",
@@ -1392,8 +1413,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setEducationLevels(next.educationLevels?.length ? next.educationLevels : INITIAL_EDUCATION_LEVELS);
     setEducationFormats(next.educationFormats?.length ? next.educationFormats : INITIAL_EDUCATION_FORMATS);
     setCoaches(next.coaches || []);
-    setHistoricMonths(next.historicMonths || []);
-    setCurrentMonth(next.currentMonth || []);
+    setHistoricMonths(dedupePeriodRecords(next.historicMonths));
+    setCurrentMonth(dedupePeriodRecords(next.currentMonth));
     setOrgWork(next.orgWork || []);
     setViolations(next.violations || []);
     setAppeals(next.appeals || []);
@@ -1495,16 +1516,43 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const activeCoaches = coaches.filter(c => c.status === "Active");
+
+    // A blank is only ever filling a gap. Writing one over a coach/month that
+    // already has a record would wipe whatever was recorded there — and since
+    // a later duplicate wins on the way to the database, it wiped it there too.
+    const existing = new Set(
+      [...historicMonths, ...currentMonth].map(r => draftKey(r.coach_id, r.period_month))
+    );
+    const blanksFor = (period) => activeCoaches
+      .filter(c => !existing.has(draftKey(c.id, period.period_month)))
+      .map(c => blankPeriodRecord(c.id, period));
+
     // Closing a cycle does not lock anything. Locking is a deliberate act on
     // Record Status, so a month that has rolled over can still be completed —
     // data often arrives after the calendar has moved on.
     const rolledIntoHistory = [
       ...currentMonth,
-      ...closed.flatMap(period => activeCoaches.map(c => blankPeriodRecord(c.id, period)))
+      ...closed.flatMap(blanksFor)
     ];
 
-    setHistoricMonths(prev => [...prev, ...rolledIntoHistory]);
-    setCurrentMonth(activeCoaches.map(c => blankPeriodRecord(c.id, livePeriod)));
+    // The period being opened may already have records — the calendar can pass
+    // an end date more than once across sessions. Those are kept as they are
+    // and only the coaches without one get a blank, so nothing is overwritten
+    // and nobody is left off the new cycle.
+    const liveAlready = [...historicMonths, ...currentMonth]
+      .filter(r => r.period_month === livePeriod.period_month);
+    const liveCovered = new Set(liveAlready.map(r => r.coach_id));
+
+    setHistoricMonths(prev => [
+      ...prev.filter(r => r.period_month !== livePeriod.period_month),
+      ...rolledIntoHistory.filter(r => r.period_month !== livePeriod.period_month)
+    ]);
+    setCurrentMonth([
+      ...liveAlready,
+      ...activeCoaches
+        .filter(c => !liveCovered.has(c.id))
+        .map(c => blankPeriodRecord(c.id, livePeriod))
+    ]);
     setPayrollLocked(false);
 
     const opened = closed.length + 1;
@@ -2296,9 +2344,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   // Apply a draft: monthly fields to the period record, one-time fields to the coach.
-  const saveScoreRowEdit = (coach, run) => {
+  // `draftArg` lets a queued draft be saved without it being the one on
+  // screen, which is what "Save all" needs.
+  const saveScoreRowEdit = (coach, run, draftArg = null, opts = {}) => {
+    const draft = draftArg || scoreDraft;
     const vCfg = findVariant(variants, coach.variant_id);
-    const overrides = scoreDraft.overrides || {};
+    const overrides = draft.overrides || {};
     const overriddenCols = COACH_SCORECARD_COLUMNS.filter(c => {
       const v = overrides[c.key];
       return v !== undefined && v !== null && v !== "";
@@ -2324,33 +2375,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (!proceed) return;
     }
 
-    const scheduled = Number(scoreDraft.meetings_scheduled) || 0;
-    const attended = Math.min(Number(scoreDraft.meetings_attended) || 0, scheduled);
+    const scheduled = Number(draft.meetings_scheduled) || 0;
+    const attended = Math.min(Number(draft.meetings_attended) || 0, scheduled);
     const attendancePct = scheduled > 0 ? (attended / scheduled) * 100 : 0;
 
     const updatedRecord = {
       ...run,
-      prof_appearance: Number(scoreDraft.prof_appearance) || 0,
-      client_engagement: Number(scoreDraft.client_engagement) || 0,
-      safety: Number(scoreDraft.safety) || 0,
-      punctuality: Number(scoreDraft.punctuality) || 0,
-      team_conduct: Number(scoreDraft.team_conduct) || 0,
-      communication: Number(scoreDraft.communication) || 0,
+      prof_appearance: Number(draft.prof_appearance) || 0,
+      client_engagement: Number(draft.client_engagement) || 0,
+      safety: Number(draft.safety) || 0,
+      punctuality: Number(draft.punctuality) || 0,
+      team_conduct: Number(draft.team_conduct) || 0,
+      communication: Number(draft.communication) || 0,
       meetings_scheduled: scheduled,
       meetings_attended: attended,
       attendance_pct: Math.round(attendancePct * 100) / 100,
-      sessions_completed: Number(scoreDraft.sessions) || 0,
-      night_sessions: Number(scoreDraft.night_sessions) || 0,
-      five_star_streak: Number(scoreDraft.streak) || 0,
-      overrides: { ...(scoreDraft.overrides || {}) }
+      sessions_completed: Number(draft.sessions) || 0,
+      night_sessions: Number(draft.night_sessions) || 0,
+      five_star_streak: Number(draft.streak) || 0,
+      overrides: { ...(draft.overrides || {}) }
     };
 
     const updatedCoach = {
       ...coach,
-      freelance_past_exp_with_document: Number(scoreDraft.exp_doc) || 0,
-      freelance_past_exp_without_document: Number(scoreDraft.exp_nodoc) || 0,
-      non_coaching_exp_years: Number(scoreDraft.exp_non_coach_years) || 0,
-      education_score_override: Number(scoreDraft.edu_raw) || 0
+      freelance_past_exp_with_document: Number(draft.exp_doc) || 0,
+      freelance_past_exp_without_document: Number(draft.exp_nodoc) || 0,
+      non_coaching_exp_years: Number(draft.exp_non_coach_years) || 0,
+      education_score_override: Number(draft.edu_raw) || 0
     };
 
     // Re-score the period with the new inputs so the stored total stays in step.
@@ -2376,8 +2427,43 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     const overrideCount = overrideKeys(updatedRecord.overrides).length;
     logAudit("Score Card Edited", `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}${overrideCount ? `, ${overrideCount} manual override(s)` : ''}`);
-    showToast(`${run.period_month} score card saved. HB+ Score: ${finalScore}`);
-    cancelScoreRowEdit();
+    if (!opts.quiet) showToast(`${run.period_month} score card saved. HB+ Score: ${finalScore}`);
+
+    const key = draftKey(coach.id, run.period_month);
+    setPendingDrafts(prev => {
+      if (!(key in prev)) return prev;
+      const rest = { ...prev };
+      delete rest[key];
+      return rest;
+    });
+    if (editingRef.current === key) {
+      editingRef.current = null;
+      setEditingScorePeriod(null);
+      setEditingScorePane(null);
+      setScoreDraft({});
+      setUnlockedDynamicKeys([]);
+    }
+    return true;
+  };
+
+  // Commit every draft that has been set aside, plus the one on screen.
+  const saveAllPendingDrafts = (coach, runs) => {
+    stashOpenDraft();
+    const queued = { ...pendingDrafts };
+    const openKey = editingRef.current;
+    if (openKey) queued[openKey] = scoreDraftRef.current;
+
+    let saved = 0;
+    for (const [key, draft] of Object.entries(queued)) {
+      const [coachId, periodMonth] = key.split('|');
+      if (coachId !== coach.id) continue;
+      const run = runs.find(r => r.period_month === periodMonth);
+      if (!run || run.status === 'FINANCE_LOCKED') continue;
+      if (saveScoreRowEdit(coach, run, draft, { quiet: true })) saved += 1;
+    }
+    showToast(saved > 0
+      ? `Saved ${saved} score card${saved === 1 ? '' : 's'}.`
+      : "Nothing to save.", saved > 0 ? "success" : "info");
   };
 
   // Create coach
@@ -5505,6 +5591,49 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         onChange={setScorecardTab}
                         weights={vConfig.weights}
                       />
+
+                      {/* Edits live in the browser until they are saved, and
+                          they can be spread over several months at once, so the
+                          count and the way to commit them sit above the table
+                          rather than only on the row being edited. */}
+                      {(() => {
+                        const openKey = editingScorePeriod
+                          ? draftKey(coach.id, editingScorePeriod) : null;
+                        const keys = new Set([
+                          ...Object.keys(pendingDrafts).filter(k => k.startsWith(`${coach.id}|`)),
+                          ...(openKey ? [openKey] : [])
+                        ]);
+                        if (keys.size === 0) return null;
+                        const months = [...keys].map(k => k.split('|')[1]);
+                        return (
+                          <div className="unsaved-drafts-bar">
+                            <i className="bx bx-save"></i>
+                            <span>
+                              <strong>{keys.size} unsaved score card{keys.size === 1 ? '' : 's'}</strong>
+                              <small>{months.join(', ')} — kept in this browser only until saved</small>
+                            </span>
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => saveAllPendingDrafts(coach, allRuns)}
+                            >
+                              Save {keys.size === 1 ? '' : 'all'}
+                            </button>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => {
+                                if (!window.confirm(`Discard ${keys.size} unsaved score card${keys.size === 1 ? '' : 's'}?\n\n${months.join(', ')}`)) return;
+                                setPendingDrafts(prev => Object.fromEntries(
+                                  Object.entries(prev).filter(([k]) => !keys.has(k))
+                                ));
+                                if (openKey) cancelScoreRowEdit();
+                                showToast("Unsaved changes discarded.", "info");
+                              }}
+                            >
+                              Discard
+                            </button>
+                          </div>
+                        );
+                      })()}
 
                       {renderScorecardTable(visibleScorecardGroups, scorecardTab, 'main')}
 
