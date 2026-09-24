@@ -39,6 +39,33 @@ import {
 
 // Phase 1 scope: only these modules are exposed in the UI.
 // Add a view key back to this list to re-enable its nav item and its view section.
+// A coach whose variant_id is null or points at a variant that is not loaded
+// has no policy to be scored or paid on. Every screen read `vConfig.weights`
+// or `vConfig.rates` straight off the lookup, so one such coach blanked the
+// whole page with "Cannot read properties of undefined".
+//
+// The lookup now always returns a variant shape. The placeholder carries zero
+// weights and no rates, so the coach reads as unscored and unpaid rather than
+// being quietly scored on some other discipline's rules — the numbers stay
+// honest, and the screens keep rendering.
+const UNASSIGNED_VARIANT = {
+  id: null,
+  name: "No policy variant",
+  discipline: "Unassigned",
+  audience: "—",
+  property: "—",
+  is_active: false,
+  placeholder: true,
+  weights: {
+    coaching_exp: 0, non_coaching_exp: 0, education: 0, technical_cert: 0,
+    core_performance: 0, tenure: 0, attendance: 0
+  },
+  rates: { "Fixed": {}, "Flexi": {}, "Flexi-Fixed": {} }
+};
+
+const findVariant = (variants, variantId) =>
+  (variants || []).find(v => v.id === variantId) || UNASSIGNED_VARIANT;
+
 const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "certifications", "penalties", "user-access"];
 const isViewEnabled = (view) => ENABLED_VIEWS.includes(view);
 
@@ -2206,7 +2233,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Apply a draft: monthly fields to the period record, one-time fields to the coach.
   const saveScoreRowEdit = (coach, run) => {
-    const vCfg = variants.find(v => v.id === coach.variant_id);
+    const vCfg = findVariant(variants, coach.variant_id);
     const overrides = scoreDraft.overrides || {};
     const overriddenCols = COACH_SCORECARD_COLUMNS.filter(c => {
       const v = overrides[c.key];
@@ -2264,7 +2291,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     // Re-score the period with the new inputs so the stored total stays in step.
     // A hand-entered HB+ Score wins; any other override is re-applied on read.
-    const vConfig = variants.find(v => v.id === coach.variant_id);
+    const vConfig = findVariant(variants, coach.variant_id);
     const rescored = computeHBPlusScore(updatedCoach, updatedRecord, vConfig);
     const scoreOverride = updatedRecord.overrides.hb_score;
     const finalScore = (scoreOverride !== undefined && scoreOverride !== null)
@@ -2526,7 +2553,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const coach = coaches.find(c => c.id === selectedCoachId);
-    const vConfig = variants.find(v => v.id === coach.variant_id);
+    const vConfig = findVariant(variants, coach.variant_id);
 
     // Update coach category permanently
     setCoaches(prev => prev.map(c => {
@@ -2605,7 +2632,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const activeE = currentMonth.find(cm => cm.coach_id === vioCoachId);
       const score = activeE ? (activeE.hb_score || 50) : 50;
       const band = getPerformanceBand(score).label;
-      const vConfig = variants.find(v => v.id === coach.variant_id);
+      const vConfig = findVariant(variants, coach.variant_id);
       const sessionRate = vConfig.rates[coach.coach_category]?.[band]?.per_session || 250;
       const sessionCount = consequenceObj.consequence.includes("1") ? 1 : (consequenceObj.consequence.includes("2") ? 2 : 4);
       finalAmount = sessionRate * sessionCount;
@@ -2662,7 +2689,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
           const attendance = Number(parts[3]) || 100;
 
           const coach = coaches.find(c => c.id === evalRecord.coach_id);
-          const vConfig = variants.find(v => v.id === coach.variant_id);
+          const vConfig = findVariant(variants, coach.variant_id);
 
           const updated = {
             ...evalRecord,
@@ -2963,8 +2990,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         const coach = coaches.find(c => c.id === record.coach_id);
         if (!coach) return null;
 
-        const vConfig = variants.find(v => v.id === coach.variant_id);
-        if (!vConfig) return null;
+        const vConfig = findVariant(variants, coach.variant_id);
 
         const inPeriod = violations.filter(v =>
           v.coach_id === coach.id &&
@@ -3361,8 +3387,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     return records.map(record => {
       const coach = coaches.find(c => c.id === record.coach_id);
       if (!coach) return null;
-      const vConfig = variants.find(v => v.id === coach.variant_id);
-      if (!vConfig) return null;
+      const vConfig = findVariant(variants, coach.variant_id);
 
       const { score, band } = resolvePeriodScore(coach, record, vConfig);
       const coachVios = violations.filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved');
@@ -3430,7 +3455,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const matchesV = matchesCoachType(coach, payrollVariantFilter);
       if (!matchesV) return;
 
-      const vConfig = variants.find(v => v.id === coach.variant_id);
+      const vConfig = findVariant(variants, coach.variant_id);
       const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
       const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
@@ -3941,7 +3966,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       currentMonth.forEach(m => {
                         const coach = coaches.find(c => c.id === m.coach_id);
                         if (!coach) return;
-                        const vConfig = variants.find(v => v.id === coach.variant_id);
+                        const vConfig = findVariant(variants, coach.variant_id);
                         const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(m.period_start) && new Date(v.incident_date) <= new Date(m.period_end));
                         const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === m.period_month && o.status === 'Approved');
 
@@ -4080,7 +4105,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {coaches.filter(c => c.reporting_manager_id === currentRmContext && c.status === 'Active').map(c => {
                             const hist = historicMonths.find(hm => hm.coach_id === c.id);
                             const curr = currentMonth.find(cm => cm.coach_id === c.id);
-                            const vConfig = variants.find(v => v.id === c.variant_id);
+                            const vConfig = findVariant(variants, c.variant_id);
                             
                             let currScoreLabel = "Not Evaluated";
                             let statusBadge = <span className="badge badge-warning">Pending Input</span>;
@@ -4140,7 +4165,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   return <div className="card"><p>Please select a coach from the header context to view the dashboard.</p></div>;
                 }
 
-                const vConfig = variants.find(v => v.id === currentSelectedCoach.variant_id);
+                const vConfig = findVariant(variants, currentSelectedCoach.variant_id);
                 const histList = historicMonths.filter(h => h.coach_id === currentSelectedCoach.id);
                 const curr = currentMonth.find(e => e.coach_id === currentSelectedCoach.id);
                 
@@ -4301,7 +4326,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
               );
             }
 
-            const vConfig = variants.find(v => v.id === coach.variant_id);
+            const vConfig = findVariant(variants, coach.variant_id);
             // Everything below reads vConfig.rates / .weights / .discipline
             // directly, so a missing variant used to throw and blank the page.
             // Say what is wrong instead.
@@ -5677,7 +5702,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       const matchesStatus = coachesStatusFilter === "All" || c.status === coachesStatusFilter;
                       return matchesSearch && matchesVariant && matchesCategory && matchesStatus;
                     }).map(c => {
-                      const vConfig = variants.find(v => v.id === c.variant_id);
+                      const vConfig = findVariant(variants, c.variant_id);
                       let statusClass = "badge-muted";
                       if (c.status === "Active") statusClass = "badge-success";
                       if (c.status === "Suspended") statusClass = "badge-danger";
@@ -6337,7 +6362,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       return matchesVariant && matchesStatus;
                     }).map(e => {
                       const coach = coaches.find(c => c.id === e.coach_id);
-                      const vConfig = variants.find(v => v.id === coach.variant_id);
+                      const vConfig = findVariant(variants, coach.variant_id);
                       const calc = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
                       const scoreVal = calc.hbScore || calc.hb_score;
                       const bandObj = getPerformanceBand(scoreVal);
@@ -6546,7 +6571,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const matchesV = matchesCoachType(coach, payrollVariantFilter);
                   if (!matchesV) return;
 
-                  const vConfig = variants.find(v => v.id === coach.variant_id);
+                  const vConfig = findVariant(variants, coach.variant_id);
                   const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
                   const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
@@ -6621,7 +6646,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             return matchesCoachType(coach, payrollVariantFilter);
                           }).map(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
-                            const vConfig = variants.find(v => v.id === coach.variant_id);
+                            const vConfig = findVariant(variants, coach.variant_id);
                             const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
                             const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
@@ -8137,7 +8162,7 @@ HB+_030,185,0,96`} />
         const coach = coaches.find(c => c.id === selectedCoachId);
         if (!coach) return null;
         
-        const vConfig = variants.find(v => v.id === coach.variant_id);
+        const vConfig = findVariant(variants, coach.variant_id);
         const dataset = payslipPeriod === currentPeriodMonth ? currentMonth : historicMonths;
         const e = dataset.find(x => x.coach_id === selectedCoachId);
         if (!e) return null;
