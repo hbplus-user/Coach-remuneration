@@ -226,6 +226,8 @@ const SCORE_TRACKER_GROUPS = [
       { key: "sessions", label: "Sessions Completed", decimals: 0, sortable: true },
       { key: "night_sessions", label: "Night Sessions", decimals: 0 },
       { key: "streak", label: "5-Star Streak", decimals: 0 },
+      { key: "missed_sessions", label: "Missed Sessions", decimals: 0 },
+      { key: "missed_penalty", label: "Missed Session Penalty", money: true },
       { key: "threshold", label: "Threshold", decimals: 0 },
       { key: "extra_sessions", label: "Extra Sessions", decimals: 0, emphasis: true },
       { key: "violations", label: "Violations in Period", decimals: 0 }
@@ -348,6 +350,7 @@ const COACH_SCORECARD_GROUPS = [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
+      { key: "missed_sessions", label: "Missed Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "threshold", label: "Threshold", entry: "derived", decimals: 0 },
       { key: "extra_sessions", label: "Extra Sessions", entry: "derived", decimals: 0 },
       { key: "violations", label: "Violations in Period", entry: "derived", decimals: 0 }
@@ -431,7 +434,7 @@ const dedupePeriodRecords = (records) => {
 const MANUAL_PERIOD_FIELDS = [
   "prof_appearance", "client_engagement", "safety", "punctuality",
   "team_conduct", "communication", "meetings_scheduled", "meetings_attended",
-  "sessions_completed", "night_sessions", "five_star_streak"
+  "sessions_completed", "night_sessions", "five_star_streak", "missed_sessions"
 ];
 
 const blankPeriodRecord = (coachId, period) => ({
@@ -492,6 +495,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [consistency, setConsistency] = useState(seed?.consistency ?? "NO");
   const [orgWorkPay, setOrgWorkPay] = useState(seed?.orgWorkPay ?? 0);
   const [penalties, setPenalties] = useState(seed?.penalties ?? 0);
+  const [missedSessions, setMissedSessions] = useState(seed?.missedSessions ?? 0);
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
   // Blank means "use the band's rate"; a number overrides it for this model.
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
@@ -510,7 +514,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     ? [
         seed.key, seed.coachName, seed.variantId, seed.category, seed.score,
         seed.sessions, seed.nightSessions, seed.streak, seed.consistency,
-        seed.orgWorkPay, seed.penalties, seed.baseOverride, seed.rateOverride
+        seed.orgWorkPay, seed.penalties, seed.missedSessions, seed.baseOverride, seed.rateOverride
       ].join('|')
     : '';
   useEffect(() => {
@@ -525,6 +529,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setConsistency(seed.consistency ?? "NO");
     setOrgWorkPay(seed.orgWorkPay ?? 0);
     setPenalties(seed.penalties ?? 0);
+    setMissedSessions(seed.missedSessions ?? 0);
     setBaseOverride(seed.baseOverride ?? "");
     setRateOverride(seed.rateOverride ?? "");
     // A different coach or period is a different pay decision, so both lock again.
@@ -573,6 +578,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     ...(rateOverrideNum !== null ? { per_session_override: rateOverrideNum } : {})
   };
   const syntheticMonth = {
+    missed_sessions: Number(missedSessions) || 0,
     sessions_completed: Number(sessions) || 0,
     night_sessions: Number(nightSessions) || 0,
     five_star_streak: Number(streak) || 0,
@@ -837,7 +843,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               </select>
             ), "zero violations and zero no-shows")}
             {inputRow("Org Work Pay This Month (₹)", num(orgWorkPay, setOrgWorkPay), "Flexi & Flexi-Fixed only")}
-            {inputRow("Total Penalty (₹)", num(penalties, setPenalties))}
+            {inputRow("Missed Sessions", num(missedSessions, setMissedSessions),
+              "charged at 1x up to 5, 1.5x up to 10, 2x above")}
+            {inputRow("Total Penalty (₹)", num(penalties, setPenalties), "recorded incidents; missed sessions are charged separately")}
             {/* Per-session rate applies to every category: Flexi and Flexi-Fixed
                 pay it on all sessions, Fixed on the ones beyond its threshold. */}
             {/* Overriding what a coach is paid is a pay decision, not a
@@ -939,6 +947,12 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Consistency Bonus (₹)", rupees(pay.consistencyBonus))}
             {outputRow("5-Star Streak Bonus (₹)", rupees(pay.streakBonusPay), `₹${vConfig.id === 'V3' ? 500 : 200} per ${vConfig.id === 'V3' ? 15 : 10} consecutive`)}
             {outputRow("Org Work Pay (₹)", rupees(pay.orgWorkPay), "Flexi & Flexi-Fixed only")}
+            {Number(missedSessions) > 0 && outputRow(
+              "Missed Session Penalty (₹)",
+              `− ${rupees(pay.missedSessionDeduction)}`,
+              `${pay.missedSessionMultiplier}× × ${pay.missedSessions} × ${rupees(pay.missedSessionRate)}` +
+                (category === 'Fixed' ? ' — fixed pay ÷ 26 ÷ 5' : '')
+            )}
             {penaltyRow()}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
             {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
@@ -2599,6 +2613,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       sessions: run.sessions_completed ?? 0,
       night_sessions: run.night_sessions ?? 0,
       streak: run.five_star_streak ?? 0,
+      missed_sessions: run.missed_sessions ?? 0,
       exp_doc: coach.freelance_past_exp_with_document ?? 0,
       exp_nodoc: coach.freelance_past_exp_without_document ?? 0,
       exp_non_coach_years: coach.non_coaching_exp_years ?? 0,
@@ -2798,7 +2813,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // Saving a month into that state is almost always an accident.
     const manualDraftKeys = ['prof_appearance', 'client_engagement', 'safety', 'punctuality',
       'team_conduct', 'communication', 'meetings_scheduled', 'meetings_attended',
-      'sessions', 'night_sessions', 'streak'];
+      'sessions', 'night_sessions', 'streak', 'missed_sessions'];
     const allBlank = manualDraftKeys.every(k => {
       const v = draft[k];
       return v === null || v === undefined || v === '' || Number(v) === 0;
@@ -2831,6 +2846,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       sessions_completed: Number(draft.sessions) || 0,
       night_sessions: Number(draft.night_sessions) || 0,
       five_star_streak: Number(draft.streak) || 0,
+      missed_sessions: Number(draft.missed_sessions) || 0,
       overrides: { ...(draft.overrides || {}) }
     };
 
@@ -3650,7 +3666,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
           noshow_count: inPeriod.filter(v => v.type && v.type.includes('No-Show')).length,
           milestone: pay.milestoneIncentive,
           consistency: pay.consistencyBonus,
-          streak: Number(record.five_star_streak) || 0
+          streak: Number(record.five_star_streak) || 0,
+          missed_sessions: Number(record.missed_sessions) || 0,
+          missed_penalty: pay.missedSessionDeduction
         };
       })
       .filter(Boolean)
@@ -3716,7 +3734,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     incentive: { scope: 'period', fields: [
       { key: 'sessions_completed', label: 'Sessions Completed' },
       { key: 'night_sessions',     label: 'Night Sessions' },
-      { key: 'five_star_streak',   label: '5-Star Streak' }
+      { key: 'five_star_streak',   label: '5-Star Streak' },
+      { key: 'missed_sessions',    label: 'Missed Sessions' }
     ]}
   };
 
@@ -6173,6 +6192,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               penalties: periodVios
                                 .filter(isPenaltyChargeable)
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
+                              missedSessions: Number(selected.missed_sessions) || 0,
                               penaltyItems: periodVios,
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
                               payFrom: resolvePay(selected),
@@ -6919,6 +6939,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       consistency: selected.pay.consistencyEligible ? "YES" : "NO",
                       orgWorkPay: selected.pay.orgWorkPay,
                       penalties: selected.pay.penaltyDeductions,
+                      missedSessions: Number(selected.record.missed_sessions) || 0,
                       penaltyItems: selected.periodVios || [],
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
                       payFrom: resolvePay(selected.record),

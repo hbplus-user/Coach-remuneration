@@ -48,7 +48,7 @@ const PERIOD_COLS = [
   'client_engagement', 'safety', 'punctuality', 'team_conduct', 'communication',
   'meetings_scheduled', 'meetings_attended', 'attendance_pct', 'sessions_completed',
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
-  'five_star_streak', 'hb_score', 'band', 'status', 'overrides',
+  'five_star_streak', 'missed_sessions', 'hb_score', 'band', 'status', 'overrides',
   // Pay set for this month specifically, which the band must not overwrite.
   'fixed_pay_override', 'per_session_override'
 ];

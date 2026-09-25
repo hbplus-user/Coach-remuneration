@@ -418,6 +418,45 @@ export function fixedPerSessionRate(monthlyBasicPay) {
   return Math.max(FIXED_PER_SESSION_FLOOR, Math.round(derived * 100) / 100);
 }
 
+/**
+ * A Fixed coach's per-session rate for PENALTY purposes.
+ *
+ * Deliberately not the pay rate. Pay divides the month across six sessions a
+ * day, a penalty across five, so the rate a missed session is charged at is
+ * higher than the rate a worked one is paid at. Same ₹200 floor, so the two
+ * only diverge once the monthly pay is high enough to clear it.
+ */
+export const PENALTY_SESSIONS_PER_DAY = 5;
+
+export function fixedPenaltyPerSessionRate(monthlyBasicPay) {
+  const derived = (Number(monthlyBasicPay) || 0) / FIXED_WORKING_DAYS / PENALTY_SESSIONS_PER_DAY;
+  return Math.max(FIXED_PER_SESSION_FLOOR, Math.round(derived * 100) / 100);
+}
+
+/**
+ * Missed sessions are charged at a multiple of the session rate, and the
+ * multiple rises with how many were missed. It applies to the whole count,
+ * not just the sessions past each boundary: 8 missed is 1.5 x 8, not
+ * 5 + 1.5 x 3.
+ */
+export const MISSED_SESSION_TIERS = [
+  { upTo: 5, multiplier: 1, label: '1–5 missed' },
+  { upTo: 10, multiplier: 1.5, label: '6–10 missed' },
+  { upTo: Infinity, multiplier: 2, label: 'more than 10 missed' }
+];
+
+export function missedSessionTier(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  return MISSED_SESSION_TIERS.find(t => n <= t.upTo) ?? MISSED_SESSION_TIERS[MISSED_SESSION_TIERS.length - 1];
+}
+
+export function missedSessionPenalty(sessionRate, count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n === 0) return 0;
+  const rate = Number(sessionRate) || 0;
+  return Math.round(missedSessionTier(n).multiplier * n * rate * 100) / 100;
+}
+
 export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsForMonth, variantConfig, orgWorkItems = []) {
   const score = scoreData.hbScore;
   const bandObj = getPerformanceBand(score);
@@ -575,13 +614,28 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     sessionPay = 0; // Not session based
   }
 
+  // 7b. Missed sessions. Charged at the penalty session rate — which for a
+  //     Fixed coach is derived from their own monthly pay over five sessions a
+  //     day, not the six that pay uses — times a multiplier that rises with the
+  //     number missed.
+  const missedSessions = Math.max(0, Math.floor(Number(monthData.missed_sessions) || 0));
+  const missedSessionRate = coach.coach_category === 'Fixed'
+    ? fixedPenaltyPerSessionRate(basePay)
+    : effectiveRate;
+  const missedSessionTierApplied = missedSessionTier(missedSessions);
+  const missedSessionDeduction = missedSessionPenalty(missedSessionRate, missedSessions);
+
   // 8. Total penalty from active violations this month.
   //    A waived incident stays on the record — it still counts towards the
   //    occurrence history that sets the next one's consequence — but waiving it
   //    is the decision not to charge for it, so it is not deducted.
-  const penaltyDeductions = activeViolationsForMonth
+  const violationPenalties = activeViolationsForMonth
     .filter(isPenaltyChargeable)
     .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+  // Everything that already reads penaltyDeductions — the payslip, the payroll
+  // run, the exports — deducts missed sessions without needing to know about
+  // them, while the two stay separable for anything that shows the breakdown.
+  const penaltyDeductions = Math.round((violationPenalties + missedSessionDeduction) * 100) / 100;
 
   // 9. GROSS PAY CALCULATION
   const grossPay = basePay + extraSessionPay + sessionPay + nightSessionPay + 
@@ -609,6 +663,12 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     hopPtHomePremium,
     hopPerformanceCreditsPay,
     penaltyDeductions,
+    violationPenalties,
+    missedSessions,
+    missedSessionRate,
+    missedSessionMultiplier: missedSessionTierApplied.multiplier,
+    missedSessionTierLabel: missedSessionTierApplied.label,
+    missedSessionDeduction,
     grossPay: Math.round(grossPay * 100) / 100
   };
 }
