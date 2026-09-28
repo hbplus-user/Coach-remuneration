@@ -3316,11 +3316,14 @@ form {
    apart from the pay itself so the two are never read as the same thing. */
 .calc-forecast {
   margin-top: 1rem;
-  border: 1px dashed var(--border-color);
+  border: 1px solid var(--accent-violet, #8b5cf6);
+  border-left-width: 4px;
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
 .calc-forecast-head {
+  background-color: rgba(139, 92, 246, 0.1) !important;
+  color: var(--accent-violet, #8b5cf6) !important;
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -3382,3 +3385,13 @@ form {
 .stat-card-action:hover {
   filter: brightness(1.04);
 }
+
+/* A benchmark only means something against what is actually paid, so the row
+   carries the verdict: inside the band's range, under it, or over it. */
+.calc-table tr.bench-row .calc-output-cell { font-weight: 700; }
+.bench-within { background-color: rgba(16, 185, 129, 0.10); }
+.bench-within .calc-hint strong { color: var(--accent-green, #10b981); }
+.bench-under { background-color: rgba(245, 158, 11, 0.12); }
+.bench-under .calc-hint strong { color: var(--accent-amber, #f59e0b); }
+.bench-over { background-color: rgba(239, 68, 68, 0.10); }
+.bench-over .calc-hint strong { color: var(--accent-red, #ef4444); }

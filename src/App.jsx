@@ -576,6 +576,13 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     };
   };
   const forecastNow = forecastFor(band.label);
+  const against = (actual, lo, hi) => {
+    const v = Number(actual) || 0;
+    if (!lo && !hi) return null;
+    if (v < lo) return { state: 'under', label: `${rupees(lo - v)} below` };
+    if (v > hi) return { state: 'over', label: `${rupees(v - hi)} above` };
+    return { state: 'within', label: 'within range' };
+  };
   const forecastNext = forecastFor(nextBandLabel);
 
   const rateOverrideNum = rateOverride !== "" && Number.isFinite(Number(rateOverride))
@@ -979,32 +986,47 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             </div>
             <table className="data-table calc-table">
               <tbody>
-                <tr>
-                  <td className="calc-label">
-                    Benchmark Salary (₹)
-                    <span className="calc-hint">the band's range — {band.label}</span>
-                  </td>
-                  <td className="calc-output-cell">
-                    {forecastNow.salaryHi > forecastNow.salaryLo
-                      ? `${rupees(forecastNow.salaryLo)} – ${rupees(forecastNow.salaryHi)}`
-                      : rupees(forecastNow.salaryLo)}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="calc-label">
-                    Benchmark Per Session (₹)
-                    <span className="calc-hint">
-                      {category === 'Fixed'
-                        ? 'across that range, ÷ 26 ÷ 6, floored at ₹200'
-                        : "the band's session rate"}
-                    </span>
-                  </td>
-                  <td className="calc-output-cell">
-                    {forecastNow.rateHi > forecastNow.rateLo
-                      ? `${rupees(forecastNow.rateLo)} – ${rupees(forecastNow.rateHi)}`
-                      : rupees(forecastNow.rateLo)}
-                  </td>
-                </tr>
+                {(() => {
+                  const m = category === 'Flexi'
+                    ? null : against(pay.basePay, forecastNow.salaryLo, forecastNow.salaryHi);
+                  return (
+                    <tr className={m ? `bench-row bench-${m.state}` : ''}>
+                      <td className="calc-label">
+                        Benchmark Salary (₹)
+                        <span className="calc-hint">
+                          the band's range — {band.label}
+                          {m && <> · paid {rupees(pay.basePay)}, <strong>{m.label}</strong></>}
+                        </span>
+                      </td>
+                      <td className="calc-output-cell">
+                        {forecastNow.salaryHi > forecastNow.salaryLo
+                          ? `${rupees(forecastNow.salaryLo)} – ${rupees(forecastNow.salaryHi)}`
+                          : rupees(forecastNow.salaryLo)}
+                      </td>
+                    </tr>
+                  );
+                })()}
+                {(() => {
+                  const m = against(pay.perSessionRate, forecastNow.rateLo, forecastNow.rateHi);
+                  return (
+                    <tr className={m ? `bench-row bench-${m.state}` : ''}>
+                      <td className="calc-label">
+                        Benchmark Per Session (₹)
+                        <span className="calc-hint">
+                          {category === 'Fixed'
+                            ? 'across that range, ÷ 26 ÷ 6, floored at ₹200'
+                            : "the band's session rate"}
+                          {m && <> · paid {rupees(pay.perSessionRate)}, <strong>{m.label}</strong></>}
+                        </span>
+                      </td>
+                      <td className="calc-output-cell">
+                        {forecastNow.rateHi > forecastNow.rateLo
+                          ? `${rupees(forecastNow.rateLo)} – ${rupees(forecastNow.rateHi)}`
+                          : rupees(forecastNow.rateLo)}
+                      </td>
+                    </tr>
+                  );
+                })()}
                 <tr>
                   <td className="calc-label">
                     Forecast Fixed Pay (₹)
