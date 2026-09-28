@@ -1997,6 +1997,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // movement is how a coach ends up a band away from what they are paid.
   // -------------------------------------------------------------------------
   const bandMovements = useMemo(() => {
+    const openMonth = currentMonth[0]?.period_month
+      ?? getPeriodForDate(new Date()).period_month;
     const order = PAY_BANDS.map(b => b.label);
     const byCoach = new Map();
     for (const r of [...historicMonths, ...currentMonth]) {
@@ -2010,7 +2012,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (!coach || coach.status !== 'Active') continue;
 
       const sorted = [...records].sort((a, b) => new Date(a.period_start) - new Date(b.period_start));
-      const idx = sorted.findIndex(r => r.period_month === currentPeriodMonth);
+      const idx = sorted.findIndex(r => r.period_month === openMonth);
       if (idx <= 0) continue;
 
       // An unscored month is not a band, so it is skipped rather than read as
@@ -2033,7 +2035,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       });
     }
     return moves.sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
-  }, [historicMonths, currentMonth, coaches, currentPeriodMonth]);
+  }, [historicMonths, currentMonth, coaches]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
