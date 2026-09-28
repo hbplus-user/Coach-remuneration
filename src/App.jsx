@@ -560,7 +560,20 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     // A Fixed coach's session rate comes from their own monthly pay, not the
     // band's column, so the forecast has to be derived the same way.
     const rate = category === 'Fixed' ? fixedPerSessionRate(base) : r.per_session;
-    return { label, base: base ?? 0, rate: rate ?? 0 };
+    // The band is a range, not a point. For a Fixed coach the session rate
+    // follows the salary, so its range is derived from the salary's ends;
+    // Flexi and Flexi-Fixed are paid the band's own column, which is a point.
+    const lo = r.min_fixed ?? 0;
+    const hi = r.max_fixed ?? lo;
+    return {
+      label,
+      base: base ?? 0,
+      rate: rate ?? 0,
+      salaryLo: lo,
+      salaryHi: hi,
+      rateLo: category === 'Fixed' ? fixedPerSessionRate(lo) : (r.per_session ?? 0),
+      rateHi: category === 'Fixed' ? fixedPerSessionRate(hi) : (r.per_session ?? 0)
+    };
   };
   const forecastNow = forecastFor(band.label);
   const forecastNext = forecastFor(nextBandLabel);
@@ -962,10 +975,36 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         {forecastNow && (
           <div className="calc-forecast">
             <div className="calc-forecast-head">
-              Forecast from HB+ Score <span>does not affect pay</span>
+              Benchmark &amp; Forecast <span>does not affect pay</span>
             </div>
             <table className="data-table calc-table">
               <tbody>
+                <tr>
+                  <td className="calc-label">
+                    Benchmark Salary (₹)
+                    <span className="calc-hint">the band's range — {band.label}</span>
+                  </td>
+                  <td className="calc-output-cell">
+                    {forecastNow.salaryHi > forecastNow.salaryLo
+                      ? `${rupees(forecastNow.salaryLo)} – ${rupees(forecastNow.salaryHi)}`
+                      : rupees(forecastNow.salaryLo)}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="calc-label">
+                    Benchmark Per Session (₹)
+                    <span className="calc-hint">
+                      {category === 'Fixed'
+                        ? 'across that range, ÷ 26 ÷ 6, floored at ₹200'
+                        : "the band's session rate"}
+                    </span>
+                  </td>
+                  <td className="calc-output-cell">
+                    {forecastNow.rateHi > forecastNow.rateLo
+                      ? `${rupees(forecastNow.rateLo)} – ${rupees(forecastNow.rateHi)}`
+                      : rupees(forecastNow.rateLo)}
+                  </td>
+                </tr>
                 <tr>
                   <td className="calc-label">
                     Forecast Fixed Pay (₹)
@@ -1416,6 +1455,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [newCoachGender, setNewCoachGender] = useState("");
   const [newCoachType, setNewCoachType] = useState("");
   const [newCoachCategory, setNewCoachCategory] = useState("");
+  // Starting pay. Pre-filled from the bottom of the entry band's range, which
+  // is what a coach with no performance history benchmarks to, and editable —
+  // a new hire is rarely on the floor of the lowest band.
+  const [newCoachSalary, setNewCoachSalary] = useState("");
+  const [newCoachRate, setNewCoachRate] = useState("");
   const [newCoachErrors, setNewCoachErrors] = useState({});
 
   // 2. Evaluation Form
@@ -1944,6 +1988,53 @@ export default function App({ session = null, profile = null, onSignOut = null }
     return () => window.removeEventListener('beforeunload', warn);
   }, [pendingDrafts, editingScorePeriod]);
 
+  // -------------------------------------------------------------------------
+  // Coaches whose band moved between the last cycle and the open one.
+  //
+  // Pay no longer follows the band, which is what makes this worth surfacing:
+  // a coach who has moved up or down is not automatically paid differently,
+  // so somebody has to decide whether their figure should change. Silent
+  // movement is how a coach ends up a band away from what they are paid.
+  // -------------------------------------------------------------------------
+  const bandMovements = useMemo(() => {
+    const order = PAY_BANDS.map(b => b.label);
+    const byCoach = new Map();
+    for (const r of [...historicMonths, ...currentMonth]) {
+      if (!byCoach.has(r.coach_id)) byCoach.set(r.coach_id, []);
+      byCoach.get(r.coach_id).push(r);
+    }
+
+    const moves = [];
+    for (const [coachId, records] of byCoach) {
+      const coach = coaches.find(c => c.id === coachId);
+      if (!coach || coach.status !== 'Active') continue;
+
+      const sorted = [...records].sort((a, b) => new Date(a.period_start) - new Date(b.period_start));
+      const idx = sorted.findIndex(r => r.period_month === currentPeriodMonth);
+      if (idx <= 0) continue;
+
+      // An unscored month is not a band, so it is skipped rather than read as
+      // a fall to the bottom — which is what a null score would otherwise do.
+      const now = sorted[idx];
+      const prev = [...sorted.slice(0, idx)].reverse().find(r => r.hb_score != null);
+      if (!prev || now.hb_score == null) continue;
+
+      const toBand = now.band || getPerformanceBand(now.hb_score).label;
+      const fromBand = prev.band || getPerformanceBand(prev.hb_score).label;
+      if (toBand === fromBand) continue;
+
+      moves.push({
+        coachId,
+        name: coach.name,
+        from: fromBand,
+        to: toBand,
+        fromMonth: prev.period_month,
+        up: order.indexOf(toBand) > order.indexOf(fromBand)
+      });
+    }
+    return moves.sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
+  }, [historicMonths, currentMonth, coaches, currentPeriodMonth]);
+
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
     if (!filterValue || filterValue === "All") return true;
@@ -2325,6 +2416,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`Saved. ${coach.name}'s ${periodMonth} pay is set.`, "success");
   };
 
+  /**
+   * The bottom of the benchmark range a coach with no score starts against.
+   * A new coach has no performance, so they benchmark into the entry band.
+   */
+  const entryBenchmark = (variantId, category) => {
+    const vConfig = findVariant(variants, variantId);
+    const rates = vConfig.rates?.[category]?.[PAY_BANDS[0].label];
+    if (!rates) return { salary: null, rate: null };
+    const salary = rates.min_fixed ?? null;
+    const rate = category === 'Fixed'
+      ? (salary != null ? fixedPerSessionRate(salary) : null)
+      : (rates.per_session ?? null);
+    return { salary, rate };
+  };
+
   // Open Payslip Modal
   const handleOpenPayslipModal = (coachId, period) => {
     if (currentRole === 'Showrunner' || currentRole === 'Coach') {
@@ -2373,6 +2479,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setNewCoachGender("");
     setNewCoachType("");
     setNewCoachCategory("");
+    setNewCoachSalary("");
+    setNewCoachRate("");
     setNewCoachErrors({});
   };
 
@@ -2952,6 +3060,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const typeConfig = COACH_TYPES.find(t => t.value === newCoachType);
     const newId = uhid;
 
+    // Pay is stored on the coach from the outset rather than left to fall
+    // through to the band, so the figure never moves on its own when the score
+    // does. Blank takes the floor of the entry band; Flexi has no salary.
+    const entry = entryBenchmark(typeConfig.variant_id, newCoachCategory);
+    const chosenSalary = newCoachSalary === "" ? entry.salary : Number(newCoachSalary);
+    const chosenRate = newCoachRate === "" ? entry.rate : Number(newCoachRate);
+    const startingPay = newCoachCategory === 'Flexi'
+      ? { per_session_override: chosenRate ?? null }
+      : {
+          ...(newCoachCategory === 'Flexi-Fixed'
+            ? { flexi_fixed_base_salary: chosenSalary ?? null }
+            : { fixed_salary_override: chosenSalary ?? null }),
+          per_session_override: chosenRate ?? null
+        };
+
     const newCoach = {
       ...NEW_COACH_DEFAULTS,
       id: newId,
@@ -2961,7 +3084,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
       coach_type: newCoachType,
       coach_category: newCoachCategory,
       variant_id: typeConfig.variant_id,
-      reporting_manager_id: typeConfig.reporting_manager_id
+      reporting_manager_id: typeConfig.reporting_manager_id,
+      ...startingPay
     };
 
     setCoaches(prev => [...prev, newCoach]);
@@ -4469,6 +4593,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <p>Needs score validation</p>
                       </div>
                     </div>
+                    {PROFILE_PAY_ROLES.includes(currentRole) && bandMovements.length > 0 && (
+                      <div className="stat-card stat-violet">
+                        <div className="stat-icon"><i className="bx bx-transfer-alt"></i></div>
+                        <div className="stat-info">
+                          <h3>Band Movement</h3>
+                          <h2>
+                            {bandMovements.filter(m => m.up).length}↑ {bandMovements.filter(m => !m.up).length}↓
+                          </h2>
+                          <p>
+                            {bandMovements.slice(0, 3).map(m => m.name.split(' ')[0]).join(', ')}
+                            {bandMovements.length > 3 ? ` +${bandMovements.length - 3} more` : ''}
+                            {' '}— pay does not follow, review it
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <div className="stat-card stat-red">
                       <div className="stat-icon"><i className="bx bxs-error-circle"></i></div>
                       <div className="stat-info">
@@ -8305,6 +8445,46 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   {newCoachErrors.category && <span className="field-error">{newCoachErrors.category}</span>}
                 </div>
               </div>
+
+              {/* Pay is stored on the coach from the start, so it never moves
+                  on its own when the score does. The defaults are the floor of
+                  the entry band, which is a starting point, not a proposal. */}
+              {newCoachCategory && newCoachCategory !== 'Flexi' && (() => {
+                const typeConfig = COACH_TYPES.find(t => t.value === newCoachType);
+                const entry = entryBenchmark(typeConfig?.variant_id, newCoachCategory);
+                return (
+                  <div className="form-grid">
+                    <div className="form-group">
+                      <label>Starting Salary (₹)</label>
+                      <input
+                        type="number" min="0" step="any"
+                        value={newCoachSalary}
+                        placeholder={entry.salary != null ? String(entry.salary) : ''}
+                        onChange={(e) => setNewCoachSalary(e.target.value)}
+                      />
+                      <span className="field-hint">
+                        {entry.salary != null
+                          ? `Blank uses ₹${entry.salary.toLocaleString('en-IN')} — the floor of ${PAY_BANDS[0].label}, where a coach with no score benchmarks.`
+                          : 'No benchmark for this category.'}
+                      </span>
+                    </div>
+                    <div className="form-group">
+                      <label>Starting Per-Session Rate (₹)</label>
+                      <input
+                        type="number" min="0" step="any"
+                        value={newCoachRate}
+                        placeholder={entry.rate != null ? String(entry.rate) : ''}
+                        onChange={(e) => setNewCoachRate(e.target.value)}
+                      />
+                      <span className="field-hint">
+                        {newCoachCategory === 'Fixed'
+                          ? 'Blank derives it from the salary above, ÷ 26 ÷ 6, floored at ₹200.'
+                          : "Blank uses the band's session rate."}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setActiveModal(null)}>Cancel</button>
