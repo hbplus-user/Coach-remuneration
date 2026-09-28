@@ -2030,6 +2030,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const bandMoveFor = (coachId, periodMonth) =>
     bandMoveIndex.get(`${coachId}|${periodMonth}`) ?? null;
 
+  // Raised once per sign-in, not on every render: a band move is news the
+  // first time it is seen, and noise every time after. Held in sessionStorage
+  // so it does not fire again on each navigation within the same session.
+  const bandAlertShown = useRef(false);
+
   const bandMovements = useMemo(() => {
     const openMonth = currentMonth[0]?.period_month
       ?? getPeriodForDate(new Date()).period_month;
@@ -2042,6 +2047,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
       .filter(Boolean)
       .sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
   }, [bandMoveIndex, coaches, currentMonth]);
+
+  useEffect(() => {
+    if (!isStateLoaded || bandAlertShown.current) return;
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) return;
+    if (bandMovements.length === 0) return;
+
+    const openMonth = currentMonth[0]?.period_month ?? '';
+    const stamp = `${currentRole}|${openMonth}|${bandMovements.map(m => m.coachId).sort().join(',')}`;
+    let seen = null;
+    try { seen = sessionStorage.getItem('hb_band_alert'); } catch { /* private mode */ }
+    if (seen === stamp) { bandAlertShown.current = true; return; }
+
+    bandAlertShown.current = true;
+    try { sessionStorage.setItem('hb_band_alert', stamp); } catch { /* private mode */ }
+
+    const up = bandMovements.filter(m => m.up).length;
+    const down = bandMovements.length - up;
+    const parts = [up ? `${up} up` : null, down ? `${down} down` : null].filter(Boolean).join(', ');
+    showToast(
+      `${bandMovements.length} coach${bandMovements.length === 1 ? '' : 'es'} changed band this cycle (${parts}) — ` +
+      `${bandMovements.slice(0, 3).map(m => m.name).join(', ')}${bandMovements.length > 3 ? ' and others' : ''}. ` +
+      `Pay does not follow the band, so it needs a decision.`,
+      down > 0 ? "warning" : "info"
+    );
+  }, [isStateLoaded, currentRole, bandMovements, currentMonth]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
@@ -6524,6 +6554,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <th>Type</th>
                       <th>Category</th>
                       <th>Designation</th>
+                      <th>Band</th>
                       <th>DOJ</th>
                       <th>RM</th>
                       <th>Status</th>
@@ -6539,6 +6570,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       return matchesSearch && matchesVariant && matchesCategory && matchesStatus;
                     }).map(c => {
                       const vConfig = findVariant(variants, c.variant_id);
+                      // The band the coach is on in the open cycle, and whether
+                      // it moved. Pay no longer follows the band, so a move is
+                      // something to act on rather than just a fact.
+                      const openRecord = currentMonth.find(r => r.coach_id === c.id);
+                      const openBand = openRecord?.hb_score != null
+                        ? (openRecord.band || getPerformanceBand(openRecord.hb_score).label)
+                        : null;
+                      const bandMove = openRecord ? bandMoveFor(c.id, openRecord.period_month) : null;
                       let statusClass = "badge-muted";
                       if (c.status === "Active") statusClass = "badge-success";
                       if (c.status === "Suspended") statusClass = "badge-danger";
@@ -6571,7 +6610,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <td>{c.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : c.variant_id)}</td>
                           <td>{c.coach_category}</td>
                           <td>{c.internal_designation || 'Coach'}</td>
-                          <td>{new Date(c.date_of_joining).toLocaleDateString('en-IN')}</td>
+                          <td
+                            className={bandMove ? `band-moved band-moved-${bandMove.up ? 'up' : 'down'}` : ''}
+                            title={bandMove
+                              ? `Moved ${bandMove.up ? 'up' : 'down'} from ${bandMove.from} (${bandMove.fromMonth}) — pay does not follow`
+                              : undefined}
+                          >
+                            {openBand
+                              ? <>{openBand.replace(/ .*/, '')}{bandMove && (
+                                  <i className={`bx ${bandMove.up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
+                                )}</>
+                              : <span className="text-muted">—</span>}
+                          </td>
+                          {/* A joining date that never came across reads as the
+                              Unix epoch, and tenure is 15% of the score, so it
+                              is called out rather than shown as a real date. */}
+                          <td>
+                            {c.date_of_joining
+                              ? new Date(c.date_of_joining).toLocaleDateString('en-IN')
+                              : <span className="text-red" title="No joining date — tenure scores as the maximum five years">Not set</span>}
+                          </td>
                           <td>{c.reporting_manager_id}</td>
                           <td><span className={`badge ${statusClass}`}>{c.status}</span></td>
                           <td className="actions-col" onClick={(e) => e.stopPropagation()}>
