@@ -3345,3 +3345,40 @@ form {
 .calc-forecast .calc-output-cell {
   color: var(--text-secondary);
 }
+
+/* ---------------------------------------------------------------------------
+   A band that changed since the coach's last scored month. Pay no longer
+   follows the band, so a move is a prompt for someone to decide — which is why
+   it is marked on the cell rather than left to be noticed.
+--------------------------------------------------------------------------- */
+.band-moved {
+  position: relative;
+  font-weight: 600;
+}
+.band-moved-up {
+  background-color: rgba(16, 185, 129, 0.14);
+  box-shadow: inset 3px 0 0 var(--accent-green, #10b981);
+}
+.band-moved-down {
+  background-color: rgba(239, 68, 68, 0.14);
+  box-shadow: inset 3px 0 0 var(--accent-red, #ef4444);
+}
+.band-move-arrow {
+  margin-left: 4px;
+  vertical-align: -2px;
+  font-size: 0.95rem;
+}
+.band-moved-up .band-move-arrow { color: var(--accent-green, #10b981); }
+.band-moved-down .band-move-arrow { color: var(--accent-red, #ef4444); }
+
+/* The movement card leads somewhere, so it reads as something to act on. */
+.stat-card-action {
+  cursor: pointer;
+  border: none;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+}
+.stat-card-action:hover {
+  filter: brightness(1.04);
+}

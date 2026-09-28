@@ -1996,9 +1996,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // so somebody has to decide whether their figure should change. Silent
   // movement is how a coach ends up a band away from what they are paid.
   // -------------------------------------------------------------------------
-  const bandMovements = useMemo(() => {
-    const openMonth = currentMonth[0]?.period_month
-      ?? getPeriodForDate(new Date()).period_month;
+  const bandMoveIndex = useMemo(() => {
     const order = PAY_BANDS.map(b => b.label);
     const byCoach = new Map();
     for (const r of [...historicMonths, ...currentMonth]) {
@@ -2006,36 +2004,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
       byCoach.get(r.coach_id).push(r);
     }
 
-    const moves = [];
+    const index = new Map();
     for (const [coachId, records] of byCoach) {
-      const coach = coaches.find(c => c.id === coachId);
-      if (!coach || coach.status !== 'Active') continue;
-
       const sorted = [...records].sort((a, b) => new Date(a.period_start) - new Date(b.period_start));
-      const idx = sorted.findIndex(r => r.period_month === openMonth);
-      if (idx <= 0) continue;
-
-      // An unscored month is not a band, so it is skipped rather than read as
-      // a fall to the bottom — which is what a null score would otherwise do.
-      const now = sorted[idx];
-      const prev = [...sorted.slice(0, idx)].reverse().find(r => r.hb_score != null);
-      if (!prev || now.hb_score == null) continue;
-
-      const toBand = now.band || getPerformanceBand(now.hb_score).label;
-      const fromBand = prev.band || getPerformanceBand(prev.hb_score).label;
-      if (toBand === fromBand) continue;
-
-      moves.push({
-        coachId,
-        name: coach.name,
-        from: fromBand,
-        to: toBand,
-        fromMonth: prev.period_month,
-        up: order.indexOf(toBand) > order.indexOf(fromBand)
-      });
+      let prev = null;
+      for (const r of sorted) {
+        // An unscored month is not a band, so it is passed over rather than
+        // read as a fall to the bottom — which is what a null score would do.
+        if (r.hb_score == null) continue;
+        const band = r.band || getPerformanceBand(r.hb_score).label;
+        if (prev && band !== prev.band) {
+          index.set(`${coachId}|${r.period_month}`, {
+            up: order.indexOf(band) > order.indexOf(prev.band),
+            from: prev.band,
+            fromMonth: prev.month,
+            to: band
+          });
+        }
+        prev = { band, month: r.period_month };
+      }
     }
-    return moves.sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
-  }, [historicMonths, currentMonth, coaches]);
+    return index;
+  }, [historicMonths, currentMonth]);
+
+  const bandMoveFor = (coachId, periodMonth) =>
+    bandMoveIndex.get(`${coachId}|${periodMonth}`) ?? null;
+
+  const bandMovements = useMemo(() => {
+    const openMonth = currentMonth[0]?.period_month
+      ?? getPeriodForDate(new Date()).period_month;
+    return coaches
+      .filter(c => c.status === 'Active')
+      .map(c => {
+        const move = bandMoveIndex.get(`${c.id}|${openMonth}`);
+        return move ? { coachId: c.id, name: c.name, ...move } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
+  }, [bandMoveIndex, coaches, currentMonth]);
 
   // Helper to match coach type across filters
   const matchesCoachType = (coach, filterValue) => {
@@ -4596,7 +4602,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </div>
                     </div>
                     {PROFILE_PAY_ROLES.includes(currentRole) && bandMovements.length > 0 && (
-                      <div className="stat-card stat-violet">
+                      <div
+                        className="stat-card stat-violet stat-card-action"
+                        role="button"
+                        tabIndex={0}
+                        title="Open the Score Tracker, where the moves are marked on the band"
+                        onClick={() => setActiveView('score-tracker')}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('score-tracker'); }}
+                      >
                         <div className="stat-icon"><i className="bx bx-transfer-alt"></i></div>
                         <div className="stat-info">
                           <h3>Band Movement</h3>
@@ -5382,12 +5395,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             const outOfRange = isEditing && canOverride && draftValue !== undefined && draftValue !== '' &&
                               (Number.isNaN(Number(draftValue)) || Number(draftValue) < 0 ||
                                 (ceiling !== null && Number(draftValue) > ceiling));
+                            const bandMove = col.key === 'band'
+                              ? bandMoveFor(coach.id, run.period_month) : null;
                             return (
                               <td
                                 key={col.key}
-                                title={isOverridden ? 'Hand-entered — overrides the calculated value' : undefined}
+                                title={bandMove
+                                  ? `Moved ${bandMove.up ? 'up' : 'down'} from ${bandMove.from} (${bandMove.fromMonth})`
+                                  : (isOverridden ? 'Hand-entered — overrides the calculated value' : undefined)}
                                 className={[
                                   `col-${col.key}`,
+                                  bandMove ? `band-moved band-moved-${bandMove.up ? 'up' : 'down'}` : '',
                                   col.sticky ? 'sticky-col sticky-month' : '',
                                   col.decimals !== undefined ? 'num-col' : '',
                                   col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
@@ -6788,10 +6806,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 className={[
                                   col.sticky ? `sticky-col sticky-${col.key}` : '',
                                   col.decimals !== undefined || col.money ? 'num-col' : '',
-                                  col.emphasis ? `emphasis-col emphasis-${group.tone}` : ''
+                                  col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
+                                  col.key === 'band' && bandMoveFor(row.coach_id, row.month)
+                                    ? `band-moved band-moved-${bandMoveFor(row.coach_id, row.month).up ? 'up' : 'down'}`
+                                    : ''
                                 ].join(' ')}
+                                title={col.key === 'band' && bandMoveFor(row.coach_id, row.month)
+                                  ? `Moved ${bandMoveFor(row.coach_id, row.month).up ? 'up' : 'down'} from ${bandMoveFor(row.coach_id, row.month).from} (${bandMoveFor(row.coach_id, row.month).fromMonth})`
+                                  : undefined}
                               >
                                 {formatScoreCell(col, row)}
+                                {col.key === 'band' && bandMoveFor(row.coach_id, row.month) && (
+                                  <i className={`bx ${bandMoveFor(row.coach_id, row.month).up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
+                                )}
                               </td>
                             )))}
                           </tr>
