@@ -386,20 +386,28 @@ export const isPenaltyChargeable = (v) =>
   v?.status !== 'Appeal_Approved' && v?.status !== 'Waived';
 
 export function getPenaltyConsequence(variantId, violationType, occurrenceNo, penaltyMatrix) {
-  const variantMatrix = penaltyMatrix[variantId] || penaltyMatrix['default'];
-  const rules = variantMatrix[violationType];
-  
-  if (!rules) return { consequence: "No Rule Defined", amount: 0 };
-  
-  // Pick corresponding tier (1st, 2nd, 3rd, 4th)
-  let levelIndex = Math.min(occurrenceNo, 4) - 1; // Cap at 4th
-  const tier = rules[levelIndex];
-  
-  if (!tier) return { consequence: "Warning", amount: 0 };
-  
+  // A violation is looked for in the coach's own variant first, then in the
+  // online annexure, then in the default. The annexures overlap only partly —
+  // a rule written for a discipline should win over the general one, but a
+  // violation that exists only in Annexure 1B still has to be chargeable.
+  const rules = penaltyMatrix[variantId]?.[violationType]
+    ?? penaltyMatrix['ONLINE']?.[violationType]
+    ?? penaltyMatrix['default']?.[violationType];
+
+  if (!rules || rules.length === 0) return { consequence: "No Rule Defined", amount: 0 };
+
+  // Past the last step defined, the last step stands. Several violations end
+  // at termination with no fourth step, and reading a missing step as a bare
+  // warning would make the fourth occurrence of the gravest violations cost
+  // less than the first.
+  const step = Math.min(Math.max(1, Number(occurrenceNo) || 1), rules.length);
+  const tier = rules[step - 1];
+
   return {
     consequence: tier.consequence,
-    amount: tier.amount || 0
+    amount: tier.amount || 0,
+    step,
+    finalStep: step === rules.length && rules.length < 4
   };
 }
 

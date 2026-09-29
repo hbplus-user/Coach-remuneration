@@ -10,6 +10,8 @@ import {
   INITIAL_EDUCATION_LEVELS,
   INITIAL_EDUCATION_FORMATS,
   PENALTY_MATRIX,
+  ONLINE_PENALTY_MATRIX,
+  ONLINE_VIOLATION_CATEGORIES,
   VIOLATION_TRACKING
 } from './data.js';
 
@@ -2234,6 +2236,28 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Handle active coach selection change
   const handleCoachSelectChange = (coachId) => {
     setCurrentCoachContext(coachId);
+  };
+
+  /**
+   * The violations that can be logged against a coach, grouped by where the
+   * rule comes from. Their own variant's rules lead, since a rule written for
+   * a discipline should be reached for first; Annexure 1B follows, grouped by
+   * its own categories so fifty-six entries stay navigable.
+   */
+  const violationOptions = (coach) => {
+    const own = Object.keys(PENALTY_MATRIX[coach?.variant_id] || {});
+    const groups = [];
+    if (own.length) groups.push({ label: `${coach?.variant_id || 'Variant'} rules`, types: own });
+
+    const byCategory = new Map();
+    for (const type of Object.keys(ONLINE_PENALTY_MATRIX)) {
+      if (own.includes(type)) continue;
+      const cat = ONLINE_VIOLATION_CATEGORIES[type]?.category || 'Other';
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat).push(type);
+    }
+    for (const [label, types] of byCategory) groups.push({ label, types });
+    return groups;
   };
 
   // Open Log Violation Modal
@@ -7886,6 +7910,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
                 <div className="tracker-toolbar-controls">
                   <select className="header-select" value={penaltyVariant} onChange={(e) => setPenaltyVariant(e.target.value)}>
+                    {/* Annexure 1B is not a discipline, so it sits beside the
+                        variants rather than among them. */}
+                    <option value="ONLINE">Annexure 1B — Online / Remote</option>
                     {offeredVariants(variants, penaltyVariant).map(v => (
                       <option key={v.id} value={v.id}>{variantLabel(v)}</option>
                     ))}
@@ -7916,16 +7943,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         const tracking = VIOLATION_TRACKING[type] || 'Lifetime';
                         return (
                           <tr key={type}>
-                            <td><strong>{type}</strong></td>
+                            <td>
+                              <strong>{type}</strong>
+                              {ONLINE_VIOLATION_CATEGORIES[type] && (
+                                <small className="vio-meta">
+                                  {ONLINE_VIOLATION_CATEGORIES[type].category}
+                                  {' · '}
+                                  <span className={`vio-sev vio-sev-${ONLINE_VIOLATION_CATEGORIES[type].severity.toLowerCase()}`}>
+                                    {ONLINE_VIOLATION_CATEGORIES[type].severity}
+                                  </span>
+                                </small>
+                              )}
+                            </td>
                             {[0, 1, 2, 3].map(i => {
                               const step = steps[i];
+                              // Past the last step defined, the last step stands,
+                              // so the table says so rather than showing a dash
+                              // that reads as "nothing happens".
+                              const beyond = !step && i >= steps.length && steps.length > 0;
                               return (
-                                <td key={i} className="num-col">
+                                <td key={i} className="num-col" title={step?.consequence}>
                                   {step
-                                    ? (step.amount > 0 && /₹/.test(step.consequence)
-                                        ? `₹${step.amount}`
+                                    ? (step.amount > 0
+                                        ? `₹${step.amount.toLocaleString('en-IN')}`
                                         : step.consequence)
-                                    : '—'}
+                                    : (beyond ? <span className="text-muted">as 
+                                        {' '}{steps.length === 1 ? '1st' : steps.length === 2 ? '2nd' : '3rd'}</span> : '—')}
                                 </td>
                               );
                             })}
@@ -8806,27 +8849,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div className="form-group">
                     <label>Incident Type</label>
                     <select value={vioType} onChange={(e) => setVioType(e.target.value)} required>
-                      <option value="Late Arrival (<5 min)">Late Arrival (&lt;5 min)</option>
-                      <option value="Late Arrival (>5 min)">Late Arrival (&gt;5 min)</option>
-                      <option value="Coach No-Show">Coach No-Show</option>
-                      <option value="Unplanned Absence (<4 hrs notice)">Unplanned Absence (&lt;4 hrs notice)</option>
-                      <option value="Repeated Roster Violations">Repeated Roster Violations</option>
-                      {coach?.variant_id === 'V5' && (
-                        <>
-                          <option value="Ignoring Roster / WhatsApp Messages">Ignoring Roster / WhatsApp Messages</option>
-                          <option value="Declining Session Under Capacity">Declining Session Under Capacity</option>
-                          <option value="Not Updating Session Data">Not Updating Session Data</option>
-                          <option value="Unprofessional Appearance">Unprofessional Appearance</option>
-                          <option value="Coach No-Show — No Communication">Coach No-Show — No Communication</option>
-                          <option value="Unauthorised Commitment to Client">Unauthorised Commitment to Client</option>
-                          <option value="Collecting Payment Directly from Client">Collecting Payment Directly from Client</option>
-                          <option value="Sharing Client Data Externally">Sharing Client Data Externally</option>
-                          <option value="Discussion About Internal Matters with Clients">Discussion About Internal Matters with Clients</option>
-                          <option value="Posting Content Without Client Consent">Posting Content Without Client Consent</option>
-                          <option value="Inappropriate Behaviour / Touching Without Consent">Inappropriate Behaviour / Touching Without Consent</option>
-                          <option value="Client Safety Incident Due to Negligence">Client Safety Incident Due to Negligence</option>
-                        </>
-                      )}
+                      {/* Built from the matrices rather than typed out, so a
+                          violation added to an annexure becomes loggable
+                          without a second list to keep in step — and nothing
+                          can be logged that has no rule behind it. */}
+                      {violationOptions(coach).map(group => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.types.map(t => <option key={t} value={t}>{t}</option>)}
+                        </optgroup>
+                      ))}
                     </select>
                   </div>
                   <div className="form-group">

@@ -3395,3 +3395,17 @@ form {
 .bench-under .calc-hint strong { color: var(--accent-amber, #f59e0b); }
 .bench-over { background-color: rgba(239, 68, 68, 0.10); }
 .bench-over .calc-hint strong { color: var(--accent-red, #ef4444); }
+
+/* Annexure 1B carries a category and a severity per violation, which is how
+   fifty-six rows stay readable as a table rather than a list. */
+.vio-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.vio-sev { font-weight: 700; }
+.vio-sev-minor    { color: var(--text-secondary); }
+.vio-sev-moderate { color: var(--accent-amber, #f59e0b); }
+.vio-sev-major    { color: #f97316; }
+.vio-sev-critical { color: var(--accent-red, #ef4444); }

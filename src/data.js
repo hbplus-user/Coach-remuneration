@@ -1422,7 +1422,455 @@ export const INITIAL_VIOLATIONS = [
 // late arrival is forgiven at the turn of the quarter; the serious ones are
 // counted for as long as the coach is here. This is a property of the
 // violation, not of the policy variant, so it sits outside the matrix.
+// ---------------------------------------------------------------------------
+// ANNEXURE 1B — Violation & Penalty Matrix: ONLINE (Virtual / Remote) coaches.
+//
+// Fifty-six violations across seven categories, each with up to four
+// progressive steps. A step written "—" in the annexure does not exist, so it
+// is absent here rather than stored as zero: a fourth occurrence of something
+// whose third step is termination has no fourth step, and must not read as a
+// free pass.
+//
+// `consequence` is the annexure wording verbatim, since much of it is not
+// money — warnings, makeup sessions, leave deductions, reassignment,
+// termination review. `amount` is only the rupee figure inside it, which is
+// what payroll deducts.
+// ---------------------------------------------------------------------------
+export const ONLINE_VIOLATION_CATEGORIES = {
+  "Late Join (1–5 min)": { category: "A. Punctuality & Session Attendance", severity: "Minor" },
+  "Late Join (> 5 min)": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
+  "Early Session Termination / Short Session": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
+  "Unplanned Absence (< 4 hrs notice)": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
+  "Coach No-Show — No Communication": { category: "A. Punctuality & Session Attendance", severity: "Major" },
+  "Failure to Complete Mandatory Makeup Session": { category: "A. Punctuality & Session Attendance", severity: "Major" },
+  "Attendance / Check-in–Check-out Not Marked": { category: "A. Attendance & Punctuality", severity: "Minor" },
+  "Unapproved Leave / Exceeding Sanctioned Leave": { category: "A. Attendance & Punctuality", severity: "Moderate" },
+  "Camera Off or Body Not Fully in Frame": { category: "B. Technical Readiness & Environment", severity: "Moderate" },
+  "Avoidable Connectivity Failure": { category: "B. Technical Readiness & Environment", severity: "Moderate" },
+  "Unprofessional or Distracting Background / Environment": { category: "B. Technical Readiness & Environment", severity: "Minor" },
+  "Inadequate Lighting or Camera Angle": { category: "B. Technical Readiness & Environment", severity: "Minor" },
+  "Audio Failure / Coaching Cues Not Audible": { category: "B. Technical Readiness & Environment", severity: "Minor" },
+  "Conducting a Session While in Transit or from an Unsuitable Location": { category: "B. Technical Readiness & Environment", severity: "Major" },
+  "Using an Unapproved Platform or Personal Meeting Account": { category: "B. Technical Readiness & Environment", severity: "Major" },
+  "Pre-Session Technical Check Not Performed": { category: "B. Technical Readiness & Environment", severity: "Minor" },
+  "Joining Session via Mobile Phone or Personal Zoom Link Without Prior Notification": { category: "B. Technical Readiness & Environment", severity: "Moderate" },
+  "Ignoring Roster / WhatsApp Messages": { category: "C. Roster & Responsiveness", severity: "Minor" },
+  "Repeated Refusal of Pre-Assigned Sessions Affecting Operational Continuity": { category: "C. Roster & Responsiveness", severity: "Moderate" },
+  "Missed Scheduled Check-in Call or Weekly Review": { category: "C. Roster & Responsiveness", severity: "Moderate" },
+  "Delayed Delivery of Workout or Nutrition Plan": { category: "C. Roster & Responsiveness", severity: "Moderate" },
+  "Client Escalation or Complaint Not Reported Within 24 Hours": { category: "C. Roster & Responsiveness", severity: "Major" },
+  "Availability Not Updated on Dashboard for 7 Days": { category: "C. Roster & Responsiveness", severity: "Moderate" },
+  "Refusal of a Session or Candidate Trial Within Declared Availability and Under Capacity": { category: "C. Roster & Responsiveness", severity: "Major" },
+  "Non-Attendance at Mandatory Team Meeting or Training": { category: "C. Roster & Responsiveness", severity: "Minor" },
+  "Not Updating Session Data": { category: "D. Programme Quality & Data", severity: "Moderate" },
+  "Falsifying Session Records": { category: "D. Programme Quality & Data", severity: "Critical" },
+  "Generic or Non-Personalised Plan Issued to Client": { category: "D. Programme Quality & Data", severity: "Major" },
+  "Session Conducted Without Reviewing Client History or Medical Flags": { category: "D. Programme Quality & Data", severity: "Major" },
+  "Client Progress Metrics Not Tracked / Progress Review Missed": { category: "D. Programme Quality & Data", severity: "Minor" },
+  "Delegating a Session to Another Person Without Approval": { category: "D. Programme Quality & Data", severity: "Critical" },
+  "Deviation from Prescribed Programme Without Approval": { category: "D. Programme Quality & Data", severity: "Major" },
+  "Unprofessional Appearance on Camera": { category: "E. Conduct & Client Interaction", severity: "Minor" },
+  "Phone Use or Multitasking During a Live Session": { category: "E. Conduct & Client Interaction", severity: "Moderate" },
+  "Eating, Smoking or Consuming Beverages Other Than Water on Camera": { category: "E. Conduct & Client Interaction", severity: "Minor" },
+  "Unprofessional Language or Tone in Chat, Call or Comments": { category: "E. Conduct & Client Interaction", severity: "Major" },
+  "Inappropriate Comments, Advances or Conduct Toward a Client": { category: "E. Conduct & Client Interaction", severity: "Critical" },
+  "Communicating with Client Outside Approved Channels or Hours": { category: "E. Conduct & Client Interaction", severity: "Major" },
+  "Discussion About Internal Matters with Clients or Coaches": { category: "E. Conduct & Client Interaction", severity: "Major" },
+  "Conducting a Session Under the Influence of Alcohol or Any Substance": { category: "E. Conduct & Client Interaction", severity: "Critical" },
+  "Unauthorised Commitment to Client": { category: "F. Commercial, Data & IP Integrity", severity: "Major" },
+  "Collecting Payment Directly from Client": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Soliciting Clients for Private Online Coaching": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Promoting Third-Party Products, Supplements or Services for Personal Gain": { category: "F. Commercial, Data & IP Integrity", severity: "Major" },
+  "Sharing Client Data Externally": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Recording a Session Without Client and Company Consent": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Posting Client Content on Social Media Without Consent": { category: "F. Commercial, Data & IP Integrity", severity: "Major" },
+  "Sharing Company IP — Plan Templates, Content Library or SOPs": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Sharing Platform, App or CRM Login Credentials": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Negative or Damaging Public Commentary About the Company or Clients": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Undisclosed Engagement with a Competing Platform or Brand": { category: "F. Commercial, Data & IP Integrity", severity: "Critical" },
+  "Giving Medical, Clinical or Supplement Advice Beyond Coaching Scope": { category: "G. Safety, Scope & Compliance", severity: "Critical" },
+  "Ignoring a Client-Reported Pain or Medical Red Flag": { category: "G. Safety, Scope & Compliance", severity: "Critical" },
+  "Client Safety Incident Due to Negligence": { category: "G. Safety, Scope & Compliance", severity: "Critical" },
+  "Failure to Report an Injury or Incident Within 2 Hours": { category: "G. Safety, Scope & Compliance", severity: "Critical" },
+  "Non-Submission of Mandatory Documents": { category: "G. Safety, Scope & Compliance", severity: "Minor" },
+};
+
+export const ONLINE_VIOLATION_TRACKING = {
+  "Late Join (1–5 min)": "Monthly",
+  "Late Join (> 5 min)": "Monthly",
+  "Early Session Termination / Short Session": "Monthly",
+  "Unplanned Absence (< 4 hrs notice)": "Quarterly",
+  "Coach No-Show — No Communication": "Lifetime",
+  "Failure to Complete Mandatory Makeup Session": "Lifetime",
+  "Attendance / Check-in–Check-out Not Marked": "Monthly",
+  "Unapproved Leave / Exceeding Sanctioned Leave": "Quarterly",
+  "Camera Off or Body Not Fully in Frame": "Monthly",
+  "Avoidable Connectivity Failure": "Monthly",
+  "Unprofessional or Distracting Background / Environment": "Quarterly",
+  "Inadequate Lighting or Camera Angle": "Quarterly",
+  "Audio Failure / Coaching Cues Not Audible": "Monthly",
+  "Conducting a Session While in Transit or from an Unsuitable Location": "Lifetime",
+  "Using an Unapproved Platform or Personal Meeting Account": "Lifetime",
+  "Pre-Session Technical Check Not Performed": "Monthly",
+  "Joining Session via Mobile Phone or Personal Zoom Link Without Prior Notification": "Monthly",
+  "Ignoring Roster / WhatsApp Messages": "Monthly",
+  "Repeated Refusal of Pre-Assigned Sessions Affecting Operational Continuity": "Quarterly",
+  "Missed Scheduled Check-in Call or Weekly Review": "Monthly",
+  "Delayed Delivery of Workout or Nutrition Plan": "Monthly",
+  "Client Escalation or Complaint Not Reported Within 24 Hours": "Lifetime",
+  "Availability Not Updated on Dashboard for 7 Days": "Monthly",
+  "Refusal of a Session or Candidate Trial Within Declared Availability and Under Capacity": "Quarterly",
+  "Non-Attendance at Mandatory Team Meeting or Training": "Quarterly",
+  "Not Updating Session Data": "Monthly",
+  "Falsifying Session Records": "Lifetime",
+  "Generic or Non-Personalised Plan Issued to Client": "Quarterly",
+  "Session Conducted Without Reviewing Client History or Medical Flags": "Lifetime",
+  "Client Progress Metrics Not Tracked / Progress Review Missed": "Monthly",
+  "Delegating a Session to Another Person Without Approval": "Lifetime",
+  "Deviation from Prescribed Programme Without Approval": "Quarterly",
+  "Unprofessional Appearance on Camera": "Quarterly",
+  "Phone Use or Multitasking During a Live Session": "Monthly",
+  "Eating, Smoking or Consuming Beverages Other Than Water on Camera": "Quarterly",
+  "Unprofessional Language or Tone in Chat, Call or Comments": "Lifetime",
+  "Inappropriate Comments, Advances or Conduct Toward a Client": "Lifetime",
+  "Communicating with Client Outside Approved Channels or Hours": "Lifetime",
+  "Discussion About Internal Matters with Clients or Coaches": "Lifetime",
+  "Conducting a Session Under the Influence of Alcohol or Any Substance": "Lifetime",
+  "Unauthorised Commitment to Client": "Lifetime",
+  "Collecting Payment Directly from Client": "Lifetime",
+  "Soliciting Clients for Private Online Coaching": "Lifetime",
+  "Promoting Third-Party Products, Supplements or Services for Personal Gain": "Lifetime",
+  "Sharing Client Data Externally": "Lifetime",
+  "Recording a Session Without Client and Company Consent": "Lifetime",
+  "Posting Client Content on Social Media Without Consent": "Lifetime",
+  "Sharing Company IP — Plan Templates, Content Library or SOPs": "Lifetime",
+  "Sharing Platform, App or CRM Login Credentials": "Lifetime",
+  "Negative or Damaging Public Commentary About the Company or Clients": "Lifetime",
+  "Undisclosed Engagement with a Competing Platform or Brand": "Lifetime",
+  "Giving Medical, Clinical or Supplement Advice Beyond Coaching Scope": "Lifetime",
+  "Ignoring a Client-Reported Pain or Medical Red Flag": "Lifetime",
+  "Client Safety Incident Due to Negligence": "Lifetime",
+  "Failure to Report an Injury or Incident Within 2 Hours": "Lifetime",
+  "Non-Submission of Mandatory Documents": "Lifetime",
+};
+
+export const ONLINE_PENALTY_MATRIX = {
+  "Late Join (1–5 min)": [
+    { consequence: "Written Warning on the app", amount: 0 },
+    { consequence: "₹100 deduction", amount: 100 },
+    { consequence: "₹200 + 0.5 day leave deduction", amount: 200 },
+    { consequence: "₹300 + slot reassigned for next week", amount: 300 },
+  ],
+  "Late Join (> 5 min)": [
+    { consequence: "₹150 deduction", amount: 150 },
+    { consequence: "₹300 + written warning", amount: 300 },
+    { consequence: "₹500 + 0.5 day leave deduction", amount: 500 },
+    { consequence: "₹500 + slot permanently reassigned + RM review", amount: 500 },
+  ],
+  "Early Session Termination / Short Session": [
+    { consequence: "Written warning + lost time to be made up in next session", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 + 1 mandatory makeup session within 7 days", amount: 500 },
+    { consequence: "₹750 + slot reassigned for 2 weeks", amount: 750 },
+  ],
+  "Unplanned Absence (< 4 hrs notice)": [
+    { consequence: "0.5 day leave deduction or ₹500 deduction", amount: 500 },
+    { consequence: "1 day leave + ₹300 deduction", amount: 300 },
+    { consequence: "1 day leave + ₹500 + 1 makeup session within 7 days", amount: 500 },
+    { consequence: "2 day leave + ₹700 + slot reassigned", amount: 700 },
+  ],
+  "Coach No-Show — No Communication": [
+    { consequence: "₹500 + 1 makeup session within 5 days", amount: 500 },
+    { consequence: "₹800 + 2 makeup sessions + 1 day leave deduction", amount: 800 },
+    { consequence: "₹1,200 + 3 makeup sessions + slot reassigned", amount: 1200 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+  ],
+  "Failure to Complete Mandatory Makeup Session": [
+    { consequence: "₹500 + revised 3-day deadline", amount: 500 },
+    { consequence: "₹800 + 1 day leave deduction", amount: 800 },
+    { consequence: "₹1,200 + slot reassigned", amount: 1200 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+  ],
+  "Attendance / Check-in–Check-out Not Marked": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹100 deduction", amount: 100 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹300 + 0.5 day leave deduction", amount: 300 },
+  ],
+  "Unapproved Leave / Exceeding Sanctioned Leave": [
+    { consequence: "1 day leave deduction + written warning", amount: 0 },
+    { consequence: "1 day leave + ₹500 deduction", amount: 500 },
+    { consequence: "2 day leave + ₹1,000 + RM review", amount: 1000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Camera Off or Body Not Fully in Frame": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹750 + slot reassigned for 2 weeks", amount: 750 },
+  ],
+  "Avoidable Connectivity Failure": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 + makeup for lost session time", amount: 500 },
+    { consequence: "₹750 + RM review", amount: 750 },
+  ],
+  "Unprofessional or Distracting Background / Environment": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 + RM review", amount: 600 },
+  ],
+  "Inadequate Lighting or Camera Angle": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 + RM review", amount: 600 },
+  ],
+  "Audio Failure / Coaching Cues Not Audible": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 deduction", amount: 600 },
+  ],
+  "Conducting a Session While in Transit or from an Unsuitable Location": [
+    { consequence: "₹500 + written warning", amount: 500 },
+    { consequence: "₹1,000 deduction", amount: 1000 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+    { consequence: "₹2,000 + unpaid suspension", amount: 2000 },
+  ],
+  "Using an Unapproved Platform or Personal Meeting Account": [
+    { consequence: "₹500 + written warning", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "₹2,000 + unpaid suspension", amount: 2000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Pre-Session Technical Check Not Performed": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹100 deduction", amount: 100 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹300 deduction", amount: 300 },
+  ],
+  "Joining Session via Mobile Phone or Personal Zoom Link Without Prior Notification": [
+    { consequence: "Written Warning + revert to approved setup for the next session", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 + formal warning on record", amount: 500 },
+    { consequence: "₹750 + RM review + mandatory setup/device training", amount: 750 },
+  ],
+  "Ignoring Roster / WhatsApp Messages": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹100 deduction", amount: 100 },
+    { consequence: "₹200 + slot reassigned for 2 weeks", amount: 200 },
+    { consequence: "₹300 + slot reassigned for a month", amount: 300 },
+  ],
+  "Repeated Refusal of Pre-Assigned Sessions Affecting Operational Continuity": [
+    { consequence: "Written Warning + documented reason mandatory", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹300 + 1 mandatory makeup session within 7 days", amount: 300 },
+    { consequence: "₹500 + slot reassigned for a week", amount: 500 },
+  ],
+  "Missed Scheduled Check-in Call or Weekly Review": [
+    { consequence: "Written Warning + reschedule within 48 hours", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 + RM review", amount: 500 },
+    { consequence: "₹750 + slot reassigned", amount: 750 },
+  ],
+  "Delayed Delivery of Workout or Nutrition Plan": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹750 + RM review", amount: 750 },
+  ],
+  "Client Escalation or Complaint Not Reported Within 24 Hours": [
+    { consequence: "₹500 + written warning", amount: 500 },
+    { consequence: "₹1,000 deduction", amount: 1000 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Availability Not Updated on Dashboard for 7 Days": [
+    { consequence: "Written Warning + availability to be updated within 24 hours", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 + slot reassigned for 2 weeks", amount: 500 },
+    { consequence: "₹750 + slot reassigned for a month + RM review", amount: 750 },
+  ],
+  "Refusal of a Session or Candidate Trial Within Declared Availability and Under Capacity": [
+    { consequence: "Written Warning + documented reason mandatory + availability corrected the same day", amount: 0 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹1,000 + slot reassigned for 2 weeks", amount: 1000 },
+    { consequence: "₹1,500 + slot reassigned for a month + RM review", amount: 1500 },
+  ],
+  "Non-Attendance at Mandatory Team Meeting or Training": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 + 0.5 day leave deduction", amount: 400 },
+    { consequence: "₹600 + RM review", amount: 600 },
+  ],
+  "Not Updating Session Data": [
+    { consequence: "₹500 per incident", amount: 500 },
+    { consequence: "₹750 per incident", amount: 750 },
+    { consequence: "₹1,000 per incident + written warning", amount: 1000 },
+    { consequence: "₹1,000 per incident + 1 day leave deduction", amount: 1000 },
+  ],
+  "Falsifying Session Records": [
+    { consequence: "₹2,000 + formal warning + RM review", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension for a week", amount: 5000 },
+    { consequence: "Termination", amount: 0 },
+  ],
+  "Generic or Non-Personalised Plan Issued to Client": [
+    { consequence: "Written Warning + revision within 48 hours", amount: 0 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "₹1,500 + unpaid suspension", amount: 1500 },
+  ],
+  "Session Conducted Without Reviewing Client History or Medical Flags": [
+    { consequence: "₹500 + written warning", amount: 500 },
+    { consequence: "₹1,000 + mandatory re-training", amount: 1000 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Client Progress Metrics Not Tracked / Progress Review Missed": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 + RM review", amount: 600 },
+  ],
+  "Delegating a Session to Another Person Without Approval": [
+    { consequence: "₹2,000 + formal warning + RM review", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension", amount: 5000 },
+    { consequence: "Termination", amount: 0 },
+  ],
+  "Deviation from Prescribed Programme Without Approval": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "₹1,500 + unpaid suspension", amount: 1500 },
+  ],
+  "Unprofessional Appearance on Camera": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "Written Warning + ₹100 deduction", amount: 100 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹300 + 0.5 day leave deduction", amount: 300 },
+  ],
+  "Phone Use or Multitasking During a Live Session": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹300 deduction", amount: 300 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹750 + slot reassigned", amount: 750 },
+  ],
+  "Eating, Smoking or Consuming Beverages Other Than Water on Camera": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 deduction", amount: 600 },
+  ],
+  "Unprofessional Language or Tone in Chat, Call or Comments": [
+    { consequence: "₹500 + written warning", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "₹2,000 + unpaid suspension", amount: 2000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Inappropriate Comments, Advances or Conduct Toward a Client": [
+    { consequence: "₹1,000 + formal written warning + immediate investigation", amount: 1000 },
+    { consequence: "₹3,000 + unpaid suspension for a week", amount: 3000 },
+    { consequence: "Termination", amount: 0 },
+  ],
+  "Communicating with Client Outside Approved Channels or Hours": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "₹2,000 + unpaid suspension", amount: 2000 },
+  ],
+  "Discussion About Internal Matters with Clients or Coaches": [
+    { consequence: "₹500 + verbal warning", amount: 500 },
+    { consequence: "₹750 deduction", amount: 750 },
+    { consequence: "₹1,000 + formal warning on record", amount: 1000 },
+    { consequence: "RM review", amount: 0 },
+  ],
+  "Conducting a Session Under the Influence of Alcohol or Any Substance": [
+    { consequence: "₹2,000 + unpaid suspension for a week + formal investigation", amount: 2000 },
+    { consequence: "Termination", amount: 0 },
+  ],
+  "Unauthorised Commitment to Client": [
+    { consequence: "₹1,000 + written warning + client correction mandatory", amount: 1000 },
+    { consequence: "₹1,500 + RM review", amount: 1500 },
+    { consequence: "₹1,500 + unpaid suspension", amount: 1500 },
+  ],
+  "Collecting Payment Directly from Client": [
+    { consequence: "₹1,000 + written warning + full amount recovery from coach", amount: 1000 },
+    { consequence: "₹2,000 + termination review", amount: 2000 },
+  ],
+  "Soliciting Clients for Private Online Coaching": [
+    { consequence: "₹5,000 + formal warning + RM review", amount: 5000 },
+    { consequence: "Termination + recovery of assessed revenue loss", amount: 0 },
+  ],
+  "Promoting Third-Party Products, Supplements or Services for Personal Gain": [
+    { consequence: "₹1,000 + written warning + immediate cessation", amount: 1000 },
+    { consequence: "₹2,000 + RM review", amount: 2000 },
+    { consequence: "₹3,000 + termination review", amount: 3000 },
+  ],
+  "Sharing Client Data Externally": [
+    { consequence: "₹1,000 + written warning", amount: 1000 },
+    { consequence: "RM review + termination consideration", amount: 0 },
+  ],
+  "Recording a Session Without Client and Company Consent": [
+    { consequence: "₹2,000 + immediate deletion + formal warning", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension", amount: 5000 },
+    { consequence: "Termination + legal action as advised", amount: 0 },
+  ],
+  "Posting Client Content on Social Media Without Consent": [
+    { consequence: "₹500 + immediate content removal + written warning", amount: 500 },
+    { consequence: "₹1,000 deduction + formal warning", amount: 1000 },
+    { consequence: "₹2,000 + unpaid suspension for a week", amount: 2000 },
+    { consequence: "Termination review + legal / disciplinary action if required", amount: 0 },
+  ],
+  "Sharing Company IP — Plan Templates, Content Library or SOPs": [
+    { consequence: "₹5,000 + formal investigation", amount: 5000 },
+    { consequence: "Termination + legal action as advised", amount: 0 },
+  ],
+  "Sharing Platform, App or CRM Login Credentials": [
+    { consequence: "₹2,000 + formal warning + credential reset", amount: 2000 },
+    { consequence: "₹5,000 + termination review", amount: 5000 },
+  ],
+  "Negative or Damaging Public Commentary About the Company or Clients": [
+    { consequence: "₹2,000 + immediate removal + formal warning", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension", amount: 5000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Undisclosed Engagement with a Competing Platform or Brand": [
+    { consequence: "₹5,000 + formal warning + mandatory disclosure", amount: 5000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Giving Medical, Clinical or Supplement Advice Beyond Coaching Scope": [
+    { consequence: "₹2,000 + formal warning + mandatory re-training", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension", amount: 5000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Ignoring a Client-Reported Pain or Medical Red Flag": [
+    { consequence: "₹5,000 + immediate formal review + mandatory re-training", amount: 5000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Client Safety Incident Due to Negligence": [
+    { consequence: "₹15,000 + immediate formal review + mandatory safety re-training", amount: 15000 },
+    { consequence: "Full FNF + termination", amount: 0 },
+  ],
+  "Failure to Report an Injury or Incident Within 2 Hours": [
+    { consequence: "₹2,000 + formal warning", amount: 2000 },
+    { consequence: "₹5,000 + unpaid suspension", amount: 5000 },
+    { consequence: "Termination review", amount: 0 },
+  ],
+  "Non-Submission of Mandatory Documents": [
+    { consequence: "Written Warning + 7-day deadline", amount: 0 },
+    { consequence: "₹500 deduction", amount: 500 },
+    { consequence: "₹1,000 + RM review", amount: 1000 },
+    { consequence: "Salary hold until submission", amount: 0 },
+  ],
+};
+
 export const VIOLATION_TRACKING = {
+  // Annexure 1B sets its own window per violation, and they are not uniform:
+  // most technical faults reset monthly, conduct and safety never do.
+  ...ONLINE_VIOLATION_TRACKING,
+
   "Late Arrival (<5 min)": "Quarterly",
   "Late Arrival (>5 min)": "Quarterly",
   "Coach No-Show": "Lifetime",
@@ -1431,6 +1879,11 @@ export const VIOLATION_TRACKING = {
 };
 
 export const PENALTY_MATRIX = {
+  // Annexure 1B governs every coach delivering virtual or remote sessions. It
+  // is held as its own entry rather than merged into the variants, because a
+  // coach is online or not independently of their discipline.
+  "ONLINE": ONLINE_PENALTY_MATRIX,
+
   // V1 - Internal S&C
   "V1": {
     "Late Arrival (<5 min)": [
