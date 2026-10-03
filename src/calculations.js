@@ -2,6 +2,7 @@
  * HB+ Coach Remuneration & Performance Management - Calculations Engine
  */
 import { VIOLATION_TRACKING } from './data.js';
+import { lopDeduction as computeLopDeduction } from './leave.js';
 
 // Educational Score Table Lookup
 // Education: 3-Year Bachelor's (1/3/5), 4/5-Year (1.5/3.5/5.5), Post-Grad (3/6/8), PhD (4/8/10)
@@ -548,14 +549,28 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     milestoneIncentive = reachedMilestone.amount;
   }
 
+  // 2b. Loss of Pay. A day not worked is valued the same way a day's sessions
+  //     are — monthly pay over 26 — so the two cannot disagree. A Flexi coach
+  //     has no base, so their Loss of Pay is a record of absence and nothing
+  //     is deducted. It is kept apart from penalties: one is time not worked,
+  //     the other is a charge for conduct, and the payslip shows them as two
+  //     lines because they answer to different policies.
+  const lopDays = Math.max(0, Number(monthData.lop_days) || 0);
+  const unplannedLopDays = Math.max(0, Number(monthData.unplanned_lop_days) || 0);
+  const lossOfPay = computeLopDeduction(coach.coach_category, basePay, lopDays);
+
   // 3. Consistency Bonus (₹500/month)
   // Eligibility: Attendance >= 95%, 0 violations in month, 0 Coach No-Shows
   const attendancePct = Number(monthData.attendance_pct) || 0;
   const monthViolationsCount = activeViolationsForMonth.length;
   const coachNoShows = activeViolationsForMonth.filter(v => v.type === 'Coach No-Show').length;
   
+  // Loss of Pay that was not planned costs the bonus: the point of it is
+  // reliability, so an absence nobody could plan around defeats it. Leave that
+  // was applied for and approved does not, however many days it ran to.
   let consistencyEligible = false;
-  if (attendancePct >= 95 && monthViolationsCount === 0 && coachNoShows === 0) {
+  if (attendancePct >= 95 && monthViolationsCount === 0 && coachNoShows === 0
+    && unplannedLopDays === 0) {
     consistencyEligible = true;
   }
   const consistencyBonus = consistencyEligible ? 500 : 0;
@@ -646,11 +661,13 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const penaltyDeductions = Math.round((violationPenalties + missedSessionDeduction) * 100) / 100;
 
   // 9. GROSS PAY CALCULATION
+  // Loss of Pay comes off before tax, as the policy requires: the withholding
+  // is on what was actually earned, not on days that were never worked.
   const grossPay = basePay + extraSessionPay + sessionPay + nightSessionPay + 
                    milestoneIncentive + consistencyBonus + streakBonusPay + 
                    orgWorkPay + trialIncentive + eventIncentive + 
                    hopOohPremium + hopPtHomePremium + hopPerformanceCreditsPay - 
-                   penaltyDeductions;
+                   penaltyDeductions - lossOfPay;
 
   return {
     perSessionRate: effectiveRate,
@@ -672,6 +689,9 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     hopPerformanceCreditsPay,
     penaltyDeductions,
     violationPenalties,
+    lopDays,
+    unplannedLopDays,
+    lossOfPay,
     missedSessions,
     missedSessionRate,
     missedSessionMultiplier: missedSessionTierApplied.multiplier,

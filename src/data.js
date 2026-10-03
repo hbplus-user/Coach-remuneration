@@ -1437,6 +1437,7 @@ export const INITIAL_VIOLATIONS = [
 // what payroll deducts.
 // ---------------------------------------------------------------------------
 export const ONLINE_VIOLATION_CATEGORIES = {
+  "Logged-in Hours Short of Availability": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
   "Late Join (1–5 min)": { category: "A. Punctuality & Session Attendance", severity: "Minor" },
   "Late Join (> 5 min)": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
   "Early Session Termination / Short Session": { category: "A. Punctuality & Session Attendance", severity: "Moderate" },
@@ -1496,6 +1497,7 @@ export const ONLINE_VIOLATION_CATEGORIES = {
 };
 
 export const ONLINE_VIOLATION_TRACKING = {
+  "Logged-in Hours Short of Availability": "Monthly",
   "Late Join (1–5 min)": "Monthly",
   "Late Join (> 5 min)": "Monthly",
   "Early Session Termination / Short Session": "Monthly",
@@ -1555,6 +1557,15 @@ export const ONLINE_VIOLATION_TRACKING = {
 };
 
 export const ONLINE_PENALTY_MATRIX = {
+  // Hours short of availability. A shortfall of up to half the day is a
+  // conduct matter and belongs here; more than half is time not worked and
+  // comes off pay as Loss of Pay instead, so it never reaches this matrix.
+  "Logged-in Hours Short of Availability": [
+    { consequence: "Written Warning", amount: 0 },
+    { consequence: "₹200 deduction", amount: 200 },
+    { consequence: "₹400 deduction", amount: 400 },
+    { consequence: "₹600 + RM review", amount: 600 },
+  ],
   "Late Join (1–5 min)": [
     { consequence: "Written Warning on the app", amount: 0 },
     { consequence: "₹100 deduction", amount: 100 },

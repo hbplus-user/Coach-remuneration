@@ -50,11 +50,16 @@ const PERIOD_COLS = [
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
   'five_star_streak', 'missed_sessions', 'hb_score', 'band', 'status', 'overrides',
   // Pay set for this month specifically, which the band must not overwrite.
-  'fixed_pay_override', 'per_session_override'
+  'fixed_pay_override', 'per_session_override',
+  // What the cycle lost to Loss of Pay, and how much of it nobody could plan for.
+  'lop_days', 'unplanned_lop_days'
 ];
 
 const COACH_COLS = [
   'id', 'name', 'email', 'phone', 'gender', 'variant_id', 'coach_type',
+  // Stage, working pattern and centre, for attendance and leave.
+  'employment_stage', 'training_end_date', 'probation_end_date',
+  'weekly_off_day', 'work_mode', 'centre_name', 'centre_lat', 'centre_lng',
   'coach_category', 'internal_designation', 'date_of_joining',
   'date_of_first_relevant_certification', 'freelance_past_exp_with_document',
   'freelance_past_exp_without_document', 'non_coaching_exp_years',
@@ -79,7 +84,9 @@ const blanksToNull = (row, keys) => {
 const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
-  'per_session_override', 'fixed_pay_override'
+  'per_session_override', 'fixed_pay_override',
+  'training_end_date', 'probation_end_date', 'weekly_off_day',
+  'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'
 ];
 
 const MAPPERS = {
@@ -159,6 +166,57 @@ const MAPPERS = {
     toRow: r => ({ ...pick(r, PERIOD_COLS), record_type: 'current', overrides: r.overrides ?? {} }),
     fromRow: r => r,
     deleteBy: 'compound'
+  },
+  attendanceLogs: {
+    table: 'attendance_logs',
+    key: a => a.id,
+    toRow: a => blanksToNull(pick(a, [
+      'id', 'coach_id', 'working_day', 'logged_in_at', 'logged_out_at',
+      'login_lat', 'login_lng', 'logout_lat', 'logout_lng', 'within_centre',
+      'photo_path', 'photo_expires_at', 'auto_logged_out', 'late_by_minutes', 'notes'
+    ]), DATE_ISH),
+    fromRow: r => r
+  },
+  attendanceDays: {
+    table: 'attendance_days',
+    key: d => `${d.coach_id}|${d.working_day}`,
+    onConflict: 'coach_id,working_day',
+    toRow: d => blanksToNull(pick(d, [
+      'coach_id', 'working_day', 'expected_hours', 'logged_hours', 'shortfall_hours',
+      'outcome', 'lop_days', 'planned', 'disputed', 'dispute_note', 'resolved_by'
+    ]), DATE_ISH),
+    fromRow: r => r,
+    deleteBy: 'compound'
+  },
+  leaveBalances: {
+    table: 'leave_balances',
+    key: b => `${b.coach_id}|${b.leave_year}|${b.type_id}`,
+    onConflict: 'coach_id,leave_year,type_id',
+    toRow: b => blanksToNull(pick(b, [
+      'coach_id', 'leave_year', 'type_id', 'opening', 'accrued', 'used',
+      'adjusted', 'adjust_reason'
+    ]), DATE_ISH),
+    fromRow: r => r,
+    deleteBy: 'compound'
+  },
+  leaveApplications: {
+    table: 'leave_applications',
+    key: a => a.id,
+    toRow: a => blanksToNull(pick(a, [
+      'id', 'coach_id', 'type_id', 'from_date', 'to_date', 'days', 'half_day',
+      'reason', 'certificate', 'status', 'approved_days', 'approved_from',
+      'approved_to', 'applied_at', 'applied_by', 'decided_by', 'decided_at',
+      'decision_note', 'cancelled_at', 'cancel_note'
+    ]), DATE_ISH),
+    fromRow: r => r
+  },
+  holidays: {
+    table: 'holidays',
+    key: h => h.id,
+    toRow: h => blanksToNull(pick(h, [
+      'id', 'leave_year', 'holiday_date', 'name', 'centre_name'
+    ]), DATE_ISH),
+    fromRow: r => r
   },
   orgWork: {
     table: 'org_work',
@@ -276,10 +334,10 @@ export async function loadProfile(userId) {
 // ---------------------------------------------------------------------------
 
 export const APP_ROLES = [
-  // 'Coach' is still a valid role in the database — it is what a new sign-in
-  // defaults to — but it is not offered for assignment, so nobody is put on
-  // it deliberately.
-  'Super Admin', 'HR Manager', 'Finance', 'Showrunner', 'Reporting Manager'
+  // 'Coach' is assignable again: coaches sign in for attendance and leave, and
+  // see their own month — their hours, leave, score, incidents and payslips.
+  // A Coach must be linked to a coach record, or there is nothing to show them.
+  'Super Admin', 'HR Manager', 'Finance', 'Showrunner', 'Reporting Manager', 'Coach'
 ];
 
 export const RM_SCOPES = [
@@ -317,7 +375,9 @@ export async function setUserAccess({ id, role, coachId = null, rmId = null }) {
 export async function loadState() {
   if (!supabase) return null;
 
-  const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork, violations, appeals, auditLog, cycles] =
+  const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
+         attendanceLogs, attendanceDays, leaveBalances, leaveApplications, holidays,
+         violations, appeals, auditLog, cycles] =
     await Promise.all([
       supabase.from('variants').select('*').order('id'),
       supabase.from('certifications').select('*').order('id'),
@@ -326,13 +386,20 @@ export async function loadState() {
       supabase.from('coaches').select('*').order('id'),
       supabase.from('performance_records').select('*'),
       supabase.from('org_work').select('*'),
+      supabase.from('attendance_logs').select('*').order('logged_in_at', { ascending: false }).limit(5000),
+      supabase.from('attendance_days').select('*'),
+      supabase.from('leave_balances').select('*'),
+      supabase.from('leave_applications').select('*').order('applied_at', { ascending: false }),
+      supabase.from('holidays').select('*').order('holiday_date'),
       supabase.from('violations').select('*').order('incident_date', { ascending: false }),
       supabase.from('appeals').select('*'),
       supabase.from('audit_log').select('*').order('timestamp', { ascending: false }).limit(500),
       supabase.from('payroll_cycles').select('*')
     ]);
 
-  const failed = [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork, violations, appeals, auditLog, cycles]
+  const failed = [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
+                  attendanceLogs, attendanceDays, leaveBalances, leaveApplications, holidays,
+                  violations, appeals, auditLog, cycles]
     .find(r => r.error);
   if (failed) throw failed.error;
 
@@ -348,6 +415,11 @@ export async function loadState() {
     historicMonths: rows.filter(r => r.record_type === 'historic'),
     currentMonth: rows.filter(r => r.record_type === 'current'),
     orgWork: orgWork.data ?? [],
+    attendanceLogs: attendanceLogs.data ?? [],
+    attendanceDays: attendanceDays.data ?? [],
+    leaveBalances: leaveBalances.data ?? [],
+    leaveApplications: leaveApplications.data ?? [],
+    holidays: holidays.data ?? [],
     violations: violations.data ?? [],
     appeals: (appeals.data ?? []).map(MAPPERS.appeals.fromRow),
     auditLog: (auditLog.data ?? []).map(MAPPERS.auditLog.fromRow),
@@ -378,6 +450,63 @@ export async function loadLockState() {
     statuses: new Map((periods.data ?? []).map(r => [`${r.coach_id}|${r.period_month}`, r.status])),
     payrollLocked: openCycle?.locked ?? false
   };
+}
+
+// ---------------------------------------------------------------------------
+// Login photographs
+//
+// Stored in a private bucket, reached through short-lived signed URLs. The
+// database keeps the path only — the images themselves never travel with the
+// app's state.
+// ---------------------------------------------------------------------------
+
+export const ATTENDANCE_PHOTO_BUCKET = 'attendance-photos';
+
+/**
+ * Put one photograph in the bucket and return its path.
+ *
+ * Foldered by coach and dated, so the archive an administrator downloads is
+ * already organised and a path is readable on its own.
+ */
+export async function uploadAttendancePhoto(coachId, when, blob) {
+  if (!supabase) return null;
+  const d = new Date(when);
+  const stamp = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+    + `_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const path = `${coachId}/${stamp}.jpg`;
+
+  const { error } = await supabase.storage
+    .from(ATTENDANCE_PHOTO_BUCKET)
+    .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+  if (error) throw error;
+  return path;
+}
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/**
+ * Signed URLs for a set of paths, valid for an hour.
+ *
+ * Returned in the order asked for, with nulls where one could not be signed,
+ * so a caller zipping them can say which were missing rather than silently
+ * producing a shorter archive.
+ */
+export async function signedPhotoUrls(paths, expiresIn = 3600) {
+  if (!supabase || !paths?.length) return [];
+  const { data, error } = await supabase.storage
+    .from(ATTENDANCE_PHOTO_BUCKET)
+    .createSignedUrls(paths, expiresIn);
+  if (error) throw error;
+  const byPath = new Map((data ?? []).map(d => [d.path, d.signedUrl ?? null]));
+  return paths.map(p => byPath.get(p) ?? null);
+}
+
+/** Remove photographs from the bucket. Used by retention, not by correction. */
+export async function deleteAttendancePhotos(paths) {
+  if (!supabase || !paths?.length) return { removed: 0 };
+  const { error } = await supabase.storage.from(ATTENDANCE_PHOTO_BUCKET).remove(paths);
+  if (error) throw error;
+  return { removed: paths.length };
 }
 
 /** True when the project is reachable but empty — i.e. the seed has not run. */

@@ -3409,3 +3409,48 @@ form {
 .vio-sev-moderate { color: var(--accent-amber, #f59e0b); }
 .vio-sev-major    { color: #f97316; }
 .vio-sev-critical { color: var(--accent-red, #ef4444); }
+
+/* ---------------------------------------------------------------------------
+   Attendance. Today's figures read as a row of facts rather than a table,
+   because there are only four of them and they are compared against each other.
+--------------------------------------------------------------------------- */
+.attendance-today {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.75rem;
+  padding: 0.9rem 0 0.4rem;
+}
+.attendance-today > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.attendance-today span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.attendance-today strong {
+  font-size: 1.15rem;
+  color: var(--text-primary);
+}
+.att-outcome { font-size: 0.95rem !important; }
+.att-ok         { color: var(--accent-green, #10b981) !important; }
+.att-violation  { color: var(--accent-amber, #f59e0b) !important; }
+.att-lop        { color: var(--accent-red, #ef4444) !important; }
+.att-review     { color: var(--accent-violet, #8b5cf6) !important; }
+.att-leave,
+.att-weekly-off,
+.att-holiday    { color: var(--text-secondary) !important; }
+
+/* The login camera. Mirrored, because a preview that moves the opposite way
+   to the person in it is disorienting to line up against. */
+.capture-video {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  background-color: #000;
+  transform: scaleX(-1);
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
