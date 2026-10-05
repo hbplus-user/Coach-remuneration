@@ -1472,6 +1472,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // The photo archive an administrator pulls down.
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
   const [photoBusy, setPhotoBusy] = useState("");
+  // Ticks only while someone is logged in. An open period counts up to now, so
+  // without this the figure would sit still until something else redrew it.
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [violations, setViolations] = useState([]);
   const [appeals, setAppeals] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
@@ -2578,6 +2581,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
   )) || null;
 
   const todayWorkingDay = workingDayOf(new Date());
+
+  const someoneLoggedIn = attendanceLogs.some(l => !l.logged_out_at);
+  useEffect(() => {
+    if (!someoneLoggedIn) return;
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [someoneLoggedIn]);
+
+  /** Hours as a clock — what is left of a day reads better counted down. */
+  const asClock = (hours) => {
+    const total = Math.max(0, Math.round((Number(hours) || 0) * 3600));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  };
 
   const logsFor = (coachId, day) => attendanceLogs
     .filter(l => l.coach_id === coachId && l.working_day === day)
@@ -5329,7 +5348,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 const myScore = myRecord ? resolvePeriodScore(me, myRecord, vCfg) : null;
                 const open = openLogFor(me.id);
                 const todays = logsFor(me.id, todayWorkingDay);
-                const hoursToday = loggedHoursForDay(todays);
+                const hoursToday = loggedHoursForDay(todays, nowTick);
                 const expected = standardDailyHours(me.coach_category);
                 const myLeave = leaveApplications.filter(a => a.coach_id === me.id);
                 const myVios = violations.filter(v => v.coach_id === me.id && v.status !== 'Appeal_Approved');
@@ -5373,8 +5392,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <div className="stat-icon"><i className="bx bxs-time-five"></i></div>
                         <div className="stat-info">
                           <h3>Today</h3>
-                          <h2>{hoursToday.toFixed(2)} h</h2>
-                          <p>{open ? 'Logged in now' : 'Not logged in'} · {expected} h expected</p>
+                          <h2 className={open ? 'att-ticking' : ''}>{asClock(hoursToday)}</h2>
+                          <p>
+                            {hoursToday >= expected
+                              ? `Done — ${asClock(hoursToday - expected)} beyond ${expected} h`
+                              : `${asClock(expected - hoursToday)} still to log of ${expected} h`}
+                          </p>
                         </div>
                       </div>
                       <div className="stat-card stat-violet">
@@ -8116,7 +8139,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const seesMoney = !HIDES_PAY(currentRole);
             const open = coach ? openLogFor(coach.id) : null;
             const todays = coach ? logsFor(coach.id, todayWorkingDay) : [];
-            const hours = loggedHoursForDay(todays);
+            const hours = loggedHoursForDay(todays, nowTick);
             const avail = coach ? availabilityHoursFor(coach, todayWorkingDay) : { hours: 0, missing: true };
             const day = coach ? assessAttendanceDay({
               category: coach.coach_category,
@@ -8251,8 +8274,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </div>
 
                       <div className="attendance-today">
-                        <div><span>Logged today</span><strong>{hours.toFixed(2)} h</strong></div>
-                        <div><span>Expected</span><strong>{avail.hours} h</strong></div>
+                        <div>
+                          <span>Logged today</span>
+                          <strong className={open ? 'att-ticking' : ''}>{asClock(hours)}</strong>
+                        </div>
+                        <div><span>Expected</span><strong>{asClock(avail.hours)}</strong></div>
+                        {/* What is left of the day. Counted down rather than up,
+                            because the question being asked is how much longer. */}
+                        <div>
+                          <span>{hours >= avail.hours ? 'Beyond expected' : 'Still to log'}</span>
+                          <strong className={hours >= avail.hours ? 'att-ok' : (open ? 'att-ticking' : '')}>
+                            {hours >= avail.hours
+                              ? `+${asClock(hours - avail.hours)}`
+                              : asClock(avail.hours - hours)}
+                          </strong>
+                        </div>
                         <div><span>Status</span><strong className={`att-outcome att-${day.outcome}`}>
                           {{ ok: 'On time', violation: 'Short — violation', lop: 'Short — Loss of Pay',
                              review: 'Flagged for review', leave: 'On leave',
@@ -8266,6 +8302,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             ).basePay))}
                           </strong></div>
                         )}
+                      </div>
+
+                      {/* The bar is the same figure again, read at a glance. */}
+                      <div className="att-progress" title={`${Math.round((hours / (avail.hours || 1)) * 100)}% of the day`}>
+                        <div
+                          className={`att-progress-fill ${hours >= avail.hours ? 'att-progress-done' : ''}`}
+                          style={{ width: `${Math.min(100, (hours / (avail.hours || 1)) * 100)}%` }}
+                        />
                       </div>
 
                       {avail.missing && (
