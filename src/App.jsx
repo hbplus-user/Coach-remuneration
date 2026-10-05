@@ -8553,7 +8553,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <div className="table-container">
                           <table className="data-table">
                             <thead>
-                              <tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th className="actions-col"></th></tr>
+                              <tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th className="actions-col">{canApprove ? 'Decide' : ''}</th></tr>
                             </thead>
                             <tbody>
                               {mine.map(a => (
@@ -8570,13 +8570,30 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     </span>
                                   </td>
                                   <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
+                                  {/* Deciding also belongs here. An approver reading a
+                                      row marked PENDING expects to act on it where they
+                                      are looking, not on a different card further up. */}
                                   <td className="actions-col">
-                                    {(a.status === 'Pending' || a.status === 'Approved') && (
-                                      <button className="btn-row-icon icon-cancel" title="Cancel this leave"
-                                        onClick={() => handleLeaveCancel(a)}>
-                                        <i className="bx bx-trash"></i>
-                                      </button>
-                                    )}
+                                    <div className="table-btn-group">
+                                      {canApprove && a.status === 'Pending' && (
+                                        <>
+                                          <button className="btn-row-icon icon-save" title="Approve this leave"
+                                            onClick={() => handleLeaveDecision(a, 'Approved')}>
+                                            <i className="bx bx-check"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
+                                            onClick={() => handleLeaveDecision(a, 'Rejected')}>
+                                            <i className="bx bx-x"></i>
+                                          </button>
+                                        </>
+                                      )}
+                                      {(a.status === 'Pending' || a.status === 'Approved') && (
+                                        <button className="btn-row-icon icon-reset" title="Cancel this leave"
+                                          onClick={() => handleLeaveCancel(a)}>
+                                          <i className="bx bx-trash"></i>
+                                        </button>
+                                      )}
+                                    </div>
                                   </td>
                                 </tr>
                               ))}
