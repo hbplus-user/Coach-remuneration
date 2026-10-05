@@ -1471,6 +1471,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const streamRef = useRef(null);
   // The photo archive an administrator pulls down.
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
+  const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -2605,6 +2606,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const openLogFor = (coachId) => attendanceLogs
     .find(l => l.coach_id === coachId && !l.logged_out_at) || null;
 
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  /**
+   * The coach's weekly off.
+   *
+   * A Flexi coach has none — any day with no availability is already an off
+   * day for them, so a fixed one would be meaningless.
+   */
+  const isWeeklyOffFor = (coach, day) => {
+    if (!coach || coach.coach_category === 'Flexi') return false;
+    if (coach.weekly_off_day == null) return false;
+    return new Date(`${day}T12:00:00`).getDay() === Number(coach.weekly_off_day);
+  };
+
+  /**
+   * A published holiday falling on this day.
+   *
+   * A holiday with no centre applies to everyone; one naming a centre applies
+   * only there, which is how a local holiday is added for a single place.
+   */
+  const holidayOn = (coach, day) => holidays.find(h =>
+    h.holiday_date === day && (!h.centre_name || h.centre_name === coach?.centre_name)) || null;
+
   const availabilityHoursFor = (coach, day) => {
     // Nothing from the scheduling system yet, so the standard hours stand in
     // and the day is flagged rather than charged. This is the same path a real
@@ -2841,11 +2865,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
       a.coach_id === coach.id && a.status === 'Approved' &&
       new Date(a.from_date) <= new Date(workingDay) && new Date(a.to_date) >= new Date(workingDay));
 
+    // A weekly off or a published holiday is not a day anybody failed to work,
+    // so it is settled as neither a violation nor Loss of Pay. Without this,
+    // every weekend would read as an absence.
     const day = assessAttendanceDay({
       category: coach.coach_category,
       availabilityHours: avail.hours,
       loggedHours: logged,
       onApprovedLeave: onLeave,
+      isWeeklyOff: isWeeklyOffFor(coach, workingDay),
+      isHoliday: !!holidayOn(coach, workingDay),
       availabilityMissing: avail.missing
     });
 
@@ -2910,6 +2939,55 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     showToast(`${workingDay} settled — ${day.outcome === 'review' ? 'flagged for review, nothing charged' : 'nothing owed'}.`, "success");
+  };
+
+  /** Set or move a coach's weekly off. */
+  const setWeeklyOff = (coach, dayIndex) => {
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole) && currentRole !== 'Showrunner') {
+      showToast("Your role cannot change a coach's weekly off.", "error");
+      return;
+    }
+    const value = dayIndex === '' ? null : Number(dayIndex);
+    setCoaches(prev => prev.map(c => c.id === coach.id ? { ...c, weekly_off_day: value } : c));
+    logAudit("Weekly Off Set",
+      `${coach.name} (${coach.id}) weekly off ${value == null ? 'cleared' : `set to ${WEEKDAYS[value]}`}.`);
+    showToast(value == null
+      ? `${coach.name} has no weekly off.`
+      : `${coach.name}'s weekly off is now ${WEEKDAYS[value]}.`, "success");
+  };
+
+  const addHoliday = () => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast("Only Human Resources publishes the holiday list.", "error");
+      return;
+    }
+    const { date, name, centre } = holidayForm;
+    if (!date || !name.trim()) {
+      showToast("A holiday needs a date and a name.", "error");
+      return;
+    }
+    if (holidays.some(h => h.holiday_date === date && (h.centre_name || '') === (centre || ''))) {
+      showToast("That day is already on the list.", "warning");
+      return;
+    }
+    const { year } = leaveYearFor(date);
+    setHolidays(prev => [...prev, {
+      id: (crypto?.randomUUID?.() || `HOL_${Date.now()}`),
+      leave_year: year, holiday_date: date, name: name.trim(),
+      centre_name: centre || null
+    }]);
+    logAudit("Holiday Published",
+      `${name.trim()} on ${date}${centre ? ` for ${centre}` : ' for everyone'}.`);
+    showToast(`${name.trim()} added.`, "success");
+    setHolidayForm({ date: '', name: '', centre: '' });
+  };
+
+  const removeHoliday = (holiday) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) return;
+    if (!window.confirm(`Remove ${holiday.name} on ${holiday.holiday_date}?\n\nDays already settled against it are not revisited.`)) return;
+    setHolidays(prev => prev.filter(h => h.id !== holiday.id));
+    logAudit("Holiday Removed", `${holiday.name} on ${holiday.holiday_date} removed from the list.`);
+    showToast("Removed.", "info");
   };
 
   /** The photographs a chosen batch covers. */
@@ -8168,10 +8246,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const todays = coach ? logsFor(coach.id, todayWorkingDay) : [];
             const hours = loggedHoursForDay(todays, nowTick);
             const avail = coach ? availabilityHoursFor(coach, todayWorkingDay) : { hours: 0, missing: true };
+            const todayHoliday = coach ? holidayOn(coach, todayWorkingDay) : null;
             const day = coach ? assessAttendanceDay({
               category: coach.coach_category,
               availabilityHours: avail.hours,
               loggedHours: hours,
+              isWeeklyOff: isWeeklyOffFor(coach, todayWorkingDay),
+              isHoliday: !!todayHoliday,
+              onApprovedLeave: leaveApplications.some(a =>
+                a.coach_id === coach.id && a.status === 'Approved' &&
+                a.from_date <= todayWorkingDay && a.to_date >= todayWorkingDay),
               availabilityMissing: avail.missing
             }) : null;
 
@@ -8343,6 +8427,70 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                 )}
 
+                {PROFILE_PAY_ROLES.includes(currentRole) && (() => {
+                  const { year } = leaveYearFor(new Date());
+                  const list = holidays
+                    .filter(h => h.leave_year === year)
+                    .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
+                  return (
+                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Holiday List {year}</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          {list.length} published
+                        </span>
+                      </div>
+                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                        A day on this list is not counted against anyone. Leave the centre blank
+                        for every coach, or name one for a local holiday.
+                      </p>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Date</label>
+                          <input type="date" value={holidayForm.date}
+                            onChange={(e) => setHolidayForm(f => ({ ...f, date: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>Name</label>
+                          <input type="text" value={holidayForm.name} placeholder="e.g. Republic Day"
+                            onChange={(e) => setHolidayForm(f => ({ ...f, name: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>Centre</label>
+                          <input type="text" value={holidayForm.centre} placeholder="Blank — everyone"
+                            onChange={(e) => setHolidayForm(f => ({ ...f, centre: e.target.value }))} />
+                        </div>
+                        <div className="form-group" style={{ alignSelf: 'end' }}>
+                          <button className="btn btn-primary" onClick={addHoliday}>Add holiday</button>
+                        </div>
+                      </div>
+                      {list.length > 0 && (
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead><tr><th>Date</th><th>Day</th><th>Holiday</th><th>Applies to</th><th className="actions-col"></th></tr></thead>
+                            <tbody>
+                              {list.map(h => (
+                                <tr key={h.id}>
+                                  <td><strong>{h.holiday_date}</strong></td>
+                                  <td>{WEEKDAYS[new Date(`${h.holiday_date}T12:00:00`).getDay()]}</td>
+                                  <td>{h.name}</td>
+                                  <td>{h.centre_name || <span className="text-muted">everyone</span>}</td>
+                                  <td className="actions-col">
+                                    <button className="btn-row-icon icon-cancel" title="Remove from the list"
+                                      onClick={() => removeHoliday(h)}>
+                                      <i className="bx bx-trash"></i>
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {!coach ? (
                   <div className="card"><p className="text-muted">Choose a coach to see their attendance and leave.</p></div>
                 ) : (
@@ -8400,6 +8548,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </strong></div>
                         )}
                       </div>
+
+                      <div className="attendance-pattern">
+                        <label>Weekly off</label>
+                        <select
+                          value={coach.weekly_off_day ?? ''}
+                          disabled={coach.coach_category === 'Flexi'
+                            || !(LEAVE_APPROVER_ROLES.includes(currentRole) || currentRole === 'Showrunner')}
+                          onChange={(e) => setWeeklyOff(coach, e.target.value)}
+                        >
+                          <option value="">None set</option>
+                          {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                        </select>
+                        <span>
+                          {coach.coach_category === 'Flexi'
+                            ? 'Flexi coaches have no fixed off day — a day with no availability is off.'
+                            : coach.weekly_off_day == null
+                              ? 'Until this is set, that day counts as one they failed to work.'
+                              : `${WEEKDAYS[coach.weekly_off_day]}s are not counted against them.`}
+                        </span>
+                      </div>
+
+                      {todayHoliday && (
+                        <p className="calc-notes">
+                          Today is <strong>{todayHoliday.name}</strong>
+                          {todayHoliday.centre_name ? ` at ${todayHoliday.centre_name}` : ''} — nothing is owed.
+                        </p>
+                      )}
 
                       {/* The bar is the same figure again, read at a glance. */}
                       <div className="att-progress" title={`${Math.round((hours / (avail.hours || 1)) * 100)}% of the day`}>

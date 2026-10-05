@@ -3484,3 +3484,30 @@ form {
    is invisible otherwise. */
 .leave-overdue { background-color: rgba(239, 68, 68, 0.06); }
 .leave-overdue td:first-child { box-shadow: inset 3px 0 0 var(--accent-red, #ef4444); }
+
+/* The coach's working pattern, sat with the day it governs rather than buried
+   in a profile — a weekly off is only meaningful next to the day it excuses. */
+.attendance-pattern {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+}
+.attendance-pattern label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.attendance-pattern select {
+  max-width: 180px;
+  padding: 5px 9px;
+  font-size: 0.84rem;
+}
+.attendance-pattern > span {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
