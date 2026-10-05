@@ -3478,3 +3478,9 @@ form {
   transition: width 1s linear;
 }
 .att-progress-done { background-color: var(--accent-green, #10b981); }
+
+/* A leave application nobody has decided inside the three working days it is
+   allowed. Tinted, because the cost of missing it — a coach who cannot plan —
+   is invisible otherwise. */
+.leave-overdue { background-color: rgba(239, 68, 68, 0.06); }
+.leave-overdue td:first-child { box-shadow: inset 3px 0 0 var(--accent-red, #ef4444); }

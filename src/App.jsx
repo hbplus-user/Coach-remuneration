@@ -5561,6 +5561,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <p>Needs score validation</p>
                       </div>
                     </div>
+                    {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                      const waiting = leaveApplications.filter(a => a.status === 'Pending');
+                      if (waiting.length === 0) return null;
+                      const overdue = waiting.filter(a =>
+                        Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3).length;
+                      return (
+                        <div
+                          className={`stat-card ${overdue ? 'stat-red' : 'stat-amber'} stat-card-action`}
+                          role="button"
+                          tabIndex={0}
+                          title="Open Attendance & Leave to decide them"
+                          onClick={() => setActiveView('attendance')}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('attendance'); }}
+                        >
+                          <div className="stat-icon"><i className="bx bxs-calendar-check"></i></div>
+                          <div className="stat-info">
+                            <h3>Leave Awaiting You</h3>
+                            <h2>{waiting.length}</h2>
+                            <p>
+                              {overdue
+                                ? `${overdue} past the 3-day deadline`
+                                : 'Decide within 3 working days'}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {PROFILE_PAY_ROLES.includes(currentRole) && bandMovements.length > 0 && (
                       <div
                         className="stat-card stat-violet stat-card-action"
@@ -8148,8 +8175,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
               availabilityMissing: avail.missing
             }) : null;
 
-            const pending = leaveApplications.filter(a => a.status === 'Pending' &&
-              (canApprove ? true : a.coach_id === coach?.id));
+            // Everything waiting on this approver. A Reporting Manager decides for
+            // their own squad; Super Admin and HR stand in for any of them, which is
+            // what makes cover possible when a manager is away.
+            const pending = leaveApplications
+              .filter(a => a.status === 'Pending')
+              .filter(a => {
+                if (!canApprove) return a.coach_id === coach?.id;
+                if (currentRole !== 'Reporting Manager') return true;
+                const applicant = coaches.find(c => c.id === a.coach_id);
+                return !currentRmContext || applicant?.reporting_manager_id === currentRmContext;
+              })
+              .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
             const mine = coach ? leaveApplications.filter(a => a.coach_id === coach.id) : [];
 
             return (
@@ -8245,6 +8282,66 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </div>
                   );
                 })()}
+
+                    {/* Deciding leave is not about the coach on screen — an approver should
+                    see everything waiting on them the moment they arrive, which is why
+                    this sits outside the per-coach block rather than inside it. */}
+                {canApprove && pending.length > 0 && (
+                  <div className="card" style={{ marginTop: '1.25rem' }}>
+                    <div className="card-header-row">
+                      <h3>Awaiting your decision</h3>
+                      <span className="badge badge-warning">{pending.length}</span>
+                    </div>
+                    <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                      A decision is due within 3 working days. A coach is not marked Loss of
+                      Pay while their application is still waiting, so an undecided one costs
+                      nothing — it just leaves them unable to plan.
+                    </p>
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead>
+                          <tr><th>Coach</th><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Waiting</th><th>Reason</th><th className="actions-col">Decision</th></tr>
+                        </thead>
+                        <tbody>
+                          {pending.map(a => {
+                            const waited = Math.floor((Date.now() - new Date(a.applied_at)) / 86400000);
+                            const starts = Math.floor((new Date(a.from_date) - Date.now()) / 86400000);
+                            return (
+                            <tr key={a.id} className={waited >= 3 ? 'leave-overdue' : ''}>
+                              <td><strong>{coaches.find(c => c.id === a.coach_id)?.name || a.coach_id}</strong></td>
+                              <td>{leaveType(a.type_id)?.label}</td>
+                              <td>
+                                {a.from_date} → {a.to_date}
+                                {starts < 0 && <><br /><small className="text-red">already started</small></>}
+                                {starts >= 0 && starts <= 1 && <><br /><small className="text-red">starts {starts === 0 ? 'today' : 'tomorrow'}</small></>}
+                              </td>
+                              <td className="num-col">{a.days}</td>
+                              <td>
+                                {waited === 0 ? 'today' : `${waited} day${waited === 1 ? '' : 's'}`}
+                                {waited >= 3 && <><br /><small className="text-red">past the 3-day deadline</small></>}
+                                {waited === 2 && <><br /><small className="text-amber">due tomorrow</small></>}
+                              </td>
+                              <td><small className="text-muted">{a.reason || '—'}</small></td>
+                              <td className="actions-col">
+                                <div className="table-btn-group">
+                                  <button className="btn-row-icon icon-save" title="Approve"
+                                    onClick={() => handleLeaveDecision(a, 'Approved')}>
+                                    <i className="bx bx-check"></i>
+                                  </button>
+                                  <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
+                                    onClick={() => handleLeaveDecision(a, 'Rejected')}>
+                                    <i className="bx bx-x"></i>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {!coach ? (
                   <div className="card"><p className="text-muted">Choose a coach to see their attendance and leave.</p></div>
@@ -8446,46 +8543,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <button className="btn btn-primary" onClick={() => handleLeaveApply(coach)}>Apply</button>
                       </div>
                     </div>
-
-                    {/* Awaiting a decision */}
-                    {canApprove && pending.length > 0 && (
-                      <div className="card" style={{ marginTop: '1.25rem' }}>
-                        <div className="card-header-row">
-                          <h3>Awaiting your decision</h3>
-                          <span className="badge badge-warning">{pending.length}</span>
-                        </div>
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr><th>Coach</th><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Reason</th><th className="actions-col">Decision</th></tr>
-                            </thead>
-                            <tbody>
-                              {pending.map(a => (
-                                <tr key={a.id}>
-                                  <td><strong>{coaches.find(c => c.id === a.coach_id)?.name || a.coach_id}</strong></td>
-                                  <td>{leaveType(a.type_id)?.label}</td>
-                                  <td>{a.from_date} → {a.to_date}</td>
-                                  <td className="num-col">{a.days}</td>
-                                  <td><small className="text-muted">{a.reason || '—'}</small></td>
-                                  <td className="actions-col">
-                                    <div className="table-btn-group">
-                                      <button className="btn-row-icon icon-save" title="Approve"
-                                        onClick={() => handleLeaveDecision(a, 'Approved')}>
-                                        <i className="bx bx-check"></i>
-                                      </button>
-                                      <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
-                                        onClick={() => handleLeaveDecision(a, 'Rejected')}>
-                                        <i className="bx bx-x"></i>
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )}
 
                     {/* History */}
                     <div className="card" style={{ marginTop: '1.25rem' }}>
