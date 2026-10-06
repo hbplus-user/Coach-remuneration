@@ -157,7 +157,8 @@ const MAPPERS = {
     onConflict: 'coach_id,period_month',
     toRow: r => ({ ...pick(r, PERIOD_COLS), record_type: 'historic', overrides: r.overrides ?? {} }),
     fromRow: r => r,
-    deleteBy: 'compound'
+    deleteBy: 'compound',
+    keyColumns: ['coach_id', 'period_month']
   },
   currentMonth: {
     table: 'performance_records',
@@ -165,7 +166,8 @@ const MAPPERS = {
     onConflict: 'coach_id,period_month',
     toRow: r => ({ ...pick(r, PERIOD_COLS), record_type: 'current', overrides: r.overrides ?? {} }),
     fromRow: r => r,
-    deleteBy: 'compound'
+    deleteBy: 'compound',
+    keyColumns: ['coach_id', 'period_month']
   },
   attendanceLogs: {
     table: 'attendance_logs',
@@ -186,7 +188,8 @@ const MAPPERS = {
       'outcome', 'lop_days', 'planned', 'disputed', 'dispute_note', 'resolved_by'
     ]), DATE_ISH),
     fromRow: r => r,
-    deleteBy: 'compound'
+    deleteBy: 'compound',
+    keyColumns: ['coach_id', 'working_day']
   },
   leaveBalances: {
     table: 'leave_balances',
@@ -197,7 +200,8 @@ const MAPPERS = {
       'adjusted', 'adjust_reason'
     ]), DATE_ISH),
     fromRow: r => r,
-    deleteBy: 'compound'
+    deleteBy: 'compound',
+    keyColumns: ['coach_id', 'leave_year', 'type_id']
   },
   leaveApplications: {
     table: 'leave_applications',
@@ -574,13 +578,22 @@ export async function syncState(prev, next) {
 
     if (removed.length && !map.insertOnly) {
       if (map.deleteBy === 'compound') {
-        // performance_records has no single-column key; delete pair by pair.
-        for (const k of removed) {
-          const [coachId, month] = k.split('|');
-          const { error } = await supabase
-            .from(map.table).delete()
-            .eq('coach_id', coachId).eq('period_month', month);
-          if (error) errors.push(`${map.table}: ${error.message}`);
+        // These tables have no single-column key, so a row is identified by the
+        // same columns its key is built from. Those columns are declared on the
+        // mapper rather than assumed: this used to hardcode period_month, which
+        // was right for performance_records and wrong for every table added
+        // after it — a delete would have queried a column that does not exist.
+        const cols = map.keyColumns;
+        if (!cols?.length) {
+          errors.push(`${map.table}: compound delete needs keyColumns on the mapper`);
+        } else {
+          for (const k of removed) {
+            const parts = k.split('|');
+            let q = supabase.from(map.table).delete();
+            cols.forEach((col, i) => { q = q.eq(col, parts[i]); });
+            const { error } = await q;
+            if (error) errors.push(`${map.table}: ${error.message}`);
+          }
         }
       } else {
         const { error } = await supabase.from(map.table).delete().in('id', removed);

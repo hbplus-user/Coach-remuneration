@@ -2861,9 +2861,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     const avail = availabilityHoursFor(coach, workingDay);
     const logged = loggedHoursForDay(periods);
-    const onLeave = leaveApplications.some(a =>
-      a.coach_id === coach.id && a.status === 'Approved' &&
+    const covering = leaveApplications.filter(a =>
+      a.coach_id === coach.id &&
       new Date(a.from_date) <= new Date(workingDay) && new Date(a.to_date) >= new Date(workingDay));
+    const onLeave = covering.some(a => a.status === 'Approved');
+
+    // A day with an undecided application on it is not settled at all. The
+    // policy is explicit that a coach is not marked Loss of Pay while their
+    // application waits — charging them for a delay that is the approver's
+    // would make the deadline the coach's problem.
+    const awaiting = covering.find(a => a.status === 'Pending');
+    if (awaiting && !onLeave) {
+      showToast(
+        `${workingDay} has a ${leaveType(awaiting.type_id)?.label} application still waiting on a ` +
+        `decision. Decide it first — nothing is charged until then.`, "warning");
+      return;
+    }
 
     // A weekly off or a published holiday is not a day anybody failed to work,
     // so it is settled as neither a violation nor Loss of Pay. Without this,
@@ -2941,6 +2954,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`${workingDay} settled — ${day.outcome === 'review' ? 'flagged for review, nothing charged' : 'nothing owed'}.`, "success");
   };
 
+  /**
+   * Who is away on a given day, and whether that leaves enough cover.
+   *
+   * The minimum is per discipline, because a day with four strength coaches
+   * off and none of the yoga ones is not the same shortage as the reverse.
+   * It warns rather than blocks — whether cover is adequate is the approver's
+   * judgement, and the system does not have the context to overrule it.
+   */
+  const awayOn = (isoDay) => leaveApplications
+    .filter(a => (a.status === 'Approved' || a.status === 'Pending' || a.status === 'Partially_Approved'))
+    .filter(a => a.from_date <= isoDay && a.to_date >= isoDay)
+    .map(a => ({ app: a, coach: coaches.find(c => c.id === a.coach_id) }))
+    .filter(x => x.coach);
+
+  const coverCheck = (isoDay) => {
+    const away = awayOn(isoDay);
+    const byDiscipline = new Map();
+    for (const c of coaches.filter(x => x.status === 'Active')) {
+      const d = c.coach_type || findVariant(variants, c.variant_id).discipline || 'Unassigned';
+      if (!byDiscipline.has(d)) byDiscipline.set(d, { total: 0, off: 0 });
+      byDiscipline.get(d).total += 1;
+      if (away.some(a => a.coach.id === c.id)) byDiscipline.get(d).off += 1;
+    }
+    return [...byDiscipline.entries()].map(([discipline, n]) => ({
+      discipline,
+      working: n.total - n.off,
+      off: n.off,
+      total: n.total
+    }));
+  };
+
   /** Set or move a coach's weekly off. */
   const setWeeklyOff = (coach, dayIndex) => {
     if (!LEAVE_APPROVER_ROLES.includes(currentRole) && currentRole !== 'Showrunner') {
@@ -2988,6 +3032,76 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setHolidays(prev => prev.filter(h => h.id !== holiday.id));
     logAudit("Holiday Removed", `${holiday.name} on ${holiday.holiday_date} removed from the list.`);
     showToast("Removed.", "info");
+  };
+
+  /**
+   * The four reports a cycle needs. CSV rather than a screen, because they are
+   * read in a spreadsheet alongside figures from elsewhere — and a figure that
+   * cannot leave the system is a figure nobody checks.
+   */
+  const downloadAttendanceReport = (kind) => {
+    const { year } = leaveYearFor(new Date());
+    const period = currentMonth[0];
+    const inCycle = (d) => period && d >= period.period_start && d <= period.period_end;
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    let rows = [];
+    let name = '';
+
+    if (kind === 'attendance') {
+      name = `attendance-summary_${currentPeriodMonth}`;
+      rows.push(['Coach ID', 'Name', 'Category', 'Days logged', 'Hours logged', 'Days short', 'LOP days']);
+      for (const c of coaches.filter(x => x.status === 'Active')) {
+        const days = attendanceDays.filter(d => d.coach_id === c.id && inCycle(d.working_day));
+        const logs = attendanceLogs.filter(l => l.coach_id === c.id && inCycle(l.working_day));
+        const hours = [...new Set(logs.map(l => l.working_day))]
+          .reduce((sum, d) => sum + loggedHoursForDay(logsFor(c.id, d)), 0);
+        rows.push([c.id, c.name, c.coach_category,
+          new Set(logs.map(l => l.working_day)).size,
+          hours.toFixed(2),
+          days.filter(d => d.outcome === 'violation').length,
+          days.reduce((s, d) => s + (Number(d.lop_days) || 0), 0)]);
+      }
+    }
+
+    if (kind === 'balances') {
+      name = `leave-balances_${year}`;
+      rows.push(['Coach ID', 'Name', 'Leave type', 'Opening', 'Accrued', 'Used', 'Adjusted', 'Available']);
+      for (const c of coaches.filter(x => x.status === 'Active')) {
+        for (const t of leaveTypesFor(c).filter(x => x.id !== 'LOP')) {
+          const b = leaveBalanceFor(c, t.id);
+          rows.push([c.id, c.name, t.label, b.opening, b.accrued, b.used, b.adjusted, b.available]);
+        }
+      }
+    }
+
+    if (kind === 'lop') {
+      name = `loss-of-pay_${currentPeriodMonth}`;
+      rows.push(['Coach ID', 'Name', 'Date', 'Outcome', 'Expected h', 'Logged h', 'LOP days', 'Planned']);
+      for (const d of attendanceDays.filter(x => inCycle(x.working_day) && Number(x.lop_days) > 0)) {
+        const c = coaches.find(x => x.id === d.coach_id);
+        rows.push([d.coach_id, c?.name || '', d.working_day, d.outcome,
+          d.expected_hours, d.logged_hours, d.lop_days, d.planned ? 'Planned' : 'Unplanned']);
+      }
+    }
+
+    if (kind === 'penalties') {
+      name = `attendance-penalties_${currentPeriodMonth}`;
+      rows.push(['Coach ID', 'Name', 'Date', 'Violation', 'Occurrence', 'Consequence', 'Charged']);
+      for (const v of violations.filter(x => x.reported_by === 'System — attendance' && inCycle(x.incident_date))) {
+        const c = coaches.find(x => x.id === v.coach_id);
+        rows.push([v.coach_id, c?.name || '', v.incident_date, v.type,
+          v.occurrence_no, v.consequence, isPenaltyChargeable(v) ? v.penalty_amount : 0]);
+      }
+    }
+
+    if (rows.length <= 1) {
+      showToast("Nothing to report for this cycle yet.", "info");
+      return;
+    }
+    const csv = rows.map(r => r.map(esc).join(',')).join('\n');
+    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `${name}.csv`);
+    logAudit("Attendance Report Downloaded", `${name} — ${rows.length - 1} row(s).`);
+    showToast(`${rows.length - 1} row${rows.length === 2 ? '' : 's'} downloaded.`, "success");
   };
 
   /** The photographs a chosen batch covers. */
@@ -3121,6 +3235,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
     };
   };
 
+  /**
+   * Leave days between two dates, for this coach.
+   *
+   * A weekly off or a published holiday inside the span is not leave — the
+   * coach was not due to work it, so spending a day's balance on it would
+   * charge them for a day nobody expected them. Counting the plain calendar
+   * span is what makes a Friday-to-Monday absence cost four days instead of
+   * two.
+   */
+  const leaveDaysFor = (coach, from, to) => {
+    if (!from || !to) return { days: 0, skipped: [] };
+    const start = new Date(`${from}T12:00:00`);
+    const end = new Date(`${to}T12:00:00`);
+    if (end < start) return { days: 0, skipped: [] };
+
+    let days = 0;
+    const skipped = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const holiday = holidayOn(coach, iso);
+      if (isWeeklyOffFor(coach, iso)) { skipped.push(`${iso} (weekly off)`); continue; }
+      if (holiday) { skipped.push(`${iso} (${holiday.name})`); continue; }
+      days += 1;
+    }
+    return { days, skipped };
+  };
+
   const daysBetween = (from, to) => {
     if (!from || !to) return 0;
     const d = Math.floor((new Date(to) - new Date(from)) / 86400000) + 1;
@@ -3134,13 +3275,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
       showToast("Choose the dates the leave runs from and to.", "error");
       return;
     }
-    const days = halfDay ? 0.5 : daysBetween(from, to);
+    const counted = leaveDaysFor(coach, from, to);
+    const days = halfDay ? 0.5 : counted.days;
+    if (days === 0) {
+      showToast("Every day in that span is a weekly off or a holiday — there is no leave to apply for.", "warning");
+      return;
+    }
     const balance = leaveBalanceFor(coach, type).available;
     const check = checkLeaveApplication({ typeId: type, coach, from, days, balance });
 
     if (!check.ok) {
-      showToast(check.problems[0], "error");
-      return;
+      // A Reporting Manager may grant beyond the balance where they judge it
+      // right; the coach cannot grant it to themselves, which is the whole
+      // point of the limit.
+      const overBalanceOnly = check.problems.length === 1 && check.problems[0].includes('left, and');
+      if (overBalanceOnly && LEAVE_APPROVER_ROLES.includes(currentRole)) {
+        const grant = window.confirm(
+          `${check.problems[0]}\n\nGrant it beyond the balance anyway? ` +
+          `This is recorded against you in the audit log.`);
+        if (!grant) return;
+        logAudit("Leave Granted Beyond Balance",
+          `${currentRole} granted ${days} day(s) ${leaveType(type)?.label} to ${coach.name} ` +
+          `(${coach.id}) beyond a balance of ${balance}.`);
+      } else {
+        showToast(check.problems[0], "error");
+        return;
+      }
     }
 
     // Clashes do not block the application; they warn, because cover is the
@@ -3181,9 +3341,120 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }, ...prev]);
 
     logAudit("Leave Applied",
-      `${coach.name} (${coach.id}) applied for ${days} day(s) ${leaveType(type)?.label} from ${from} to ${to}.`);
-    showToast(`Applied for ${days} day${days === 1 ? '' : 's'} — waiting on the Reporting Manager.`, "success");
+      `${coach.name} (${coach.id}) applied for ${days} day(s) ${leaveType(type)?.label} from ${from} to ${to}` +
+      `${counted.skipped.length ? `; not counted: ${counted.skipped.join(', ')}` : ''}.`);
+    showToast(
+      `Applied for ${days} day${days === 1 ? '' : 's'}` +
+      `${counted.skipped.length ? ` — ${counted.skipped.length} day(s) in the span not counted` : ''}` +
+      ` — waiting on the Reporting Manager.`, "success");
     setLeaveForm({ type: 'PAID', from: '', to: '', halfDay: false, reason: '' });
+  };
+
+  /**
+   * Approve part of an application and refuse the rest.
+   *
+   * The days not approved come back to the balance, and the comment is
+   * required: a coach told that four of their six days were refused is owed
+   * the reason more than one refused outright, because the decision looks
+   * arbitrary without it.
+   */
+  const handlePartialApproval = (application) => {
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
+    const coach = coaches.find(c => c.id === application.coach_id);
+
+    const raw = window.prompt(
+      `${coach?.name || application.coach_id} asked for ${application.days} day(s) ` +
+      `${leaveType(application.type_id)?.label}, ${application.from_date} to ${application.to_date}.\n\n` +
+      `How many days are you approving?`,
+      String(application.days));
+    if (raw === null) return;
+
+    const approved = Number(raw);
+    if (!Number.isFinite(approved) || approved <= 0 || approved > Number(application.days)) {
+      showToast(`Enter a number between 0.5 and ${application.days}.`, "error");
+      return;
+    }
+    if (approved === Number(application.days)) {
+      handleLeaveDecision(application, 'Approved');
+      return;
+    }
+
+    const note = window.prompt(
+      `Why are the other ${Math.round((application.days - approved) * 10) / 10} day(s) refused? ` +
+      `The coach sees this.`);
+    if (!note || !note.trim()) {
+      showToast("Refusing part of an application needs a reason.", "error");
+      return;
+    }
+
+    const returned = Math.round((Number(application.days) - approved) * 10) / 10;
+    setLeaveApplications(prev => prev.map(a => a.id === application.id
+      ? { ...a, status: 'Partially_Approved', approved_days: approved,
+          decided_by: currentRole, decided_at: new Date().toISOString(), decision_note: note.trim() }
+      : a));
+    setLeaveBalances(prev => prev.map(b =>
+      (b.coach_id === application.coach_id && b.type_id === application.type_id)
+        ? { ...b, used: Math.max(0, (Number(b.used) || 0) - returned) }
+        : b));
+
+    logAudit("Leave Partially Approved",
+      `${approved} of ${application.days} day(s) ${leaveType(application.type_id)?.label} approved for ` +
+      `${coach?.name || application.coach_id}; ${returned} returned — ${note.trim()}`);
+    showToast(`${approved} day(s) approved, ${returned} returned to the balance.`, "info");
+  };
+
+  /**
+   * Change what kind of leave this is, which is how a refused Paid Leave
+   * becomes Loss of Pay rather than a flat no. The old type's balance is
+   * returned and the new one charged, so neither is left wrong.
+   */
+  const handleLeaveTypeChange = (application) => {
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
+    const coach = coaches.find(c => c.id === application.coach_id);
+    const options = leaveTypesFor(coach).filter(t => t.id !== application.type_id);
+
+    const raw = window.prompt(
+      `Change ${leaveType(application.type_id)?.label} to which type?\n\n` +
+      options.map((t, i) => `${i + 1}. ${t.label}`).join('\n') +
+      `\n\nEnter a number.`);
+    if (raw === null) return;
+    const picked = options[Number(raw) - 1];
+    if (!picked) { showToast("That is not one of the options.", "error"); return; }
+
+    const note = window.prompt(
+      `Why is this becoming ${picked.label}? The coach is told, and sees this.`);
+    if (!note || !note.trim()) {
+      showToast("Changing the leave type needs a reason.", "error");
+      return;
+    }
+
+    const days = Number(application.days);
+    setLeaveBalances(prev => {
+      // Back to the type it came from, charged to the one it became.
+      let next = prev.map(b => (b.coach_id === application.coach_id && b.type_id === application.type_id)
+        ? { ...b, used: Math.max(0, (Number(b.used) || 0) - days) } : b);
+      const { year } = leaveYearFor(new Date());
+      const i = next.findIndex(b => b.coach_id === application.coach_id
+        && b.leave_year === year && b.type_id === picked.id);
+      if (i === -1) {
+        next = [...next, { coach_id: application.coach_id, leave_year: year, type_id: picked.id,
+          opening: 0, accrued: leaveBalanceFor(coach, picked.id).accrued, used: days, adjusted: 0 }];
+      } else {
+        next = next.map((b, n) => n === i ? { ...b, used: (Number(b.used) || 0) + days } : b);
+      }
+      return next;
+    });
+
+    setLeaveApplications(prev => prev.map(a => a.id === application.id
+      ? { ...a, type_id: picked.id, status: 'Approved', approved_days: days,
+          decided_by: currentRole, decided_at: new Date().toISOString(),
+          decision_note: `Changed from ${leaveType(application.type_id)?.label} — ${note.trim()}` }
+      : a));
+
+    logAudit("Leave Type Changed",
+      `${coach?.name || application.coach_id}: ${leaveType(application.type_id)?.label} → ${picked.label} ` +
+      `for ${days} day(s) — ${note.trim()}`);
+    showToast(`Approved as ${picked.label}. The coach is told why.`, "info");
   };
 
   const handleLeaveDecision = (application, decision) => {
@@ -3220,6 +3491,83 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `${decision} ${application.days} day(s) ${leaveType(application.type_id)?.label} for ` +
       `${coach?.name || application.coach_id}${note ? ` — ${note}` : ''}.`);
     showToast(`Leave ${decision.toLowerCase()}.`, decision === 'Approved' ? "success" : "warning");
+  };
+
+  /**
+   * Correct a balance by hand.
+   *
+   * Opening balances come from a sheet and sheets are wrong sometimes; so is
+   * accrual when someone's eligibility date was keyed late. The adjustment is
+   * kept as its own figure rather than folded into `accrued`, so the balance
+   * still shows what the policy gave and what a person changed, separately.
+   */
+  const adjustLeaveBalance = (coach, typeId) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast("Only Human Resources adjusts a balance.", "error");
+      return;
+    }
+    const current = leaveBalanceFor(coach, typeId);
+    const raw = window.prompt(
+      `${coach.name} — ${leaveType(typeId)?.label}\n\n` +
+      `Opening ${current.opening}, accrued ${current.accrued}, used ${current.used}` +
+      `${current.adjusted ? `, adjusted ${current.adjusted}` : ''} — available ${current.available}.\n\n` +
+      `Adjust by how many days? A negative number takes days away.`,
+      '0');
+    if (raw === null) return;
+    const delta = Number(raw);
+    if (!Number.isFinite(delta) || delta === 0) {
+      showToast("Enter a number of days, positive or negative.", "error");
+      return;
+    }
+
+    const reason = window.prompt("Why? This is required, and goes on the audit log.");
+    if (!reason || !reason.trim()) {
+      showToast("An adjustment needs a reason.", "error");
+      return;
+    }
+
+    const { year } = leaveYearFor(new Date());
+    setLeaveBalances(prev => {
+      const i = prev.findIndex(b => b.coach_id === coach.id && b.leave_year === year && b.type_id === typeId);
+      if (i === -1) {
+        return [...prev, { coach_id: coach.id, leave_year: year, type_id: typeId,
+          opening: 0, accrued: current.accrued, used: 0, adjusted: delta, adjust_reason: reason.trim() }];
+      }
+      return prev.map((b, n) => n === i
+        ? { ...b, adjusted: Math.round(((Number(b.adjusted) || 0) + delta) * 10) / 10,
+            adjust_reason: reason.trim() }
+        : b);
+    });
+
+    logAudit("Leave Balance Adjusted",
+      `${coach.name} (${coach.id}) ${leaveType(typeId)?.label} adjusted by ${delta > 0 ? '+' : ''}${delta} ` +
+      `day(s) — ${reason.trim()}`);
+    showToast(`${leaveType(typeId)?.label} adjusted by ${delta > 0 ? '+' : ''}${delta}.`, "success");
+  };
+
+  /** Raise a rejected leave decision as an appeal, through the existing route. */
+  const appealLeaveDecision = (application) => {
+    const coach = coaches.find(c => c.id === application.coach_id);
+    const grounds = window.prompt(
+      `Appeal the decision on ${leaveType(application.type_id)?.label}, ` +
+      `${application.from_date} to ${application.to_date}.\n\n` +
+      `Reason given: ${application.decision_note || '—'}\n\nWhy should it be looked at again?`);
+    if (!grounds || !grounds.trim()) return;
+
+    setAppeals(prev => [{
+      id: `APL_${Date.now().toString().substring(7)}`,
+      coach_id: application.coach_id,
+      violation_id: null,
+      reason: `Leave decision — ${leaveType(application.type_id)?.label} ` +
+        `${application.from_date} to ${application.to_date}: ${grounds.trim()}`,
+      status: 'PENDING_RM',
+      raised_at: new Date().toISOString()
+    }, ...prev]);
+
+    logAudit("Leave Decision Appealed",
+      `${coach?.name || application.coach_id} appealed the ${leaveType(application.type_id)?.label} ` +
+      `decision of ${application.from_date} — ${grounds.trim()}`);
+    showToast("Appeal raised. It goes to the Reporting Manager.", "info");
   };
 
   const handleLeaveCancel = (application) => {
@@ -8412,6 +8760,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     onClick={() => handleLeaveDecision(a, 'Approved')}>
                                     <i className="bx bx-check"></i>
                                   </button>
+                                  <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
+                                    onClick={() => handlePartialApproval(a)}>
+                                    <i className="bx bx-slider-alt"></i>
+                                  </button>
+                                  <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
+                                    onClick={() => handleLeaveTypeChange(a)}>
+                                    <i className="bx bx-transfer-alt"></i>
+                                  </button>
                                   <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
                                     onClick={() => handleLeaveDecision(a, 'Rejected')}>
                                     <i className="bx bx-x"></i>
@@ -8423,6 +8779,93 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           })}
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Who is away, and whether that leaves enough on the floor. Shown
+                    before the approval queue, since it is the context a decision
+                    needs rather than something to look up afterwards. */}
+                {canApprove && (() => {
+                  const days = Array.from({ length: 14 }, (_, i) => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + i);
+                    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  });
+                  const busy = days.map(d => ({ day: d, away: awayOn(d) })).filter(x => x.away.length > 0);
+                  if (busy.length === 0) return null;
+                  return (
+                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Who Is Away — Next 14 Days</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          approved and pending
+                        </span>
+                      </div>
+                      <div className="table-container">
+                        <table className="data-table">
+                          <thead><tr><th>Day</th><th>Away</th><th>Cover left</th></tr></thead>
+                          <tbody>
+                            {busy.map(({ day, away }) => {
+                              const cover = coverCheck(day).filter(c => c.off > 0);
+                              return (
+                                <tr key={day}>
+                                  <td>
+                                    <strong>{day}</strong><br />
+                                    <small className="text-muted">
+                                      {WEEKDAYS[new Date(`${day}T12:00:00`).getDay()]}
+                                    </small>
+                                  </td>
+                                  <td>
+                                    {away.map(a => (
+                                      <div key={a.app.id}>
+                                        {a.coach.name}
+                                        <small className="text-muted"> · {leaveType(a.app.type_id)?.label}
+                                          {a.app.status === 'Pending' ? ' (pending)' : ''}</small>
+                                      </div>
+                                    ))}
+                                  </td>
+                                  <td>
+                                    {cover.map(c => (
+                                      <div key={c.discipline}>
+                                        <small className={c.working === 0 ? 'text-red' : 'text-muted'}>
+                                          {c.discipline}: {c.working} of {c.total} working
+                                        </small>
+                                      </div>
+                                    ))}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
+                  <div className="card" style={{ marginBottom: '1.25rem' }}>
+                    <div className="card-header-row">
+                      <h3>Reports</h3>
+                      <span className="text-muted" style={{ fontSize: '0.82rem' }}>{currentPeriodMonth}</span>
+                    </div>
+                    <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                      Each one covers the open cycle, except balances, which run to the leave year.
+                    </p>
+                    <div className="table-btn-group">
+                      <button className="btn btn-secondary" onClick={() => downloadAttendanceReport('attendance')}>
+                        <i className="bx bx-download"></i> Attendance summary
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => downloadAttendanceReport('balances')}>
+                        <i className="bx bx-download"></i> Leave balances
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => downloadAttendanceReport('lop')}>
+                        <i className="bx bx-download"></i> Loss of Pay days
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => downloadAttendanceReport('penalties')}>
+                        <i className="bx bx-download"></i> Attendance penalties
+                      </button>
                     </div>
                   </div>
                 )}
@@ -8508,13 +8951,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             onClick={() => handleAttendanceLogout(coach)}>
                             <i className="bx bx-log-out"></i> Log out
                           </button>
-                          {LEAVE_APPROVER_ROLES.includes(currentRole) && (
-                            <button className="btn btn-secondary" disabled={!!open || todays.length === 0}
-                              title="Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay"
-                              onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
-                              <i className="bx bx-check-double"></i> Settle day
-                            </button>
-                          )}
+                          {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                            const settled = attendanceDays.some(d =>
+                              d.coach_id === coach.id && d.working_day === todayWorkingDay);
+                            // A disabled button with no reason is a dead end, and
+                            // there are four different reasons this one is.
+                            const why = settled ? 'Already settled'
+                              : open ? 'Still logged in — log out first'
+                              : todays.length === 0 ? 'Nothing logged today'
+                              : null;
+                            return (
+                              <button className="btn btn-secondary" disabled={!!why}
+                                title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
+                                onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
+                                <i className="bx bx-check-double"></i> {why || 'Settle day'}
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -8634,8 +9087,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <th className="num-col">Opening</th>
                               <th className="num-col">Accrued</th>
                               <th className="num-col">Used</th>
+                              <th className="num-col">Adjusted</th>
                               <th className="num-col">Available</th>
                               <th>Policy</th>
+                              <th className="actions-col"></th>
                             </tr>
                           </thead>
                           <tbody>
@@ -8647,8 +9102,24 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   <td className="num-col">{b.opening}</td>
                                   <td className="num-col">{b.accrued}</td>
                                   <td className="num-col">{b.used}</td>
+                                  <td className="num-col">
+                                    {b.adjusted
+                                      ? <span className={b.adjusted > 0 ? 'text-green' : 'text-red'}>
+                                          {b.adjusted > 0 ? '+' : ''}{b.adjusted}
+                                        </span>
+                                      : <span className="text-muted">—</span>}
+                                  </td>
                                   <td className="num-col"><strong>{b.available}</strong></td>
                                   <td><small className="text-muted">{t.note}</small></td>
+                                  <td className="actions-col">
+                                    {PROFILE_PAY_ROLES.includes(currentRole) && (
+                                      <button className="btn-row-icon icon-edit"
+                                        title="Adjust this balance by hand — a reason is required"
+                                        onClick={() => adjustLeaveBalance(coach, t.id)}>
+                                        <i className="bx bx-slider-alt"></i>
+                                      </button>
+                                    )}
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -8711,8 +9182,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <div className="modal-footer">
                         <span className="text-muted" style={{ fontSize: '0.8rem', marginRight: 'auto' }}>
                           {leaveForm.from && leaveForm.to
-                            ? `${leaveForm.halfDay ? 0.5 : daysBetween(leaveForm.from, leaveForm.to)} day(s) · ` +
-                              `${leaveBalanceFor(coach, leaveForm.type).available} available`
+                            ? (() => {
+                                const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to);
+                                const n = leaveForm.halfDay ? 0.5 : c.days;
+                                const span = daysBetween(leaveForm.from, leaveForm.to);
+                                return `${n} day(s) of leave` +
+                                  (c.skipped.length ? ` — ${span} day span, ${c.skipped.length} not counted (${c.skipped.join(', ')})` : '') +
+                                  ` · ${leaveBalanceFor(coach, leaveForm.type).available} available`;
+                              })()
                             : 'Choose the dates.'}
                         </span>
                         <button className="btn btn-primary" onClick={() => handleLeaveApply(coach)}>Apply</button>
@@ -8756,11 +9233,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                             onClick={() => handleLeaveDecision(a, 'Approved')}>
                                             <i className="bx bx-check"></i>
                                           </button>
+                                          <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
+                                            onClick={() => handlePartialApproval(a)}>
+                                            <i className="bx bx-slider-alt"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
+                                            onClick={() => handleLeaveTypeChange(a)}>
+                                            <i className="bx bx-transfer-alt"></i>
+                                          </button>
                                           <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
                                             onClick={() => handleLeaveDecision(a, 'Rejected')}>
                                             <i className="bx bx-x"></i>
                                           </button>
                                         </>
+                                      )}
+                                      {a.status === 'Rejected' && (
+                                        <button className="btn-row-icon icon-edit" title="Appeal this decision"
+                                          onClick={() => appealLeaveDecision(a)}>
+                                          <i className="bx bx-undo"></i>
+                                        </button>
                                       )}
                                       {(a.status === 'Pending' || a.status === 'Approved') && (
                                         <button className="btn-row-icon icon-reset" title="Cancel this leave"
@@ -10760,12 +11251,19 @@ HB+_030,185,0,96`} />
                             pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + 
                             pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
 
-        // Earnings (A) is what the coach earned before tax; the penalty sits in
-        // deductions (B) alongside it, the way the slip formats present it.
-        const totalEarnings = Math.round((pay.grossPay + pay.penaltyDeductions) * 100) / 100;
+        // Earnings (A) is what the month was worth before anything came off it.
+        // Loss of Pay used to be netted silently out of this, which left a slip
+        // showing a smaller salary with nothing saying why — so it is shown
+        // gross here and taken off in deductions, where it can be read.
+        const totalEarnings = Math.round(
+          (pay.grossPay + pay.penaltyDeductions + pay.lossOfPay) * 100) / 100;
         const earningLines = payslipEarnings(coach.coach_category, totalEarnings, pay.basePay);
-        const incomeTax = Math.round(totalEarnings * TDS_194J_RATE);
-        const totalDeductions = Math.round((incomeTax + pay.penaltyDeductions) * 100) / 100;
+        // Withheld on what is left after days not worked, as the policy sets
+        // out — so the figure itself does not change, only where it is shown.
+        const taxableEarnings = Math.round((totalEarnings - pay.lossOfPay) * 100) / 100;
+        const incomeTax = Math.round(taxableEarnings * TDS_194J_RATE);
+        const totalDeductions = Math.round(
+          (incomeTax + pay.penaltyDeductions + pay.lossOfPay) * 100) / 100;
         const netPayable = Math.round((totalEarnings - totalDeductions) * 100) / 100;
 
         // A salaried month is described in days, so count the period's own.
@@ -10863,6 +11361,15 @@ HB+_030,185,0,96`} />
                     <h3>TAXES &amp; DEDUCTIONS</h3>
                     <table className="payslip-ledger-table">
                       <tbody>
+                        {pay.lossOfPay > 0 && (
+                          <tr>
+                            <td>
+                              Loss of Pay ({pay.lopDays} day{pay.lopDays === 1 ? '' : 's'})
+                              {pay.unplannedLopDays > 0 && ` — ${pay.unplannedLopDays} unplanned`}
+                            </td>
+                            <td className="amt">{pay.lossOfPay.toFixed(2)}</td>
+                          </tr>
+                        )}
                         {pay.penaltyDeductions > 0 && (
                           <tr>
                             <td>Penalty ({activeVio.length} incident{activeVio.length === 1 ? '' : 's'})</td>
