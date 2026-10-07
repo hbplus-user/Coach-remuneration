@@ -3511,3 +3511,14 @@ form {
   font-size: 0.76rem;
   color: var(--text-muted);
 }
+
+/* An uploaded list, shown before it is written. The spacing keeps it clearly
+   a proposal sitting above the real list rather than part of it. */
+.bulk-preview-wrap {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-main);
+}
+.bulk-preview-wrap .unsaved-drafts-bar { margin-top: 0; }

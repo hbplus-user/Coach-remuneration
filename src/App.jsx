@@ -1472,6 +1472,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // The photo archive an administrator pulls down.
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
+  const [holidayPreview, setHolidayPreview] = useState(null);
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -3024,6 +3025,110 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `${name.trim()} on ${date}${centre ? ` for ${centre}` : ' for everyone'}.`);
     showToast(`${name.trim()} added.`, "success");
     setHolidayForm({ date: '', name: '', centre: '' });
+  };
+
+  /**
+   * A template for the year's holidays.
+   *
+   * Pre-filled with whatever is already published, so the file is edited
+   * rather than retyped — the same way the score card templates work. The two
+   * example rows show both shapes: one for everybody, one for a single centre.
+   */
+  const downloadHolidayTemplate = () => {
+    const { year } = leaveYearFor(new Date());
+    const existing = holidays
+      .filter(h => h.leave_year === year)
+      .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date))
+      .map(h => [h.holiday_date, h.name, h.centre_name || '']);
+
+    const rows = existing.length ? existing : [
+      [`${year}-01-26`, 'Republic Day', ''],
+      [`${year}-08-15`, 'Independence Day', ''],
+      [`${year}-04-14`, 'Local Holiday — example', 'HB+ Studio Indiranagar']
+    ];
+
+    const csv = [
+      ['Date (YYYY-MM-DD)', 'Holiday name', 'Centre (blank = everyone)'],
+      ...rows
+    ].map(r => r.map(csvCell).join(',')).join('\n');
+
+    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `holiday-list_${year}.csv`);
+    showToast(existing.length
+      ? `Template carries the ${existing.length} already published — edit and upload it back.`
+      : 'Template downloaded with example rows. Replace them with the real list.', "info");
+  };
+
+  /**
+   * Read an uploaded list and say what it would do before doing it.
+   *
+   * Nothing is written until it is accepted. A row already on the list is
+   * marked as such rather than refused, because a template carries what is
+   * published — re-uploading an edited file should not be an error.
+   */
+  const readHolidayFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) {
+      showToast("That file has a header and nothing else.", "error");
+      return;
+    }
+
+    const { year } = leaveYearFor(new Date());
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const [rawDate, rawName, rawCentre] = parseCsvLine(lines[i]);
+      const date = (rawDate || '').trim();
+      const name = (rawName || '').trim();
+      const centre = (rawCentre || '').trim();
+      if (!date && !name) continue;
+
+      let problem = null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) problem = 'Date must be YYYY-MM-DD';
+      else if (Number.isNaN(new Date(`${date}T12:00:00`).getTime())) problem = 'Not a real date';
+      else if (!name) problem = 'Needs a name';
+
+      const duplicate = !problem && holidays.some(h =>
+        h.holiday_date === date && (h.centre_name || '') === centre);
+      const inFile = !problem && rows.some(r =>
+        r.date === date && r.centre === centre);
+
+      rows.push({
+        line: i + 1, date, name, centre,
+        problem,
+        duplicate: duplicate || inFile,
+        year: problem ? null : leaveYearFor(date).year
+      });
+    }
+
+    setHolidayPreview({ fileName: file.name, rows, year });
+  };
+
+  const applyHolidayPreview = () => {
+    const pv = holidayPreview;
+    if (!pv) return;
+    const adding = pv.rows.filter(r => !r.problem && !r.duplicate);
+    if (adding.length === 0) {
+      showToast("Nothing new in that file.", "info");
+      setHolidayPreview(null);
+      return;
+    }
+
+    setHolidays(prev => [...prev, ...adding.map(r => ({
+      id: (crypto?.randomUUID?.() || `HOL_${Date.now()}_${r.line}`),
+      leave_year: r.year,
+      holiday_date: r.date,
+      name: r.name,
+      centre_name: r.centre || null
+    }))]);
+
+    const skipped = pv.rows.length - adding.length;
+    logAudit("Holiday List Imported",
+      `${adding.length} holiday(s) added from ${pv.fileName}` +
+      `${skipped ? `; ${skipped} skipped` : ''}.`);
+    showToast(`${adding.length} holiday${adding.length === 1 ? '' : 's'} added` +
+      `${skipped ? `, ${skipped} skipped` : ''}.`, "success");
+    setHolidayPreview(null);
   };
 
   const removeHoliday = (holiday) => {
@@ -8879,9 +8984,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <div className="card" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
                         <h3>Holiday List {year}</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          {list.length} published
-                        </span>
+                        <div className="table-btn-group">
+                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
+                            {list.length} published
+                          </span>
+                          <button className="btn btn-secondary btn-sm" onClick={downloadHolidayTemplate}>
+                            <i className="bx bx-download"></i> Template
+                          </button>
+                          <label className="btn btn-secondary btn-sm" style={{ marginBottom: 0 }}>
+                            <i className="bx bx-upload"></i> Upload list
+                            <input
+                              type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                              onChange={(e) => { readHolidayFile(e.target.files?.[0]); e.target.value = ''; }}
+                            />
+                          </label>
+                        </div>
                       </div>
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                         A day on this list is not counted against anyone. Leave the centre blank
@@ -8907,6 +9024,58 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <button className="btn btn-primary" onClick={addHoliday}>Add holiday</button>
                         </div>
                       </div>
+                      {/* What the file would do, before it does it. Nothing is
+                          written until this is accepted. */}
+                      {holidayPreview && (() => {
+                        const bad = holidayPreview.rows.filter(r => r.problem).length;
+                        const dup = holidayPreview.rows.filter(r => !r.problem && r.duplicate).length;
+                        const add = holidayPreview.rows.length - bad - dup;
+                        return (
+                          <div className="bulk-preview-wrap">
+                            <div className="unsaved-drafts-bar">
+                              <i className="bx bx-list-check"></i>
+                              <span>
+                                <strong>{holidayPreview.fileName}</strong>
+                                <small>
+                                  {add} to add
+                                  {dup ? ` · ${dup} already on the list` : ''}
+                                  {bad ? ` · ${bad} with a problem` : ''}
+                                </small>
+                              </span>
+                              <button className="btn btn-secondary btn-sm" onClick={() => setHolidayPreview(null)}>
+                                Cancel
+                              </button>
+                              <button className="btn btn-primary btn-sm" disabled={add === 0}
+                                onClick={applyHolidayPreview}>
+                                Add {add || ''}
+                              </button>
+                            </div>
+                            <div className="table-container">
+                              <table className="data-table">
+                                <thead><tr><th>Line</th><th>Date</th><th>Holiday</th><th>Applies to</th><th>Status</th></tr></thead>
+                                <tbody>
+                                  {holidayPreview.rows.map(r => (
+                                    <tr key={r.line} className={r.problem ? 'leave-overdue' : ''}>
+                                      <td>{r.line}</td>
+                                      <td>{r.date || <span className="text-muted">—</span>}</td>
+                                      <td>{r.name || <span className="text-muted">—</span>}</td>
+                                      <td>{r.centre || <span className="text-muted">everyone</span>}</td>
+                                      <td>
+                                        {r.problem
+                                          ? <span className="text-red">{r.problem}</span>
+                                          : r.duplicate
+                                            ? <span className="text-muted">already on the list</span>
+                                            : <span className="text-green">will be added</span>}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {list.length > 0 && (
                         <div className="table-container">
                           <table className="data-table">
