@@ -3559,3 +3559,29 @@ form {
    two must stay distinguishable. */
 .leave-pending { background-color: rgba(245, 158, 11, 0.07); }
 .leave-pending td:first-child { box-shadow: inset 3px 0 0 var(--accent-amber, #f59e0b); }
+
+/* ---------------------------------------------------------------------------
+   Tools that are needed occasionally, on a screen whose work happens in the
+   first two cards. Closed by default: six expanded panels above the thing you
+   came for is how a page becomes unsearchable.
+--------------------------------------------------------------------------- */
+.card-collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.card-collapsible > summary::-webkit-details-marker { display: none; }
+.card-collapsible > summary h3::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 0.5rem;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+.card-collapsible[open] > summary h3::before { transform: rotate(90deg); }
+.card-collapsible > summary:hover h3 { color: var(--accent-teal); }
+.card-collapsible[open] > summary {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+}

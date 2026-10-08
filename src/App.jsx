@@ -9300,8 +9300,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const expired = attendanceLogs.filter(l =>
                     l.photo_path && l.photo_expires_at && l.photo_expires_at < today).length;
                   return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
+                    <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
+                      <summary className="card-header-row">
                         <h3>Login Photographs</h3>
                         <span className="text-muted" style={{ fontSize: '0.82rem' }}>
                           {withPhoto} on record · kept {PHOTO_RETENTION_DAYS} days
@@ -9310,7 +9310,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             return none > 0 ? ` · ${none} login${none === 1 ? '' : 's'} without one` : '';
                           })()}
                         </span>
-                      </div>
+</summary>
+
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                         Choose a batch and download it as one archive, foldered by coach.
                         Photographs are evidence of attendance only — there is no face matching.
@@ -9365,7 +9366,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <i className="bx bx-download"></i> Download {batch.length || ''} as ZIP
                         </button>
                       </div>
-                    </div>
+                    </details>
                   );
                 })()}
 
@@ -9373,11 +9374,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     see everything waiting on them the moment they arrive, which is why
                     this sits outside the per-coach block rather than inside it. */}
                 {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
-                  <div className="card" style={{ marginBottom: '1.25rem' }}>
-                    <div className="card-header-row">
+                  <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
+                    <summary className="card-header-row">
                       <h3>Reports</h3>
                       <span className="text-muted" style={{ fontSize: '0.82rem' }}>{currentPeriodMonth}</span>
-                    </div>
+</summary>
+
                     <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                       Each one covers the open cycle, except balances, which run to the leave year.
                     </p>
@@ -9395,7 +9397,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <i className="bx bx-download"></i> Attendance penalties
                       </button>
                     </div>
-                  </div>
+                  </details>
                 )}
 
                 {PROFILE_PAY_ROLES.includes(currentRole) && (() => {
@@ -9404,8 +9406,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     .filter(h => h.leave_year === year)
                     .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
                   return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
+                    <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
+                      <summary className="card-header-row">
                         <h3>Holiday List {year}</h3>
                         <div className="table-btn-group">
                           <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
@@ -9422,7 +9424,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             />
                           </label>
                         </div>
-                      </div>
+</summary>
+
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                         A day on this list is not counted against anyone. Leave the centre blank
                         for every coach, or name one for a local holiday.
@@ -9522,7 +9525,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </table>
                         </div>
                       )}
-                    </div>
+                    </details>
                   );
                 })()}
 
