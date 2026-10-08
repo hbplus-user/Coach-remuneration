@@ -1479,7 +1479,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [holidayPreview, setHolidayPreview] = useState(null);
-  const [leaveRegister, setLeaveRegister] = useState({ status: 'All', coach: 'All', from: '', to: '' });
+  const [leaveRegister, setLeaveRegister] = useState({
+    status: 'All', coach: 'All', from: '', to: '', overdueOnly: false
+  });
   const [loginLog, setLoginLog] = useState({ coach: 'All', day: '', show: 'all' });
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
@@ -8919,6 +8921,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     // is in it, even if neither end falls inside.
                     if (leaveRegister.from && a.to_date < leaveRegister.from) return false;
                     if (leaveRegister.to && a.from_date > leaveRegister.to) return false;
+                    if (leaveRegister.overdueOnly
+                      && Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) < 3) return false;
                     return true;
                   }).sort((a, b) => b.from_date.localeCompare(a.from_date));
 
@@ -8957,6 +8961,56 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         open that coach below. A decision is due within 3 working days, and a
                         coach is not marked Loss of Pay while theirs is still waiting.
                       </p>
+
+                      {/* The questions actually asked of this table, as one click
+                          each. The filters below still do anything these do not. */}
+                      {(() => {
+                        const today = new Date().toISOString().slice(0, 10);
+                        const views = [
+                          { id: 'all',      label: 'Everything',            f: { status: 'All', from: '', to: '' } },
+                          { id: 'waiting',  label: 'Waiting on a decision', f: { status: 'Pending', from: '', to: '' } },
+                          { id: 'upcoming', label: 'Upcoming — undecided',  f: { status: 'Pending', from: today, to: '' } },
+                          { id: 'future',   label: 'All future leave',      f: { status: 'All', from: today, to: '' } },
+                          { id: 'approved', label: 'Approved',              f: { status: 'Approved', from: '', to: '' } },
+                          { id: 'rejected', label: 'Rejected',              f: { status: 'Rejected', from: '', to: '' } },
+                          { id: 'overdue',  label: 'Past the 3-day deadline', f: { status: 'Pending', from: '', to: '' },
+                            extra: (a) => Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3 }
+                        ];
+                        const active = views.find(v =>
+                          v.f.status === leaveRegister.status &&
+                          v.f.from === leaveRegister.from &&
+                          v.f.to === leaveRegister.to &&
+                          Boolean(v.extra) === Boolean(leaveRegister.overdueOnly));
+
+                        return (
+                          <div className="filter-chips">
+                            {views.map(v => {
+                              const n = leaveApplications.filter(a => {
+                                if (currentRole === 'Reporting Manager' && currentRmContext) {
+                                  const c = coaches.find(x => x.id === a.coach_id);
+                                  if (c?.reporting_manager_id !== currentRmContext) return false;
+                                }
+                                if (v.f.status !== 'All' && a.status !== v.f.status) return false;
+                                if (v.f.from && a.to_date < v.f.from) return false;
+                                if (v.extra && !v.extra(a)) return false;
+                                return true;
+                              }).length;
+                              return (
+                                <button
+                                  key={v.id}
+                                  className={`filter-chip ${active?.id === v.id ? 'filter-chip-on' : ''}`}
+                                  onClick={() => setLeaveRegister(f => ({
+                                    ...f, ...v.f, overdueOnly: Boolean(v.extra)
+                                  }))}
+                                >
+                                  {v.label}
+                                  <span className="filter-chip-count">{n}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
                       <div className="form-grid">
                         <div className="form-group">
                           <label>Status</label>

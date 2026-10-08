@@ -3585,3 +3585,47 @@ form {
   padding-bottom: 0.6rem;
   border-bottom: 1px solid var(--border-color);
 }
+
+/* Preset views over a table. Each is a question somebody actually asks of it,
+   carrying its own count so an empty one is obvious before it is clicked. */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0.9rem;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background-color: var(--bg-main);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.filter-chip:hover {
+  border-color: var(--accent-teal);
+  color: var(--text-primary);
+}
+.filter-chip-on {
+  border-color: var(--accent-teal);
+  background-color: rgba(20, 184, 166, 0.12);
+  color: var(--accent-teal);
+  font-weight: 600;
+}
+.filter-chip-count {
+  min-width: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background-color: var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  text-align: center;
+}
+.filter-chip-on .filter-chip-count {
+  background-color: var(--accent-teal);
+  color: #fff;
+}
