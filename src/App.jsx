@@ -1480,7 +1480,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [holidayPreview, setHolidayPreview] = useState(null);
   const [leaveRegister, setLeaveRegister] = useState({ status: 'All', coach: 'All', from: '', to: '' });
-  const [loginLog, setLoginLog] = useState({ coach: 'All', day: '' });
+  const [loginLog, setLoginLog] = useState({ coach: 'All', day: '', show: 'all' });
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -6216,6 +6216,35 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <p>Needs score validation</p>
                       </div>
                     </div>
+                    {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
+                      const openNow = attendanceLogs.filter(l => !l.logged_out_at).filter(l => {
+                        if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
+                        const c = coaches.find(x => x.id === l.coach_id);
+                        return c?.reporting_manager_id === currentRmContext;
+                      });
+                      const offSite = openNow.filter(l => l.within_centre === false).length;
+                      return (
+                        <div
+                          className="stat-card stat-teal stat-card-action"
+                          role="button"
+                          tabIndex={0}
+                          title="Open Attendance & Leave to see where they logged in from"
+                          onClick={() => setActiveView('attendance')}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('attendance'); }}
+                        >
+                          <div className="stat-icon"><i className="bx bxs-user-check"></i></div>
+                          <div className="stat-info">
+                            <h3>Logged In Now</h3>
+                            <h2>{openNow.length}</h2>
+                            <p>
+                              {openNow.length === 0 ? 'Nobody is logged in'
+                                : offSite ? `${offSite} away from their centre`
+                                : 'Locations recorded'}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
                       const waiting = leaveApplications.filter(a => a.status === 'Pending');
                       if (waiting.length === 0) return null;
@@ -9067,14 +9096,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     every coach in turn — which is not checking. */}
                 {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
                   const day = loginLog.day || todayWorkingDay;
-                  const rows = attendanceLogs
-                    .filter(l => l.working_day === day)
-                    .filter(l => loginLog.coach === 'All' || l.coach_id === loginLog.coach)
-                    .filter(l => {
-                      if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
-                      const c = coaches.find(x => x.id === l.coach_id);
-                      return c?.reporting_manager_id === currentRmContext;
-                    })
+                  const inScope = (l) => {
+                    if (loginLog.coach !== 'All' && l.coach_id !== loginLog.coach) return false;
+                    if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
+                    const c = coaches.find(x => x.id === l.coach_id);
+                    return c?.reporting_manager_id === currentRmContext;
+                  };
+
+                  // Who is in right now is not a property of a day — somebody who
+                  // started before midnight is still in, and the day picker would
+                  // hide them. So it is counted across every open period, and the
+                  // day only narrows the finished ones.
+                  const openNow = attendanceLogs.filter(l => !l.logged_out_at).filter(inScope);
+                  const onDay = attendanceLogs.filter(l => l.working_day === day).filter(inScope);
+
+                  const rows = (loginLog.show === 'in' ? openNow
+                    : loginLog.show === 'out' ? onDay.filter(l => l.logged_out_at)
+                    : onDay)
                     .sort((a, b) => new Date(b.logged_in_at) - new Date(a.logged_in_at));
 
                   const noLocation = rows.filter(l => l.login_lat == null).length;
@@ -9083,14 +9121,35 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   return (
                     <div className="card" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Logins — Where and When</h3>
+                        <h3>
+                          Logins — Where and When
+                          {openNow.length > 0 && (
+                            <span className="badge badge-success" style={{ marginLeft: '0.6rem' }}>
+                              {openNow.length} logged in now
+                            </span>
+                          )}
+                        </h3>
                         <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          {rows.length} on {day}
+                          {rows.length} shown
                           {noLocation ? ` · ${noLocation} without a location` : ''}
                           {offSite ? ` · ${offSite} off site` : ''}
                         </span>
                       </div>
                       <div className="form-grid">
+                        <div className="form-group">
+                          <label>Show</label>
+                          <select value={loginLog.show}
+                            onChange={(e) => setLoginLog(f => ({ ...f, show: e.target.value }))}>
+                            <option value="all">Everyone on the chosen day</option>
+                            <option value="in">Logged in right now</option>
+                            <option value="out">Finished for the day</option>
+                          </select>
+                          <span className="field-hint">
+                            {loginLog.show === 'in'
+                              ? 'Across every day — a period running past midnight is still open.'
+                              : 'Narrowed by the day beside this.'}
+                          </span>
+                        </div>
                         <div className="form-group">
                           <label>Day</label>
                           <input type="date" value={loginLog.day || todayWorkingDay}
@@ -9107,21 +9166,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </div>
 
                       {rows.length === 0 ? (
-                        <p className="text-muted">Nobody logged in on {day}.</p>
+                        <p className="text-muted">
+                          {loginLog.show === 'in'
+                            ? 'Nobody is logged in right now.'
+                            : `Nobody logged in on ${day}.`}
+                        </p>
                       ) : (
                         <div className="table-container">
                           <table className="data-table">
                             <thead>
                               <tr>
                                 <th>Coach</th><th>In</th><th>Out</th>
-                                <th className="num-col">Minutes</th>
+                                <th className="num-col">{loginLog.show === 'in' ? 'In for' : 'Minutes'}</th>
                                 <th>Logged in from</th><th>Logged out from</th><th>Photo</th>
                               </tr>
                             </thead>
                             <tbody>
                               {rows.map(l => {
                                 const c = coaches.find(x => x.id === l.coach_id);
-                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date())
+                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick))
                                   - new Date(l.logged_in_at)) / 60000;
                                 const place = (lat, lng, label) => lat != null
                                   ? <a href={`https://www.google.com/maps?q=${lat},${lng}`}
@@ -9141,7 +9204,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <td>{l.logged_out_at
                                       ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
                                       : <span className="badge badge-success">still in</span>}</td>
-                                    <td className="num-col">{Math.round(mins)}</td>
+                                    <td className="num-col">
+                                      {l.logged_out_at
+                                        ? Math.round(mins)
+                                        : <span className="att-ticking">{asClock(mins / 60)}</span>}
+                                    </td>
                                     <td>
                                       {place(l.login_lat, l.login_lng, 'no location')}
                                       {l.within_centre === false && (
