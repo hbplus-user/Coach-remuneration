@@ -1466,7 +1466,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [attendanceCoachId, setAttendanceCoachId] = useState("");
   const [leaveForm, setLeaveForm] = useState({ type: 'PAID', from: '', to: '', halfDay: false, reason: '' });
   // The camera, open only while a login is being taken.
-  const [photoCapture, setPhotoCapture] = useState(null); // { coach, resolve }
+  const [photoCapture, setPhotoCapture] = useState(null); // { coach, resolve, attempts }
+  // Failures in a row on this login — a refused camera, a dark frame, an
+  // upload that did not land, a location that could not be read. Three of them
+  // and the coach may go on without, because at that point the obstacle is the
+  // equipment rather than the person.
+  const loginFailures = useRef(0);
+  const LOGIN_FAILURES_BEFORE_SKIP = 3;
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   // The photo archive an administrator pulls down.
@@ -2699,14 +2705,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * lens was not covered.
    */
   const capturePhoto = (coach) => new Promise((resolve) => {
-    if (!navigator.mediaDevices?.getUserMedia) return resolve(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      resolve({ failed: 'This browser cannot reach a camera' });
+      return;
+    }
     setPhotoCapture({ coach, resolve });
   });
 
   const closeCapture = (result) => {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
-    photoCapture?.resolve?.(result ?? null);
+    photoCapture?.resolve?.(result ?? { cancelled: true });
     setPhotoCapture(null);
   };
 
@@ -2720,8 +2729,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         if (videoRef.current) videoRef.current.srcObject = stream;
       })
       .catch(() => {
-        showToast("Camera not available — logging in without a photograph.", "warning");
-        closeCapture(null);
+        closeCapture({ failed: 'The camera could not be opened — check the browser has permission' });
       });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2745,12 +2753,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     const mean = total / (data.length / (4 * 64));
     if (mean < 18) {
-      showToast("No face detected — the frame is too dark. Try again in better light.", "error");
+      loginFailures.current += 1;
+      setPhotoCapture(c => c && { ...c, attempts: loginFailures.current });
+      showToast(
+        `No face detected — the frame is too dark. Try again in better light.` +
+        `${loginFailures.current >= LOGIN_FAILURES_BEFORE_SKIP
+          ? ' You can now log in without one.' : ''}`, "error");
       return;
     }
 
     const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.75));
-    closeCapture(blob);
+    closeCapture({ blob });
   };
 
   /** Where the browser says we are. Refused or unavailable is not an error. */
@@ -2769,8 +2782,38 @@ export default function App({ session = null, profile = null, onSignOut = null }
       showToast("Already logged in — log out first.", "warning");
       return;
     }
-    const blob = await capturePhoto(coach);
+
+    const mayGoWithout = () => loginFailures.current >= LOGIN_FAILURES_BEFORE_SKIP;
+
+    // Location first: it is cheaper to obtain than a photograph, and there is
+    // no sense taking one only to be turned away for being in the wrong place.
     const pos = await readPosition();
+    if (!pos && !mayGoWithout()) {
+      loginFailures.current += 1;
+      showToast(
+        `Location is required to log in. Allow it for this site and try again.` +
+        ` (${loginFailures.current} of ${LOGIN_FAILURES_BEFORE_SKIP} — after that you can log in without it.)`,
+        "error");
+      return;
+    }
+
+    const shot = await capturePhoto(coach);
+    if (shot?.failed) {
+      loginFailures.current += 1;
+      showToast(
+        `${shot.failed}.` +
+        ` (${loginFailures.current} of ${LOGIN_FAILURES_BEFORE_SKIP} — after that you can log in without one.)`,
+        "error");
+      return;
+    }
+    // Closing the camera is only allowed to mean "go on without" once the
+    // failures have earned it; otherwise it is a cancelled login.
+    if (shot?.cancelled && !mayGoWithout()) {
+      showToast("A photograph is required to log in.", "warning");
+      return;
+    }
+    const blob = shot?.blob ?? null;
+
     const proximity = checkCentreProximity(coach, pos);
     if (!proximity.allowed) {
       showToast(`Cannot log in — ${proximity.why}.`, "error");
@@ -2791,9 +2834,24 @@ export default function App({ session = null, profile = null, onSignOut = null }
         photoPath = await uploadAttendancePhoto(coach.id, now, blob);
       } catch (e) {
         console.error("Photo upload failed", e);
+        // A photograph that did not reach the bucket is a failure like any
+        // other, and the login does not go through on it unless the coach has
+        // already run out of attempts.
+        if (!mayGoWithout()) {
+          loginFailures.current += 1;
+          showToast(
+            `The photograph could not be saved — ${e.message}.` +
+            ` (${loginFailures.current} of ${LOGIN_FAILURES_BEFORE_SKIP} — after that you can log in without one.)`,
+            "error");
+          return;
+        }
         showToast("Logged in, but the photograph could not be saved.", "warning");
       }
     }
+
+    // A clean login resets the count, so the allowance is three failures in a
+    // row rather than three across the week.
+    loginFailures.current = 0;
 
     setAttendanceLogs(prev => [{
       id: (crypto?.randomUUID?.() || `ATT_${Date.now()}`),
@@ -2811,12 +2869,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     logAudit("Attendance Login",
       `${coach.name} (${coach.id}) logged in` +
+      (pos ? ` at ${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : ' with no location') +
       (proximity.metres != null ? ` — ${proximity.metres} m from the centre` : '') +
-      (proximity.verified ? '' : ` — unverified (${proximity.why})`) + '.');
+      (photoPath ? '' : ' — no photograph') + '.');
     showToast(
       `Logged in at ${now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` +
-      (proximity.verified ? '' : ' — location unverified') + '.',
-      proximity.verified ? "success" : "warning");
+      (photoPath && pos ? '.' : ` — ${[!photoPath && 'no photograph', !pos && 'no location'].filter(Boolean).join(', ')}.`),
+      photoPath && pos ? "success" : "warning");
   };
 
   const handleAttendanceLogout = async (coach) => {
@@ -2826,6 +2885,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return;
     }
     const pos = await readPosition();
+    if (!pos && loginFailures.current < LOGIN_FAILURES_BEFORE_SKIP) {
+      loginFailures.current += 1;
+      showToast(
+        `Location is required to log out. Allow it for this site and try again.` +
+        ` (${loginFailures.current} of ${LOGIN_FAILURES_BEFORE_SKIP} — after that you can log out without it.)`,
+        "error");
+      return;
+    }
+    loginFailures.current = 0;
     const now = new Date();
     const minutes = (now - new Date(open.logged_in_at)) / 60000;
 
@@ -2833,7 +2901,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
       ? { ...l, logged_out_at: now.toISOString(), logout_lat: pos?.lat ?? null, logout_lng: pos?.lng ?? null }
       : l));
 
-    logAudit("Attendance Logout", `${coach.name} (${coach.id}) logged out after ${Math.round(minutes)} minutes.`);
+    logAudit("Attendance Logout",
+      `${coach.name} (${coach.id}) logged out after ${Math.round(minutes)} minutes` +
+      (pos ? ` at ${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}` : ' with no location') + '.');
     showToast(minutes < MIN_LOGIN_MINUTES
       ? `Logged out. Under ${MIN_LOGIN_MINUTES} minutes, so this period does not count.`
       : `Logged out. ${(minutes / 60).toFixed(2)} hours recorded.`,
@@ -9405,22 +9475,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         the wrong place was invisible. */}
                                     <td>
                                       {l.login_lat != null ? (
-                                        <>
-                                          <a
-                                            href={`https://www.google.com/maps?q=${l.login_lat},${l.login_lng}`}
-                                            target="_blank" rel="noreferrer"
-                                            title={`${l.login_lat}, ${l.login_lng}`}
-                                          >
-                                            {Number(l.login_lat).toFixed(4)}, {Number(l.login_lng).toFixed(4)}
-                                          </a>
-                                          {l.within_centre === false && (
-                                            <><br /><small className="text-red">outside the centre</small></>
-                                          )}
-                                          {l.within_centre === null && coach.work_mode === 'Centre' && (
-                                            <><br /><small className="text-amber">not verified</small></>
-                                          )}
-                                        </>
-                                      ) : <span className="text-muted">not available</span>}
+                                        <a
+                                          href={`https://www.google.com/maps?q=${l.login_lat},${l.login_lng}`}
+                                          target="_blank" rel="noreferrer"
+                                          title={`In: ${l.login_lat}, ${l.login_lng}`}
+                                        >
+                                          in: {Number(l.login_lat).toFixed(4)}, {Number(l.login_lng).toFixed(4)}
+                                        </a>
+                                      ) : <small className="text-red">in: no location</small>}
+                                      <br />
+                                      {l.logout_lat != null ? (
+                                        <a
+                                          href={`https://www.google.com/maps?q=${l.logout_lat},${l.logout_lng}`}
+                                          target="_blank" rel="noreferrer"
+                                          title={`Out: ${l.logout_lat}, ${l.logout_lng}`}
+                                        >
+                                          out: {Number(l.logout_lat).toFixed(4)}, {Number(l.logout_lng).toFixed(4)}
+                                        </a>
+                                      ) : l.logged_out_at
+                                        ? <small className="text-red">out: no location</small>
+                                        : <small className="text-muted">out: still in</small>}
+                                      {l.within_centre === false && (
+                                        <><br /><small className="text-red">outside the centre</small></>
+                                      )}
+                                      {l.within_centre === null && coach.work_mode === 'Centre' && (
+                                        <><br /><small className="text-amber">not verified</small></>
+                                      )}
                                     </td>
                                     <td>
                                       {l.photo_path
@@ -11316,12 +11396,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <p className="calc-notes" style={{ marginTop: '0.5rem' }}>
                 Face the camera in good light. The photograph is kept {PHOTO_RETENTION_DAYS} days
                 as a record that you logged in, and is not matched against anything.
+                {loginFailures.current > 0 && loginFailures.current < LOGIN_FAILURES_BEFORE_SKIP && (
+                  <><br /><span className="text-amber">
+                    {loginFailures.current} of {LOGIN_FAILURES_BEFORE_SKIP} attempts used. After
+                    {' '}{LOGIN_FAILURES_BEFORE_SKIP} you can log in without one.
+                  </span></>
+                )}
               </p>
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn btn-secondary" onClick={() => closeCapture(null)}>
-                Skip — log in without one
-              </button>
+              {/* Only once the equipment has failed three times, rather than as
+                  a standing option — a photograph is required, and this is the
+                  way past a camera that will not work, not a preference. */}
+              {loginFailures.current >= LOGIN_FAILURES_BEFORE_SKIP ? (
+                <button type="button" className="btn btn-secondary" onClick={() => closeCapture({ cancelled: true })}>
+                  Log in without one
+                </button>
+              ) : (
+                <button type="button" className="btn btn-secondary" onClick={() => closeCapture({ cancelled: true })}>
+                  Cancel
+                </button>
+              )}
               <button type="button" className="btn btn-primary" onClick={takeShot}>
                 <i className="bx bx-camera"></i> Take photograph
               </button>
