@@ -16,7 +16,7 @@ import {
 } from './data.js';
 
 import {
-  LEAVE_TYPES, leaveTypesFor, leaveType, leaveYearFor, accruedDays,
+  LEAVE_TYPES, leaveTypesFor, applicableLeaveTypes, leaveType, leaveYearFor, accruedDays,
   checkLeaveApplication, assessAttendanceDay, loggedHoursForDay, workingDayOf,
   standardDailyHours, halfDayHours, lopPerDay, MIN_LOGIN_MINUTES, SHORTFALL_VIOLATION,
   PHOTO_RETENTION_DAYS, CENTRE_RADIUS_METRES
@@ -1473,6 +1473,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [holidayPreview, setHolidayPreview] = useState(null);
+  const [leaveRegister, setLeaveRegister] = useState({ status: 'All', coach: 'All', from: '', to: '' });
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -3154,7 +3155,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     if (kind === 'attendance') {
       name = `attendance-summary_${currentPeriodMonth}`;
-      rows.push(['Coach ID', 'Name', 'Category', 'Days logged', 'Hours logged', 'Days short', 'LOP days']);
+      rows.push(['Coach ID', 'Name', 'Category', 'Days logged', 'Hours logged',
+        'Days short', 'LOP days', 'Logins without a photo', 'Logins outside the centre']);
       for (const c of coaches.filter(x => x.status === 'Active')) {
         const days = attendanceDays.filter(d => d.coach_id === c.id && inCycle(d.working_day));
         const logs = attendanceLogs.filter(l => l.coach_id === c.id && inCycle(l.working_day));
@@ -3164,7 +3166,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
           new Set(logs.map(l => l.working_day)).size,
           hours.toFixed(2),
           days.filter(d => d.outcome === 'violation').length,
-          days.reduce((s, d) => s + (Number(d.lop_days) || 0), 0)]);
+          days.reduce((s, d) => s + (Number(d.lop_days) || 0), 0),
+          logs.filter(l => !l.photo_path).length,
+          logs.filter(l => l.within_centre === false).length]);
       }
     }
 
@@ -3516,7 +3520,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const handleLeaveTypeChange = (application) => {
     if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
     const coach = coaches.find(c => c.id === application.coach_id);
-    const options = leaveTypesFor(coach).filter(t => t.id !== application.type_id);
+    const options = applicableLeaveTypes(coach).filter(t => t.id !== application.type_id);
 
     const raw = window.prompt(
       `Change ${leaveType(application.type_id)?.label} to which type?\n\n` +
@@ -8762,11 +8766,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <h3>Login Photographs</h3>
                         <span className="text-muted" style={{ fontSize: '0.82rem' }}>
                           {withPhoto} on record · kept {PHOTO_RETENTION_DAYS} days
+                          {(() => {
+                            const none = attendanceLogs.filter(l => !l.photo_path).length;
+                            return none > 0 ? ` · ${none} login${none === 1 ? '' : 's'} without one` : '';
+                          })()}
                         </span>
                       </div>
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                         Choose a batch and download it as one archive, foldered by coach.
                         Photographs are evidence of attendance only — there is no face matching.
+                        A coach may skip the camera, so a login can carry none; those are
+                        counted above, and marked on the day so a pattern of skipping shows.
                       </p>
                       <div className="form-grid">
                         <div className="form-group">
@@ -8887,6 +8897,122 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </div>
                   </div>
                 )}
+
+                {/* Every application across every coach, which is the view the
+                    per-coach history cannot give and the pending queue only half
+                    gives. A Reporting Manager sees their squad; HR and Super
+                    Admin see all of them. */}
+                {canApprove && (() => {
+                  const scoped = leaveApplications.filter(a => {
+                    if (currentRole === 'Reporting Manager' && currentRmContext) {
+                      const applicant = coaches.find(c => c.id === a.coach_id);
+                      if (applicant?.reporting_manager_id !== currentRmContext) return false;
+                    }
+                    if (leaveRegister.status !== 'All' && a.status !== leaveRegister.status) return false;
+                    if (leaveRegister.coach !== 'All' && a.coach_id !== leaveRegister.coach) return false;
+                    // Overlap, not containment: a leave running across the window
+                    // is in it, even if neither end falls inside.
+                    if (leaveRegister.from && a.to_date < leaveRegister.from) return false;
+                    if (leaveRegister.to && a.from_date > leaveRegister.to) return false;
+                    return true;
+                  }).sort((a, b) => b.from_date.localeCompare(a.from_date));
+
+                  const totalDays = scoped
+                    .filter(a => a.status === 'Approved' || a.status === 'Partially_Approved')
+                    .reduce((n, a) => n + Number(a.approved_days ?? a.days), 0);
+
+                  return (
+                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Leave Register</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          {scoped.length} application{scoped.length === 1 ? '' : 's'} · {totalDays} day(s) approved
+                        </span>
+                      </div>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Status</label>
+                          <select value={leaveRegister.status}
+                            onChange={(e) => setLeaveRegister(f => ({ ...f, status: e.target.value }))}>
+                            <option value="All">All statuses</option>
+                            {['Pending', 'Approved', 'Partially_Approved', 'Rejected', 'Cancelled']
+                              .map(st => <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>)}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>Coach</label>
+                          <select value={leaveRegister.coach}
+                            onChange={(e) => setLeaveRegister(f => ({ ...f, coach: e.target.value }))}>
+                            <option value="All">All coaches</option>
+                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>Leave on or after</label>
+                          <input type="date" value={leaveRegister.from}
+                            onChange={(e) => setLeaveRegister(f => ({ ...f, from: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>Leave on or before</label>
+                          <input type="date" value={leaveRegister.to}
+                            onChange={(e) => setLeaveRegister(f => ({ ...f, to: e.target.value }))} />
+                        </div>
+                      </div>
+
+                      {scoped.length === 0 ? (
+                        <p className="text-muted">Nothing matches those filters.</p>
+                      ) : (
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Coach</th><th>Type</th><th>Dates</th>
+                                <th className="num-col">Days</th><th>Status</th>
+                                <th>Applied</th><th>Decided by</th><th>Note</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {scoped.map(a => {
+                                const c = coaches.find(x => x.id === a.coach_id);
+                                return (
+                                  <tr key={a.id}>
+                                    <td>
+                                      <strong>{c?.name || a.coach_id}</strong><br />
+                                      <small className="text-muted">{a.coach_id}</small>
+                                    </td>
+                                    <td>{leaveType(a.type_id)?.label}</td>
+                                    <td>{a.from_date}{a.to_date !== a.from_date ? ` → ${a.to_date}` : ''}</td>
+                                    <td className="num-col">
+                                      {a.approved_days != null && a.approved_days !== a.days
+                                        ? <>{a.approved_days}<br /><small className="text-muted">of {a.days}</small></>
+                                        : a.days}
+                                    </td>
+                                    <td>
+                                      <span className={`badge ${
+                                        a.status === 'Approved' ? 'badge-success'
+                                          : a.status === 'Partially_Approved' ? 'badge-info'
+                                          : a.status === 'Rejected' ? 'badge-danger'
+                                          : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
+                                        {a.status.replace(/_/g, ' ')}
+                                      </span>
+                                    </td>
+                                    <td><small className="text-muted">
+                                      {a.applied_at ? new Date(a.applied_at).toLocaleDateString('en-IN') : '—'}
+                                    </small></td>
+                                    <td><small className="text-muted">{a.decided_by || '—'}</small></td>
+                                    <td><small className="text-muted">
+                                      {a.decision_note || a.cancel_note || a.reason || '—'}
+                                    </small></td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Who is away, and whether that leaves enough on the floor. Shown
                     before the approval queue, since it is the context a decision
@@ -9217,7 +9343,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {todays.length > 0 && (
                         <div className="table-container">
                           <table className="data-table">
-                            <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th></tr></thead>
+                            <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th><th>Where</th><th>Photo</th></tr></thead>
                             <tbody>
                               {todays.map(l => {
                                 const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date()) - new Date(l.logged_in_at)) / 60000;
@@ -9231,6 +9357,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <td>{mins < MIN_LOGIN_MINUTES
                                       ? <span className="text-muted">under {MIN_LOGIN_MINUTES} min — not counted</span>
                                       : <span className="text-green">counted</span>}</td>
+                                    {/* Recorded on every login and logout, and until now
+                                        shown nowhere — so a centre coach logging in from
+                                        the wrong place was invisible. */}
+                                    <td>
+                                      {l.login_lat != null ? (
+                                        <>
+                                          <a
+                                            href={`https://www.google.com/maps?q=${l.login_lat},${l.login_lng}`}
+                                            target="_blank" rel="noreferrer"
+                                            title={`${l.login_lat}, ${l.login_lng}`}
+                                          >
+                                            {Number(l.login_lat).toFixed(4)}, {Number(l.login_lng).toFixed(4)}
+                                          </a>
+                                          {l.within_centre === false && (
+                                            <><br /><small className="text-red">outside the centre</small></>
+                                          )}
+                                          {l.within_centre === null && coach.work_mode === 'Centre' && (
+                                            <><br /><small className="text-amber">not verified</small></>
+                                          )}
+                                        </>
+                                      ) : <span className="text-muted">not available</span>}
+                                    </td>
+                                    <td>
+                                      {l.photo_path
+                                        ? <span className="text-green">taken</span>
+                                        : <span className="text-amber">none</span>}
+                                    </td>
                                   </tr>
                                 );
                               })}
@@ -9264,6 +9417,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </thead>
                           <tbody>
                             {leaveTypesFor(coach).filter(t => t.id !== 'LOP').map(t => {
+                              if (t.notApplicable) {
+                                const { year } = leaveYearFor(new Date());
+                                const mine = holidays.filter(h => h.leave_year === year
+                                  && (!h.centre_name || h.centre_name === coach.centre_name));
+                                return (
+                                  <tr key={t.id}>
+                                    <td><strong>{t.label}</strong></td>
+                                    <td className="num-col" colSpan={4}>
+                                      <span className="text-muted">
+                                        {mine.length} published for {year}
+                                      </span>
+                                    </td>
+                                    <td colSpan={2}><small className="text-muted">{t.note}</small></td>
+                                  </tr>
+                                );
+                              }
                               const b = leaveBalanceFor(coach, t.id);
                               return (
                                 <tr key={t.id}>
@@ -9311,7 +9480,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <label>Type</label>
                           <select value={leaveForm.type}
                             onChange={(e) => setLeaveForm(f => ({ ...f, type: e.target.value }))}>
-                            {leaveTypesFor(coach).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                            {applicableLeaveTypes(coach).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
                           </select>
                           <span className="field-hint">{leaveType(leaveForm.type)?.note}</span>
                         </div>

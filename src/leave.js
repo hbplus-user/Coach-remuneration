@@ -170,9 +170,15 @@ export const LEAVE_TYPES = [
     note: 'No notice needed. Same day before hours start, or within 2 days of returning.'
   },
   {
+    // Not applied for. A published holiday is already excluded from attendance
+    // and from any leave span crossing it, so an application would either be a
+    // no-op on a real holiday or — as it was until now — a way to take paid
+    // leave on a day that is not one. It stays as a type so the year's
+    // holidays can be counted and shown, and is kept off the form.
     id: 'HOLIDAY', label: 'Holiday Leave', fromHolidayList: true, carryForwardMax: 0,
-    noticeDays: 3, halfDayAllowed: false, paid: true,
-    note: 'Set from the published holiday list at the start of each year.'
+    notApplicable: true,
+    noticeDays: 0, halfDayAllowed: false, paid: true,
+    note: 'Taken automatically. A published holiday is not counted against anyone.'
   },
   {
     id: 'PERIOD', label: 'Period Leave', accrual: 0.5, carryForwardMax: 0,
@@ -203,6 +209,11 @@ export const leaveType = (id) => LEAVE_TYPES.find(t => t.id === id) || null;
 /** The leave types a coach may hold, which depends on their gender. */
 export function leaveTypesFor(coach) {
   return LEAVE_TYPES.filter(t => !t.gender || t.gender === coach?.gender);
+}
+
+/** The types that can actually be applied for. */
+export function applicableLeaveTypes(coach) {
+  return leaveTypesFor(coach).filter(t => !t.notApplicable);
 }
 
 /** Half a day, in hours. Flexi coaches have no half day. */
@@ -284,6 +295,12 @@ export function checkLeaveApplication({ typeId, coach, from, days, balance, appl
 
   if (policy.gender && coach?.gender !== policy.gender) {
     problems.push(`${policy.label} does not apply to this coach.`);
+  }
+
+  if (policy.notApplicable) {
+    problems.push(
+      `${policy.label} is not applied for. Published holidays are already not ` +
+      `counted against anyone — there is nothing to claim.`);
   }
 
   const noticeGiven = Math.floor((new Date(from) - new Date(appliedOn)) / 86400000);
