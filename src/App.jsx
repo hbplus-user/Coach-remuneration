@@ -9123,11 +9123,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <div className="card-header-row">
                         <h3>
                           Logins — Where and When
-                          {openNow.length > 0 && (
-                            <span className="badge badge-success" style={{ marginLeft: '0.6rem' }}>
-                              {openNow.length} logged in now
-                            </span>
-                          )}
+                          {(() => {
+                            const everyoneIn = attendanceLogs.filter(l => !l.logged_out_at).filter(l => {
+                              if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
+                              const c = coaches.find(x => x.id === l.coach_id);
+                              return c?.reporting_manager_id === currentRmContext;
+                            });
+                            return everyoneIn.length > 0 ? (
+                              <span className="badge badge-success" style={{ marginLeft: '0.6rem' }}>
+                                {everyoneIn.length} logged in now
+                              </span>
+                            ) : null;
+                          })()}
                         </h3>
                         <span className="text-muted" style={{ fontSize: '0.82rem' }}>
                           {rows.length} shown
@@ -9168,8 +9175,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {rows.length === 0 ? (
                         <p className="text-muted">
                           {loginLog.show === 'in'
-                            ? 'Nobody is logged in right now.'
-                            : `Nobody logged in on ${day}.`}
+                            ? (loginLog.coach === 'All'
+                                ? 'Nobody is logged in right now.'
+                                : `${coaches.find(c => c.id === loginLog.coach)?.name || loginLog.coach} is not logged in right now — others may be.`)
+                            : (loginLog.coach === 'All'
+                                ? `Nobody logged in on ${day}.`
+                                : `${coaches.find(c => c.id === loginLog.coach)?.name || loginLog.coach} did not log in on ${day}.`)}
                         </p>
                       ) : (
                         <div className="table-container">
@@ -9661,16 +9672,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th><th>Where</th><th>Photo</th></tr></thead>
                             <tbody>
                               {todays.map(l => {
-                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date()) - new Date(l.logged_in_at)) / 60000;
+                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick)) - new Date(l.logged_in_at)) / 60000;
                                 return (
                                   <tr key={l.id}>
                                     <td>{new Date(l.logged_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
                                     <td>{l.logged_out_at
                                       ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
                                       : <span className="badge badge-success">Open</span>}</td>
-                                    <td className="num-col">{Math.round(mins)}</td>
+                                    <td className="num-col">
+                                      {l.logged_out_at
+                                        ? Math.round(mins)
+                                        : <span className="att-ticking">{asClock(mins / 60)}</span>}
+                                    </td>
                                     <td>{mins < MIN_LOGIN_MINUTES
-                                      ? <span className="text-muted">under {MIN_LOGIN_MINUTES} min — not counted</span>
+                                      ? <span className="text-muted">
+                                          under {MIN_LOGIN_MINUTES} min
+                                          {l.logged_out_at ? ' — not counted' : ' yet'}
+                                        </span>
                                       : <span className="text-green">counted</span>}</td>
                                     {/* Recorded on every login and logout, and until now
                                         shown nowhere — so a centre coach logging in from
