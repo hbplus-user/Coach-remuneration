@@ -3522,3 +3522,16 @@ form {
   background-color: var(--bg-main);
 }
 .bulk-preview-wrap .unsaved-drafts-bar { margin-top: 0; }
+
+/* A name that is also the way into the record behind it. Styled as a link
+   rather than a button, because that is what it behaves like. */
+.linklike {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--accent-teal);
+  cursor: pointer;
+  text-align: left;
+}
+.linklike:hover { text-decoration: underline; }

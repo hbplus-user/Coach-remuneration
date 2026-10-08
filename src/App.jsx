@@ -2987,6 +2987,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }));
   };
 
+  /**
+   * Open a coach from a row elsewhere on the screen.
+   *
+   * Selects them in the picker and brings their card into view, so a decision
+   * made in the register can be followed straight into the attendance and
+   * balance behind it, without hunting through the dropdown.
+   */
+  const openCoachOnAttendance = (coachId) => {
+    setAttendanceCoachId(coachId);
+    // After the re-render, or the card being scrolled to is the previous one.
+    setTimeout(() => {
+      document.getElementById('attendance-coach-card')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
   /** Set or move a coach's weekly off. */
   const setWeeklyOff = (coach, dayIndex) => {
     if (!LEAVE_APPROVER_ROLES.includes(currentRole) && currentRole !== 'Showrunner') {
@@ -8833,71 +8849,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     {/* Deciding leave is not about the coach on screen — an approver should
                     see everything waiting on them the moment they arrive, which is why
                     this sits outside the per-coach block rather than inside it. */}
-                {canApprove && pending.length > 0 && (
-                  <div className="card" style={{ marginTop: '1.25rem' }}>
-                    <div className="card-header-row">
-                      <h3>Awaiting your decision</h3>
-                      <span className="badge badge-warning">{pending.length}</span>
-                    </div>
-                    <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                      A decision is due within 3 working days. A coach is not marked Loss of
-                      Pay while their application is still waiting, so an undecided one costs
-                      nothing — it just leaves them unable to plan.
-                    </p>
-                    <div className="table-container">
-                      <table className="data-table">
-                        <thead>
-                          <tr><th>Coach</th><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Waiting</th><th>Reason</th><th className="actions-col">Decision</th></tr>
-                        </thead>
-                        <tbody>
-                          {pending.map(a => {
-                            const waited = Math.floor((Date.now() - new Date(a.applied_at)) / 86400000);
-                            const starts = Math.floor((new Date(a.from_date) - Date.now()) / 86400000);
-                            return (
-                            <tr key={a.id} className={waited >= 3 ? 'leave-overdue' : ''}>
-                              <td><strong>{coaches.find(c => c.id === a.coach_id)?.name || a.coach_id}</strong></td>
-                              <td>{leaveType(a.type_id)?.label}</td>
-                              <td>
-                                {a.from_date} → {a.to_date}
-                                {starts < 0 && <><br /><small className="text-red">already started</small></>}
-                                {starts >= 0 && starts <= 1 && <><br /><small className="text-red">starts {starts === 0 ? 'today' : 'tomorrow'}</small></>}
-                              </td>
-                              <td className="num-col">{a.days}</td>
-                              <td>
-                                {waited === 0 ? 'today' : `${waited} day${waited === 1 ? '' : 's'}`}
-                                {waited >= 3 && <><br /><small className="text-red">past the 3-day deadline</small></>}
-                                {waited === 2 && <><br /><small className="text-amber">due tomorrow</small></>}
-                              </td>
-                              <td><small className="text-muted">{a.reason || '—'}</small></td>
-                              <td className="actions-col">
-                                <div className="table-btn-group">
-                                  <button className="btn-row-icon icon-save" title="Approve"
-                                    onClick={() => handleLeaveDecision(a, 'Approved')}>
-                                    <i className="bx bx-check"></i>
-                                  </button>
-                                  <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
-                                    onClick={() => handlePartialApproval(a)}>
-                                    <i className="bx bx-slider-alt"></i>
-                                  </button>
-                                  <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
-                                    onClick={() => handleLeaveTypeChange(a)}>
-                                    <i className="bx bx-transfer-alt"></i>
-                                  </button>
-                                  <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
-                                    onClick={() => handleLeaveDecision(a, 'Rejected')}>
-                                    <i className="bx bx-x"></i>
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
                 {/* Every application across every coach, which is the view the
                     per-coach history cannot give and the pending queue only half
                     gives. A Reporting Manager sees their squad; HR and Super
@@ -8925,10 +8876,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <div className="card" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
                         <h3>Leave Register</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          {scoped.length} application{scoped.length === 1 ? '' : 's'} · {totalDays} day(s) approved
-                        </span>
+                        <div className="table-btn-group">
+                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
+                            {scoped.length} application{scoped.length === 1 ? '' : 's'} · {totalDays} day(s) approved
+                          </span>
+                          {pending.length > 0 && leaveRegister.status !== 'Pending' && (
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => setLeaveRegister(f => ({ ...f, status: 'Pending' }))}
+                            >
+                              {pending.length} waiting on you
+                            </button>
+                          )}
+                          {leaveRegister.status === 'Pending' && (
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setLeaveRegister(f => ({ ...f, status: 'All' }))}
+                            >
+                              Show all
+                            </button>
+                          )}
+                        </div>
                       </div>
+                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                        Every application, every coach. Decide from the row; click a name to
+                        open that coach below. A decision is due within 3 working days, and a
+                        coach is not marked Loss of Pay while theirs is still waiting.
+                      </p>
                       <div className="form-grid">
                         <div className="form-group">
                           <label>Status</label>
@@ -8968,16 +8942,28 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <tr>
                                 <th>Coach</th><th>Type</th><th>Dates</th>
                                 <th className="num-col">Days</th><th>Status</th>
-                                <th>Applied</th><th>Decided by</th><th>Note</th>
+                                <th>Waiting</th><th>Note</th>
+                                <th className="actions-col">Decide</th>
                               </tr>
                             </thead>
                             <tbody>
                               {scoped.map(a => {
                                 const c = coaches.find(x => x.id === a.coach_id);
+                                const waited = a.applied_at
+                                  ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : null;
+                                const overdue = a.status === 'Pending' && waited >= 3;
                                 return (
-                                  <tr key={a.id}>
+                                  <tr key={a.id} className={overdue ? 'leave-overdue' : ''}>
                                     <td>
-                                      <strong>{c?.name || a.coach_id}</strong><br />
+                                      {/* The name is the way into the coach: a decision
+                                          often needs the attendance behind it. */}
+                                      <button
+                                        className="linklike"
+                                        title="Open this coach below — attendance, balances and history"
+                                        onClick={() => openCoachOnAttendance(a.coach_id)}
+                                      >
+                                        <strong>{c?.name || a.coach_id}</strong>
+                                      </button><br />
                                       <small className="text-muted">{a.coach_id}</small>
                                     </td>
                                     <td>{leaveType(a.type_id)?.label}</td>
@@ -8996,13 +8982,48 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         {a.status.replace(/_/g, ' ')}
                                       </span>
                                     </td>
-                                    <td><small className="text-muted">
-                                      {a.applied_at ? new Date(a.applied_at).toLocaleDateString('en-IN') : '—'}
-                                    </small></td>
-                                    <td><small className="text-muted">{a.decided_by || '—'}</small></td>
+                                    <td>
+                                      <small className={overdue ? 'text-red' : 'text-muted'}>
+                                        {a.status !== 'Pending'
+                                          ? (a.decided_by ? `by ${a.decided_by}` : '—')
+                                          : waited === 0 ? 'applied today'
+                                            : `${waited} day${waited === 1 ? '' : 's'}`}
+                                      </small>
+                                      {overdue && <><br /><small className="text-red">past the deadline</small></>}
+                                    </td>
                                     <td><small className="text-muted">
                                       {a.decision_note || a.cancel_note || a.reason || '—'}
                                     </small></td>
+                                    <td className="actions-col">
+                                      <div className="table-btn-group">
+                                        {a.status === 'Pending' && (
+                                          <>
+                                            <button className="btn-row-icon icon-save" title="Approve"
+                                              onClick={() => handleLeaveDecision(a, 'Approved')}>
+                                              <i className="bx bx-check"></i>
+                                            </button>
+                                            <button className="btn-row-icon icon-edit" title="Approve some days, refuse the rest"
+                                              onClick={() => handlePartialApproval(a)}>
+                                              <i className="bx bx-slider-alt"></i>
+                                            </button>
+                                            <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
+                                              onClick={() => handleLeaveTypeChange(a)}>
+                                              <i className="bx bx-transfer-alt"></i>
+                                            </button>
+                                            <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
+                                              onClick={() => handleLeaveDecision(a, 'Rejected')}>
+                                              <i className="bx bx-x"></i>
+                                            </button>
+                                          </>
+                                        )}
+                                        {a.status === 'Rejected' && (
+                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
+                                            onClick={() => appealLeaveDecision(a)}>
+                                            <i className="bx bx-undo"></i>
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
                                   </tr>
                                 );
                               })}
@@ -9235,7 +9256,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <>
                     {/* Today */}
                     <div className="card">
-                      <div className="card-header-row">
+                      <div className="card-header-row" id="attendance-coach-card">
                         <h3>{coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
                         <div className="table-btn-group">
                           <button className="btn btn-primary" disabled={!!open}
