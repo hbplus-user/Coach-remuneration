@@ -2578,9 +2578,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const selfCoachId = profile?.coach_id
     ?? (isPreviewingCoach ? (currentCoachContext || coaches[0]?.id || null) : null);
 
-  /** The coach whose attendance is on screen. A coach only ever sees their own. */
+  /**
+   * The coach whose attendance is on screen.
+   *
+   * A coach only ever sees their own. Everyone else opens one deliberately —
+   * from the leave register, or the picker — rather than arriving on whichever
+   * coach happened to be in context from another screen, which made the page
+   * look like it was about that one person when it is about all of them.
+   */
   const attendanceCoach = coaches.find(c => c.id === (
-    currentRole === 'Coach' ? selfCoachId : (attendanceCoachId || currentCoachContext)
+    currentRole === 'Coach' ? selfCoachId : attendanceCoachId
   )) || null;
 
   const todayWorkingDay = workingDayOf(new Date());
@@ -8762,7 +8769,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       value={coach?.id || ''}
                       onChange={(e) => setAttendanceCoachId(e.target.value)}
                     >
-                      <option value="">Choose a coach…</option>
+                      <option value="">No coach open — showing everyone</option>
                       {coaches.filter(c => c.status === 'Active').map(c => (
                         <option key={c.id} value={c.id}>{c.id} — {c.name}</option>
                       ))}
@@ -8770,85 +8777,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </div>
 
-                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
-                  const batch = photoBatchLogs();
-                  const withPhoto = attendanceLogs.filter(l => l.photo_path).length;
-                  const today = new Date().toISOString().slice(0, 10);
-                  const expired = attendanceLogs.filter(l =>
-                    l.photo_path && l.photo_expires_at && l.photo_expires_at < today).length;
-                  return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>Login Photographs</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          {withPhoto} on record · kept {PHOTO_RETENTION_DAYS} days
-                          {(() => {
-                            const none = attendanceLogs.filter(l => !l.photo_path).length;
-                            return none > 0 ? ` · ${none} login${none === 1 ? '' : 's'} without one` : '';
-                          })()}
-                        </span>
-                      </div>
-                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                        Choose a batch and download it as one archive, foldered by coach.
-                        Photographs are evidence of attendance only — there is no face matching.
-                        A coach may skip the camera, so a login can carry none; those are
-                        counted above, and marked on the day so a pattern of skipping shows.
-                      </p>
-                      <div className="form-grid">
-                        <div className="form-group">
-                          <label>Coach</label>
-                          <select value={photoBatch.coach}
-                            onChange={(e) => setPhotoBatch(b => ({ ...b, coach: e.target.value }))}>
-                            <option value="All">All coaches</option>
-                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
-                          </select>
-                        </div>
-                        <div className="form-group">
-                          <label>From</label>
-                          <input type="date" value={photoBatch.from}
-                            onChange={(e) => setPhotoBatch(b => ({ ...b, from: e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>To</label>
-                          <input type="date" value={photoBatch.to}
-                            onChange={(e) => setPhotoBatch(b => ({ ...b, to: e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>In this batch</label>
-                          <span className="calc-static">
-                            {batch.length} photograph{batch.length === 1 ? '' : 's'}
-                          </span>
-                          <span className="field-hint">
-                            {batch.length > 0
-                              ? `${batch[0].working_day} to ${batch[batch.length - 1].working_day}`
-                              : 'Nothing matches those dates.'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="modal-footer">
-                        {photoBusy && (
-                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: 'auto' }}>
-                            {photoBusy}
-                          </span>
-                        )}
-                        {expired > 0 && PROFILE_PAY_ROLES.includes(currentRole) && (
-                          <button className="btn btn-secondary" onClick={purgeExpiredPhotos}>
-                            <i className="bx bx-trash"></i> Delete {expired} past {PHOTO_RETENTION_DAYS} days
-                          </button>
-                        )}
-                        <button className="btn btn-primary"
-                          disabled={batch.length === 0 || !!photoBusy}
-                          onClick={downloadPhotoBatch}>
-                          <i className="bx bx-download"></i> Download {batch.length || ''} as ZIP
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                    {/* Deciding leave is not about the coach on screen — an approver should
-                    see everything waiting on them the moment they arrive, which is why
-                    this sits outside the per-coach block rather than inside it. */}
                 {/* Every application across every coach, which is the view the
                     per-coach history cannot give and the pending queue only half
                     gives. A Reporting Manager sees their squad; HR and Super
@@ -9096,6 +9024,85 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
+                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
+                  const batch = photoBatchLogs();
+                  const withPhoto = attendanceLogs.filter(l => l.photo_path).length;
+                  const today = new Date().toISOString().slice(0, 10);
+                  const expired = attendanceLogs.filter(l =>
+                    l.photo_path && l.photo_expires_at && l.photo_expires_at < today).length;
+                  return (
+                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Login Photographs</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          {withPhoto} on record · kept {PHOTO_RETENTION_DAYS} days
+                          {(() => {
+                            const none = attendanceLogs.filter(l => !l.photo_path).length;
+                            return none > 0 ? ` · ${none} login${none === 1 ? '' : 's'} without one` : '';
+                          })()}
+                        </span>
+                      </div>
+                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                        Choose a batch and download it as one archive, foldered by coach.
+                        Photographs are evidence of attendance only — there is no face matching.
+                        A coach may skip the camera, so a login can carry none; those are
+                        counted above, and marked on the day so a pattern of skipping shows.
+                      </p>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Coach</label>
+                          <select value={photoBatch.coach}
+                            onChange={(e) => setPhotoBatch(b => ({ ...b, coach: e.target.value }))}>
+                            <option value="All">All coaches</option>
+                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label>From</label>
+                          <input type="date" value={photoBatch.from}
+                            onChange={(e) => setPhotoBatch(b => ({ ...b, from: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>To</label>
+                          <input type="date" value={photoBatch.to}
+                            onChange={(e) => setPhotoBatch(b => ({ ...b, to: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>In this batch</label>
+                          <span className="calc-static">
+                            {batch.length} photograph{batch.length === 1 ? '' : 's'}
+                          </span>
+                          <span className="field-hint">
+                            {batch.length > 0
+                              ? `${batch[0].working_day} to ${batch[batch.length - 1].working_day}`
+                              : 'Nothing matches those dates.'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="modal-footer">
+                        {photoBusy && (
+                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: 'auto' }}>
+                            {photoBusy}
+                          </span>
+                        )}
+                        {expired > 0 && PROFILE_PAY_ROLES.includes(currentRole) && (
+                          <button className="btn btn-secondary" onClick={purgeExpiredPhotos}>
+                            <i className="bx bx-trash"></i> Delete {expired} past {PHOTO_RETENTION_DAYS} days
+                          </button>
+                        )}
+                        <button className="btn btn-primary"
+                          disabled={batch.length === 0 || !!photoBusy}
+                          onClick={downloadPhotoBatch}>
+                          <i className="bx bx-download"></i> Download {batch.length || ''} as ZIP
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                    {/* Deciding leave is not about the coach on screen — an approver should
+                    see everything waiting on them the moment they arrive, which is why
+                    this sits outside the per-coach block rather than inside it. */}
                 {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
                   <div className="card" style={{ marginBottom: '1.25rem' }}>
                     <div className="card-header-row">
@@ -9251,13 +9258,28 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 })()}
 
                 {!coach ? (
-                  <div className="card"><p className="text-muted">Choose a coach to see their attendance and leave.</p></div>
+                  <div className="card">
+                    <p className="text-muted">
+                      Open a coach to see their attendance, balances and leave history —
+                      click a name in the register above, or pick one from the list at the
+                      top right.
+                    </p>
+                  </div>
                 ) : (
                   <>
                     {/* Today */}
                     <div className="card">
                       <div className="card-header-row" id="attendance-coach-card">
-                        <h3>{coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
+                        <h3>
+                          {!isOwn && (
+                            <button className="linklike" title="Back to everyone"
+                              onClick={() => setAttendanceCoachId('')}
+                              style={{ marginRight: '0.5rem' }}>
+                              <i className="bx bx-arrow-back"></i>
+                            </button>
+                          )}
+                          {coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        </h3>
                         <div className="table-btn-group">
                           <button className="btn btn-primary" disabled={!!open}
                             onClick={() => handleAttendanceLogin(coach)}>
