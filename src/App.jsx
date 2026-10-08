@@ -1480,6 +1480,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [holidayPreview, setHolidayPreview] = useState(null);
   const [leaveRegister, setLeaveRegister] = useState({ status: 'All', coach: 'All', from: '', to: '' });
+  const [loginLog, setLoginLog] = useState({ coach: 'All', day: '' });
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -9050,6 +9051,109 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         )}
                                       </div>
                                     </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Where people logged in from, across everyone. The same facts
+                    are on each coach's own card, but checking a day meant opening
+                    every coach in turn — which is not checking. */}
+                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
+                  const day = loginLog.day || todayWorkingDay;
+                  const rows = attendanceLogs
+                    .filter(l => l.working_day === day)
+                    .filter(l => loginLog.coach === 'All' || l.coach_id === loginLog.coach)
+                    .filter(l => {
+                      if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
+                      const c = coaches.find(x => x.id === l.coach_id);
+                      return c?.reporting_manager_id === currentRmContext;
+                    })
+                    .sort((a, b) => new Date(b.logged_in_at) - new Date(a.logged_in_at));
+
+                  const noLocation = rows.filter(l => l.login_lat == null).length;
+                  const offSite = rows.filter(l => l.within_centre === false).length;
+
+                  return (
+                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Logins — Where and When</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          {rows.length} on {day}
+                          {noLocation ? ` · ${noLocation} without a location` : ''}
+                          {offSite ? ` · ${offSite} off site` : ''}
+                        </span>
+                      </div>
+                      <div className="form-grid">
+                        <div className="form-group">
+                          <label>Day</label>
+                          <input type="date" value={loginLog.day || todayWorkingDay}
+                            onChange={(e) => setLoginLog(f => ({ ...f, day: e.target.value }))} />
+                        </div>
+                        <div className="form-group">
+                          <label>Coach</label>
+                          <select value={loginLog.coach}
+                            onChange={(e) => setLoginLog(f => ({ ...f, coach: e.target.value }))}>
+                            <option value="All">All coaches</option>
+                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
+                          </select>
+                        </div>
+                      </div>
+
+                      {rows.length === 0 ? (
+                        <p className="text-muted">Nobody logged in on {day}.</p>
+                      ) : (
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Coach</th><th>In</th><th>Out</th>
+                                <th className="num-col">Minutes</th>
+                                <th>Logged in from</th><th>Logged out from</th><th>Photo</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map(l => {
+                                const c = coaches.find(x => x.id === l.coach_id);
+                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date())
+                                  - new Date(l.logged_in_at)) / 60000;
+                                const place = (lat, lng, label) => lat != null
+                                  ? <a href={`https://www.google.com/maps?q=${lat},${lng}`}
+                                       target="_blank" rel="noreferrer" title={`${lat}, ${lng}`}>
+                                      {Number(lat).toFixed(5)}, {Number(lng).toFixed(5)}
+                                    </a>
+                                  : <span className="text-red">{label}</span>;
+                                return (
+                                  <tr key={l.id} className={l.within_centre === false ? 'leave-overdue' : ''}>
+                                    <td>
+                                      <button className="linklike" onClick={() => openCoachOnAttendance(l.coach_id)}>
+                                        <strong>{c?.name || l.coach_id}</strong>
+                                      </button><br />
+                                      <small className="text-muted">{l.coach_id}</small>
+                                    </td>
+                                    <td>{new Date(l.logged_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                                    <td>{l.logged_out_at
+                                      ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+                                      : <span className="badge badge-success">still in</span>}</td>
+                                    <td className="num-col">{Math.round(mins)}</td>
+                                    <td>
+                                      {place(l.login_lat, l.login_lng, 'no location')}
+                                      {l.within_centre === false && (
+                                        <><br /><small className="text-red">outside the centre</small></>
+                                      )}
+                                    </td>
+                                    <td>{l.logged_out_at
+                                      ? place(l.logout_lat, l.logout_lng, 'no location')
+                                      : <span className="text-muted">—</span>}</td>
+                                    <td>{l.photo_path
+                                      ? <span className="text-green">taken</span>
+                                      : <span className="text-amber">none</span>}</td>
                                   </tr>
                                 );
                               })}
