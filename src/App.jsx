@@ -3425,9 +3425,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const row = leaveBalances.find(b =>
       b.coach_id === coach?.id && b.leave_year === year && b.type_id === typeId) || {};
     const eligibleFrom = coach?.probation_end_date || coach?.date_of_joining || null;
-    const accrued = row.accrued != null
-      ? Number(row.accrued)
-      : accruedDays(typeId, { eligibleFrom, asOf: new Date() });
+
+    // Holiday Leave is not accrued — the published list is the entitlement, so
+    // what a coach may take is simply how many holidays apply to them. Updating
+    // the list changes it for everyone at once, which is the point of it.
+    const holidaysForCoach = holidays.filter(h => h.leave_year === year
+      && (!h.centre_name || h.centre_name === coach?.centre_name)).length;
+
+    const accrued = leaveType(typeId)?.holidayOnly
+      ? holidaysForCoach
+      : (row.accrued != null
+        ? Number(row.accrued)
+        : accruedDays(typeId, { eligibleFrom, asOf: new Date() }));
     const opening = Number(row.opening) || 0;
     const used = Number(row.used) || 0;
     const adjusted = Number(row.adjusted) || 0;
@@ -3446,22 +3455,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * span is what makes a Friday-to-Monday absence cost four days instead of
    * two.
    */
-  const leaveDaysFor = (coach, from, to) => {
-    if (!from || !to) return { days: 0, skipped: [] };
+  const leaveDaysFor = (coach, from, to, typeId = null) => {
+    if (!from || !to) return { days: 0, skipped: [], nonHolidayDates: [] };
     const start = new Date(`${from}T12:00:00`);
     const end = new Date(`${to}T12:00:00`);
-    if (end < start) return { days: 0, skipped: [] };
+    if (end < start) return { days: 0, skipped: [], nonHolidayDates: [] };
+
+    // Holiday Leave is the inverse of every other type: it claims the holidays
+    // in the span, where the rest claim the working days around them.
+    const holidayOnly = Boolean(leaveType(typeId)?.holidayOnly);
 
     let days = 0;
     const skipped = [];
+    const nonHolidayDates = [];
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       const holiday = holidayOn(coach, iso);
+
+      if (holidayOnly) {
+        if (holiday) days += 1;
+        else nonHolidayDates.push(iso);
+        continue;
+      }
+
       if (isWeeklyOffFor(coach, iso)) { skipped.push(`${iso} (weekly off)`); continue; }
       if (holiday) { skipped.push(`${iso} (${holiday.name})`); continue; }
       days += 1;
     }
-    return { days, skipped };
+    return { days, skipped, nonHolidayDates };
   };
 
   const daysBetween = (from, to) => {
@@ -3477,14 +3498,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
       showToast("Choose the dates the leave runs from and to.", "error");
       return;
     }
-    const counted = leaveDaysFor(coach, from, to);
+    const counted = leaveDaysFor(coach, from, to, type);
     const days = halfDay ? 0.5 : counted.days;
     if (days === 0) {
-      showToast("Every day in that span is a weekly off or a holiday — there is no leave to apply for.", "warning");
+      showToast(leaveType(type)?.holidayOnly
+        ? "None of those dates is a published holiday."
+        : "Every day in that span is a weekly off or a holiday — there is no leave to apply for.",
+        "warning");
       return;
     }
     const balance = leaveBalanceFor(coach, type).available;
-    const check = checkLeaveApplication({ typeId: type, coach, from, days, balance });
+    const check = checkLeaveApplication({
+      typeId: type, coach, from, days, balance, nonHolidayDates: counted.nonHolidayDates
+    });
 
     if (!check.ok) {
       // A Reporting Manager may grant beyond the balance where they judge it
@@ -9540,22 +9566,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </thead>
                           <tbody>
                             {leaveTypesFor(coach).filter(t => t.id !== 'LOP').map(t => {
-                              if (t.notApplicable) {
-                                const { year } = leaveYearFor(new Date());
-                                const mine = holidays.filter(h => h.leave_year === year
-                                  && (!h.centre_name || h.centre_name === coach.centre_name));
-                                return (
-                                  <tr key={t.id}>
-                                    <td><strong>{t.label}</strong></td>
-                                    <td className="num-col" colSpan={4}>
-                                      <span className="text-muted">
-                                        {mine.length} published for {year}
-                                      </span>
-                                    </td>
-                                    <td colSpan={2}><small className="text-muted">{t.note}</small></td>
-                                  </tr>
-                                );
-                              }
                               const b = leaveBalanceFor(coach, t.id);
                               return (
                                 <tr key={t.id}>
@@ -9644,7 +9654,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <span className="text-muted" style={{ fontSize: '0.8rem', marginRight: 'auto' }}>
                           {leaveForm.from && leaveForm.to
                             ? (() => {
-                                const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to);
+                                const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to, leaveForm.type);
                                 const n = leaveForm.halfDay ? 0.5 : c.days;
                                 const span = daysBetween(leaveForm.from, leaveForm.to);
                                 return `${n} day(s) of leave` +

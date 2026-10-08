@@ -170,15 +170,14 @@ export const LEAVE_TYPES = [
     note: 'No notice needed. Same day before hours start, or within 2 days of returning.'
   },
   {
-    // Not applied for. A published holiday is already excluded from attendance
-    // and from any leave span crossing it, so an application would either be a
-    // no-op on a real holiday or — as it was until now — a way to take paid
-    // leave on a day that is not one. It stays as a type so the year's
-    // holidays can be counted and shown, and is kept off the form.
+    // Claimed only on the days Human Resources has published. The entitlement
+    // is the list itself rather than a number: a coach may take the holidays
+    // there are, on the dates they fall, and no others. Every coach gets the
+    // same list, bar a local holiday named for one centre.
     id: 'HOLIDAY', label: 'Holiday Leave', fromHolidayList: true, carryForwardMax: 0,
-    notApplicable: true,
+    holidayOnly: true,
     noticeDays: 0, halfDayAllowed: false, paid: true,
-    note: 'Taken automatically. A published holiday is not counted against anyone.'
+    note: 'Only on a published holiday. The year\'s list is the entitlement.'
   },
   {
     id: 'PERIOD', label: 'Period Leave', accrual: 0.5, carryForwardMax: 0,
@@ -288,7 +287,9 @@ export function yearEndCarry(typeId, closingBalance) {
  * told to apply for those days as Loss of Pay instead, rather than the system
  * quietly converting them, which would hide a decision that is theirs to make.
  */
-export function checkLeaveApplication({ typeId, coach, from, days, balance, appliedOn = new Date() }) {
+export function checkLeaveApplication({
+  typeId, coach, from, days, balance, appliedOn = new Date(), nonHolidayDates = null
+}) {
   const policy = leaveType(typeId);
   const problems = [];
   if (!policy) return { ok: false, problems: ['Unknown leave type.'] };
@@ -297,10 +298,14 @@ export function checkLeaveApplication({ typeId, coach, from, days, balance, appl
     problems.push(`${policy.label} does not apply to this coach.`);
   }
 
-  if (policy.notApplicable) {
+  // Dates outside the published list are the whole failure mode this type had:
+  // without the check it was unlimited paid leave on any day at all.
+  if (policy.holidayOnly && Array.isArray(nonHolidayDates) && nonHolidayDates.length > 0) {
     problems.push(
-      `${policy.label} is not applied for. Published holidays are already not ` +
-      `counted against anyone — there is nothing to claim.`);
+      `${policy.label} can only be taken on a published holiday. ` +
+      `${nonHolidayDates.slice(0, 3).join(', ')}` +
+      `${nonHolidayDates.length > 3 ? ` and ${nonHolidayDates.length - 3} more` : ''} ` +
+      `${nonHolidayDates.length === 1 ? 'is not one' : 'are not'}.`);
   }
 
   const noticeGiven = Math.floor((new Date(from) - new Date(appliedOn)) / 86400000);
