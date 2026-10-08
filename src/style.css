@@ -3535,3 +3535,27 @@ form {
   text-align: left;
 }
 .linklike:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------------------------
+   The card a screen is actually about. One per screen: it carries the work,
+   the others carry the tools, and the difference should be visible before
+   anything is read.
+--------------------------------------------------------------------------- */
+.card.card-feature {
+  border: 1px solid var(--accent-teal);
+  border-left-width: 4px;
+  box-shadow: 0 2px 10px rgba(20, 184, 166, 0.07);
+}
+.card.card-feature > .card-header-row {
+  margin: -1.25rem -1.25rem 0;
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background-color: rgba(20, 184, 166, 0.07);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.card.card-feature > .card-header-row h3 { color: var(--accent-teal); }
+
+/* Waiting on somebody. Tinted, not shouted — overdue is what shouts, and the
+   two must stay distinguishable. */
+.leave-pending { background-color: rgba(245, 158, 11, 0.07); }
+.leave-pending td:first-child { box-shadow: inset 3px 0 0 var(--accent-amber, #f59e0b); }

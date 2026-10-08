@@ -8897,7 +8897,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     .reduce((n, a) => n + Number(a.approved_days ?? a.days), 0);
 
                   return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
+                    <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
                         <h3>Leave Register</h3>
                         <div className="table-btn-group">
@@ -8977,7 +8977,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : null;
                                 const overdue = a.status === 'Pending' && waited >= 3;
                                 return (
-                                  <tr key={a.id} className={overdue ? 'leave-overdue' : ''}>
+                                  <tr key={a.id} className={
+                                    overdue ? 'leave-overdue'
+                                      : a.status === 'Pending' ? 'leave-pending' : ''}>
                                     <td>
                                       {/* The name is the way into the coach: a decision
                                           often needs the attendance behind it. */}
