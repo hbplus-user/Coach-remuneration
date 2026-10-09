@@ -3629,3 +3629,32 @@ form {
   background-color: var(--accent-teal);
   color: #fff;
 }
+
+/* A form whose inputs are a model rather than an edit. Stated plainly, because
+   an editable field that silently discards what you type is the worst kind. */
+.calc-modelling {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--accent-violet, #8b5cf6);
+  border-left-width: 4px;
+  background-color: rgba(139, 92, 246, 0.07);
+}
+.calc-modelling > i {
+  font-size: 1.1rem;
+  color: var(--accent-violet, #8b5cf6);
+}
+.calc-modelling > span { flex: 1; min-width: 0; }
+.calc-modelling strong {
+  display: block;
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+.calc-modelling small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

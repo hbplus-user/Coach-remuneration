@@ -594,6 +594,44 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       rateHi: category === 'Fixed' ? fixedPerSessionRate(hi) : (r.per_session ?? 0)
     };
   };
+  /**
+   * Which inputs have been moved away from what is recorded.
+   *
+   * Everything on this form is editable, but only the two pay fields save —
+   * the rest belong to the score card or the coach profile. Without saying so,
+   * a changed figure looks like an edit that simply has not been saved yet,
+   * which is the question this screen kept raising.
+   */
+  const modelledChanges = (() => {
+    if (!seed?.coachId) return [];
+    const same = (a, b) => String(a ?? '') === String(b ?? '');
+    return [
+      ['Coach Category', category, seed.category, 'the coach profile'],
+      ['HB+ Benchmark Score', score, seed.score, 'the score card'],
+      ['Sessions Completed', sessions, seed.sessions, 'the score card — Incentive'],
+      ['Night Sessions', nightSessions, seed.nightSessions, 'the score card — Incentive'],
+      ['5-Star Streak', streak, seed.streak, 'the score card — Incentive'],
+      ['Missed Sessions', missedSessions, seed.missedSessions ?? 0, 'the score card — Incentive'],
+      ['Policy Variant', variantId, seed.variantId, 'the coach profile'],
+      ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work'],
+      ['Total Penalty', penalties, seed.penalties, 'the Penalties tab']
+    ].filter(([, now, was]) => !same(now, was))
+     .map(([label, now, was, where]) => ({ label, now, was, where }));
+  })();
+
+  const resetToRecorded = () => {
+    if (!seed) return;
+    setCategory(seed.category ?? 'Fixed');
+    setVariantId(seed.variantId ?? 'V1');
+    setScore(seed.score ?? 0);
+    setSessions(seed.sessions ?? 0);
+    setNightSessions(seed.nightSessions ?? 0);
+    setStreak(seed.streak ?? 0);
+    setMissedSessions(seed.missedSessions ?? 0);
+    setOrgWorkPay(seed.orgWorkPay ?? 0);
+    setPenalties(seed.penalties ?? 0);
+  };
+
   const forecastNow = forecastFor(band.label);
   const against = (actual, lo, hi) => {
     const v = Number(actual) || 0;
@@ -807,7 +845,32 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   return (
     <div className="pay-calc-grid">
       <div className="pay-calc-col">
-        <div className="calc-section-title calc-section-input">Input Parameters <span>Fill these cells only</span></div>
+        <div className="calc-section-title calc-section-input">
+          Input Parameters
+          <span>{seed?.coachId ? 'a model — only pay saves' : 'fill these cells only'}</span>
+        </div>
+
+        {/* Only the two pay fields write anything. Saying which inputs have
+            drifted, and where each one is actually kept, is what stops this
+            screen reading as an editor that has lost your changes. */}
+        {modelledChanges.length > 0 && (
+          <div className="calc-modelling">
+            <i className="bx bx-flask"></i>
+            <span>
+              <strong>
+                Modelling — {modelledChanges.length} input
+                {modelledChanges.length === 1 ? '' : 's'} changed, nothing saved
+              </strong>
+              <small>
+                {modelledChanges.map(c => `${c.label} (${c.was} → ${c.now}), edited on ${c.where}`).join('; ')}.
+                {' '}Only Per-Session Rate and Base / Fixed Pay save from here, each with its own button.
+              </small>
+            </span>
+            <button className="btn btn-secondary btn-sm" onClick={resetToRecorded}>
+              Reset to recorded
+            </button>
+          </div>
+        )}
         {seed?.coachId && seed.coreRecorded === false && (
           <div className="calc-unrated-note">
             <i className="bx bx-error"></i>
@@ -8769,7 +8832,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <div>
                     <h2>Monthly Pay Calculator</h2>
                     <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                      Choose a coach in the form below to load {period}'s figures automatically, or pick manual entry to model a case from scratch.
+                      Choose a coach to load {period}'s recorded figures, or pick manual entry to
+                      model a case from scratch. Changing an input here works out what the month
+                      would come to — it does not record it. The two pay fields are the exception,
+                      and each saves on its own button.
                     </p>
                   </div>
                   {PROFILE_PAY_ROLES.includes(currentRole) && (
