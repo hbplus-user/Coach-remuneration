@@ -640,8 +640,6 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setPenalties(seed.penalties ?? 0);
   };
 
-  const lopPerDayHere = Math.round((pay.basePay / 26) * 100) / 100;
-
   const forecastNow = forecastFor(band.label);
   const against = (actual, lo, hi) => {
     const v = Number(actual) || 0;
@@ -677,6 +675,10 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     : [];
 
   const pay = computeMonthlyPay(syntheticCoach, syntheticMonth, { hbScore: numericScore }, [], vConfig, orgItems);
+  // What one day off costs, for the line that shows the arithmetic. Declared
+  // here rather than above because it divides `pay`, which does not exist yet
+  // up there — and a render reaches these in order.
+  const lopPerDayHere = Math.round((pay.basePay / 26) * 100) / 100;
   const penaltyTotal = Number(penalties) || 0;
   const grossPay = Math.round((pay.grossPay - penaltyTotal) * 100) / 100;
   // Section 194J: TDS on professional or technical fees, withheld at source.
