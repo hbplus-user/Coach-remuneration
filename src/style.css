@@ -3658,3 +3658,70 @@ form {
   line-height: 1.5;
   color: var(--text-muted);
 }
+
+/* Where somebody stands this moment, beside their name. */
+.presence {
+  display: inline-block;
+  margin-right: 0.6rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: 2px;
+}
+.presence-in    { background-color: rgba(16, 185, 129, 0.16); color: var(--accent-green, #10b981); }
+.presence-out   { background-color: var(--border-color);      color: var(--text-secondary); }
+.presence-away  { background-color: rgba(245, 158, 11, 0.16); color: var(--accent-amber, #f59e0b); }
+.presence-leave { background-color: rgba(139, 92, 246, 0.16); color: var(--accent-violet, #8b5cf6); }
+
+/* The facts a leave decision rests on, gathered rather than hunted for. */
+.demographics { margin: 0.75rem 0 0.25rem; }
+.demographics > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.demographics > summary::-webkit-details-marker { display: none; }
+.demographics > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 0.4rem;
+  transition: transform 0.15s ease;
+}
+.demographics[open] > summary::before { transform: rotate(90deg); }
+.demographics > summary:hover { color: var(--accent-teal); }
+.demographics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.6rem 1.25rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border-color);
+}
+.demographics-grid > div { display: flex; flex-direction: column; gap: 1px; }
+.demographics-grid span {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.demographics-grid strong { font-size: 0.84rem; color: var(--text-primary); font-weight: 600; }
+
+/* The leave rules, set out beside the balances they govern. */
+.policy-list { display: grid; gap: 0.6rem; margin-top: 0.7rem; padding-top: 0.7rem;
+  border-top: 1px solid var(--border-color); }
+.policy-list > div { display: flex; flex-direction: column; gap: 2px; }
+.policy-list strong { font-size: 0.84rem; color: var(--text-primary); }
+.policy-list small { font-size: 0.76rem; line-height: 1.55; color: var(--text-muted); }
+
+/* A login photograph opened full size. Not mirrored: this is the record as it
+   was stored, and flipping it would be a different picture from the file. */
+.photo-viewer-img {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  background-color: #000;
+  display: block;
+}

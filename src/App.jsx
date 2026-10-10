@@ -372,7 +372,11 @@ const COACH_SCORECARD_GROUPS = [
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "missed_sessions", label: "Missed Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
-      { key: "lop_days", label: "Loss of Pay (days)", entry: "manual", source: "Attendance", max: 31, decimals: 1, step: 0.5 },
+      // Written by settling a day. Editable only by the two roles that own
+      // pay, because a figure that comes from attendance should not be quietly
+      // disagreed with by whoever happens to have the card open.
+      { key: "lop_days", label: "Loss of Pay (days)", entry: "manual", source: "Attendance",
+        max: 31, decimals: 1, step: 0.5, restrictedTo: "PROFILE_PAY" },
       { key: "threshold", label: "Threshold", entry: "derived", decimals: 0 },
       { key: "extra_sessions", label: "Extra Sessions", entry: "derived", decimals: 0 },
       { key: "violations", label: "Violations in Period", entry: "derived", decimals: 0 }
@@ -1566,10 +1570,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [photoBatch, setPhotoBatch] = useState({ coach: 'All', from: '', to: '' });
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '', centre: '' });
   const [holidayPreview, setHolidayPreview] = useState(null);
+  const [balancePreview, setBalancePreview] = useState(null);
   const [leaveRegister, setLeaveRegister] = useState({
     status: 'All', coach: 'All', from: '', to: '', overdueOnly: false
   });
   const [loginLog, setLoginLog] = useState({ coach: 'All', day: '', show: 'all' });
+  const [awayDay, setAwayDay] = useState('');
+  // A photograph opened full size, fetched on demand — the list holds paths,
+  // not images, and signing every one of them to render thumbnails would be a
+  // request per row for something nobody has asked to see yet.
+  const [photoViewer, setPhotoViewer] = useState(null);
   const [photoBusy, setPhotoBusy] = useState("");
   // Ticks only while someone is logged in. An open period counts up to now, so
   // without this the figure would sit still until something else redrew it.
@@ -2670,6 +2680,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * role has none, so one stands in — otherwise the preview only ever shows
    * the "not linked" message and there is no way to see what a coach sees.
    */
+  /**
+   * The coaches this person may see on Attendance & Leave.
+   *
+   * A Reporting Manager is answerable for their own squad and sees only it —
+   * every list, picker and count on the screen reads from here, so the limit
+   * cannot be true of one section and not another.
+   */
+  const attendanceRoster = coaches.filter(c => {
+    if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
+    return c.reporting_manager_id === currentRmContext;
+  });
+  const inAttendanceScope = (coachId) => attendanceRoster.some(c => c.id === coachId);
+
   const isPreviewingCoach = currentRole === 'Coach' && canSwitchRole && !profile?.coach_id;
   const selfCoachId = profile?.coach_id
     ?? (isPreviewingCoach ? (currentCoachContext || coaches[0]?.id || null) : null);
@@ -3134,13 +3157,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const awayOn = (isoDay) => leaveApplications
     .filter(a => (a.status === 'Approved' || a.status === 'Pending' || a.status === 'Partially_Approved'))
     .filter(a => a.from_date <= isoDay && a.to_date >= isoDay)
+    .filter(a => inAttendanceScope(a.coach_id))
     .map(a => ({ app: a, coach: coaches.find(c => c.id === a.coach_id) }))
     .filter(x => x.coach);
 
   const coverCheck = (isoDay) => {
     const away = awayOn(isoDay);
     const byDiscipline = new Map();
-    for (const c of coaches.filter(x => x.status === 'Active')) {
+    for (const c of attendanceRoster.filter(x => x.status === 'Active')) {
       const d = c.coach_type || findVariant(variants, c.variant_id).discipline || 'Unassigned';
       if (!byDiscipline.has(d)) byDiscipline.set(d, { total: 0, off: 0 });
       byDiscipline.get(d).total += 1;
@@ -3168,6 +3192,63 @@ export default function App({ session = null, profile = null, onSignOut = null }
       document.getElementById('attendance-coach-card')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 60);
+  };
+
+  /**
+   * Who the coach is, in the terms attendance and leave care about.
+   *
+   * Drawn together in one place rather than left across the profile, because
+   * deciding somebody's leave means knowing their stage, their off day and
+   * which policy they are on — and going to find each of those is how a
+   * decision gets made without them.
+   */
+  const demographicsFor = (coach) => {
+    if (!coach) return [];
+    const vCfg = findVariant(variants, coach.variant_id);
+    const stage = coach.employment_stage || 'Training';
+    const stageDate = stage === 'Training' ? coach.training_end_date
+      : stage === 'Probation' ? coach.probation_end_date : null;
+    const overdue = stageDate && new Date(stageDate) < new Date();
+
+    return [
+      { label: 'Email', value: coach.email || '—' },
+      { label: 'Phone', value: coach.phone || '—' },
+      { label: 'Gender', value: coach.gender || '— not set, so some leave types cannot be offered' },
+      { label: 'Coach type', value: coach.coach_type || vCfg.discipline || '—' },
+      { label: 'Category', value: coach.coach_category || '—' },
+      { label: 'Policy variant', value: vCfg.placeholder ? 'none assigned' : `${vCfg.name} (${vCfg.id})` },
+      { label: 'Works', value: coach.work_mode === 'Centre'
+          ? `at ${coach.centre_name || 'a centre'} — within ${CENTRE_RADIUS_METRES} m`
+          : 'remotely — anywhere' },
+      { label: 'Weekly off', value: coach.coach_category === 'Flexi'
+          ? 'none — a day with no availability is off'
+          : (coach.weekly_off_day == null ? '— not set' : WEEKDAYS[coach.weekly_off_day]) },
+      { label: 'Joined', value: coach.date_of_joining
+          ? new Date(coach.date_of_joining).toLocaleDateString('en-IN')
+          : '— not set, so tenure scores as the five-year maximum' },
+      { label: 'Stage', value: stage
+          + (stageDate ? ` — ends ${new Date(stageDate).toLocaleDateString('en-IN')}` : '')
+          + (overdue ? ' (past its date, awaiting HR)' : ''),
+        flag: overdue || !stageDate },
+      { label: 'Reporting Manager', value: coach.reporting_manager_id
+          || '— none, so nobody can approve their leave', flag: !coach.reporting_manager_id },
+      { label: 'Leave year', value: `${leaveYearFor(new Date()).start} to ${leaveYearFor(new Date()).end}` }
+    ];
+  };
+
+  /** Where a coach stands this moment: in, out, away or on leave. */
+  const presenceOf = (coach) => {
+    if (!coach) return null;
+    const today = todayWorkingDay;
+    const onLeave = leaveApplications.find(a => a.coach_id === coach.id
+      && a.status === 'Approved' && a.from_date <= today && a.to_date >= today);
+    if (onLeave) return { state: 'Leave', detail: leaveType(onLeave.type_id)?.label || 'On leave' };
+    if (holidayOn(coach, today)) return { state: 'Away', detail: holidayOn(coach, today).name };
+    if (isWeeklyOffFor(coach, today)) return { state: 'Away', detail: 'Weekly off' };
+    if (openLogFor(coach.id)) return { state: 'In', detail: 'Logged in now' };
+    const todays = logsFor(coach.id, today);
+    if (todays.length > 0) return { state: 'Out', detail: 'Logged out' };
+    return { state: 'Away', detail: 'Has not logged in today' };
   };
 
   /** Set or move a coach's weekly off. */
@@ -3315,6 +3396,111 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setHolidayPreview(null);
   };
 
+  /**
+   * A template of everyone's leave balances.
+   *
+   * Carries what is held today rather than coming out blank, so opening
+   * balances from Human Resources' own sheet are typed over the figures they
+   * replace — and a re-upload of an untouched file changes nothing.
+   *
+   * Accrual is left out of the file on purpose: it is worked out from the
+   * policy and the coach's eligibility date, and a column inviting somebody to
+   * key it in would quietly take over from the rule that produces it.
+   */
+  const downloadBalanceTemplate = () => {
+    const { year } = leaveYearFor(new Date());
+    const rows = [['Coach ID', 'Name', 'Leave type', 'Opening', 'Used', 'Adjustment', 'Reason for adjustment']];
+    for (const c of attendanceRoster.filter(x => x.status === 'Active')) {
+      for (const t of leaveTypesFor(c).filter(x => x.id !== 'LOP' && !x.holidayOnly)) {
+        const b = leaveBalanceFor(c, t.id);
+        rows.push([c.id, c.name, t.id, b.opening, b.used, b.adjusted, '']);
+      }
+    }
+    const csv = rows.map(r => r.map(csvCell).join(',')).join('\n');
+    downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `leave-balances_${year}.csv`);
+    showToast(`Template carries ${rows.length - 1} balance row(s) — edit and upload it back.`, "info");
+  };
+
+  const readBalanceFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) {
+      showToast("That file has a header and nothing else.", "error");
+      return;
+    }
+
+    const { year } = leaveYearFor(new Date());
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const [id, , typeId, opening, used, adjusted, reason] = parseCsvLine(lines[i]);
+      const coachId = (id || '').trim();
+      const type = (typeId || '').trim().toUpperCase();
+      if (!coachId && !type) continue;
+
+      const coach = coaches.find(c => c.id === coachId);
+      const num = (v) => (String(v ?? '').trim() === '' ? 0 : Number(v));
+      const o = num(opening), u = num(used), a = num(adjusted);
+
+      let problem = null;
+      if (!coach) problem = 'No coach with that ID';
+      else if (!inAttendanceScope(coachId)) problem = 'Not one of your coaches';
+      else if (!leaveType(type)) problem = `Unknown leave type "${type}"`;
+      else if ([o, u, a].some(n => Number.isNaN(n))) problem = 'Opening, Used and Adjustment must be numbers';
+      else if (o < 0 || u < 0) problem = 'Opening and Used cannot be negative';
+      else if (a !== 0 && !String(reason ?? '').trim()) problem = 'An adjustment needs a reason';
+
+      const current = coach && !problem ? leaveBalanceFor(coach, type) : null;
+      const unchanged = current
+        && Number(current.opening) === o && Number(current.used) === u && Number(current.adjusted) === a;
+
+      rows.push({
+        line: i + 1, coachId, name: coach?.name || '—', type,
+        opening: o, used: u, adjusted: a, reason: (reason || '').trim(),
+        was: current, problem, unchanged, year
+      });
+    }
+    setBalancePreview({ fileName: file.name, rows, year });
+  };
+
+  const applyBalancePreview = () => {
+    const pv = balancePreview;
+    if (!pv) return;
+    const changing = pv.rows.filter(r => !r.problem && !r.unchanged);
+    if (changing.length === 0) {
+      showToast("Nothing in that file differs from what is held.", "info");
+      setBalancePreview(null);
+      return;
+    }
+
+    setLeaveBalances(prev => {
+      const next = [...prev];
+      for (const r of changing) {
+        const i = next.findIndex(b => b.coach_id === r.coachId
+          && b.leave_year === r.year && b.type_id === r.type);
+        const row = {
+          coach_id: r.coachId, leave_year: r.year, type_id: r.type,
+          opening: r.opening, used: r.used, adjusted: r.adjusted,
+          adjust_reason: r.reason || null,
+          // Accrual stays with the policy: the file does not carry it, and
+          // overwriting it from a sheet would detach the balance from the rule.
+          accrued: (i === -1 ? leaveBalanceFor(coaches.find(c => c.id === r.coachId), r.type).accrued
+                             : next[i].accrued)
+        };
+        if (i === -1) next.push(row); else next[i] = { ...next[i], ...row };
+      }
+      return next;
+    });
+
+    const skipped = pv.rows.length - changing.length;
+    logAudit("Leave Balances Imported",
+      `${changing.length} balance row(s) set from ${pv.fileName}` +
+      `${skipped ? `; ${skipped} unchanged or rejected` : ''}.`);
+    showToast(`${changing.length} balance${changing.length === 1 ? '' : 's'} updated` +
+      `${skipped ? `, ${skipped} left alone` : ''}.`, "success");
+    setBalancePreview(null);
+  };
+
   const removeHoliday = (holiday) => {
     if (!PROFILE_PAY_ROLES.includes(currentRole)) return;
     if (!window.confirm(`Remove ${holiday.name} on ${holiday.holiday_date}?\n\nDays already settled against it are not revisited.`)) return;
@@ -3340,7 +3526,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       name = `attendance-summary_${currentPeriodMonth}`;
       rows.push(['Coach ID', 'Name', 'Category', 'Days logged', 'Hours logged',
         'Days short', 'LOP days', 'Logins without a photo', 'Logins outside the centre']);
-      for (const c of coaches.filter(x => x.status === 'Active')) {
+      for (const c of attendanceRoster.filter(x => x.status === 'Active')) {
         const days = attendanceDays.filter(d => d.coach_id === c.id && inCycle(d.working_day));
         const logs = attendanceLogs.filter(l => l.coach_id === c.id && inCycle(l.working_day));
         const hours = [...new Set(logs.map(l => l.working_day))]
@@ -3358,7 +3544,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (kind === 'balances') {
       name = `leave-balances_${year}`;
       rows.push(['Coach ID', 'Name', 'Leave type', 'Opening', 'Accrued', 'Used', 'Adjusted', 'Available']);
-      for (const c of coaches.filter(x => x.status === 'Active')) {
+      for (const c of attendanceRoster.filter(x => x.status === 'Active')) {
         for (const t of leaveTypesFor(c).filter(x => x.id !== 'LOP')) {
           const b = leaveBalanceFor(c, t.id);
           rows.push([c.id, c.name, t.label, b.opening, b.accrued, b.used, b.adjusted, b.available]);
@@ -3369,7 +3555,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (kind === 'lop') {
       name = `loss-of-pay_${currentPeriodMonth}`;
       rows.push(['Coach ID', 'Name', 'Date', 'Outcome', 'Expected h', 'Logged h', 'LOP days', 'Planned']);
-      for (const d of attendanceDays.filter(x => inCycle(x.working_day) && Number(x.lop_days) > 0)) {
+      for (const d of attendanceDays.filter(x => inCycle(x.working_day)
+        && Number(x.lop_days) > 0 && inAttendanceScope(x.coach_id))) {
         const c = coaches.find(x => x.id === d.coach_id);
         rows.push([d.coach_id, c?.name || '', d.working_day, d.outcome,
           d.expected_hours, d.logged_hours, d.lop_days, d.planned ? 'Planned' : 'Unplanned']);
@@ -3379,7 +3566,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (kind === 'penalties') {
       name = `attendance-penalties_${currentPeriodMonth}`;
       rows.push(['Coach ID', 'Name', 'Date', 'Violation', 'Occurrence', 'Consequence', 'Charged']);
-      for (const v of violations.filter(x => x.reported_by === 'System — attendance' && inCycle(x.incident_date))) {
+      for (const v of violations.filter(x => x.reported_by === 'System — attendance'
+        && inCycle(x.incident_date) && inAttendanceScope(x.coach_id))) {
         const c = coaches.find(x => x.id === v.coach_id);
         rows.push([v.coach_id, c?.name || '', v.incident_date, v.type,
           v.occurrence_no, v.consequence, isPenaltyChargeable(v) ? v.penalty_amount : 0]);
@@ -3396,9 +3584,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`${rows.length - 1} row${rows.length === 2 ? '' : 's'} downloaded.`, "success");
   };
 
+  const openPhoto = async (log) => {
+    if (!log?.photo_path) return;
+    const coach = coaches.find(c => c.id === log.coach_id);
+    setPhotoViewer({ log, coach, url: null, error: null });
+    try {
+      const [url] = await signedPhotoUrls([log.photo_path], 300);
+      if (!url) throw new Error('the photograph could not be signed for viewing');
+      setPhotoViewer(v => v && { ...v, url });
+    } catch (e) {
+      setPhotoViewer(v => v && { ...v, error: e.message });
+    }
+  };
+
   /** The photographs a chosen batch covers. */
   const photoBatchLogs = () => attendanceLogs
     .filter(l => l.photo_path)
+    .filter(l => inAttendanceScope(l.coach_id))
     .filter(l => photoBatch.coach === 'All' || l.coach_id === photoBatch.coach)
     .filter(l => !photoBatch.from || l.working_day >= photoBatch.from)
     .filter(l => !photoBatch.to || l.working_day <= photoBatch.to)
@@ -3599,7 +3801,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     const balance = leaveBalanceFor(coach, type).available;
     const check = checkLeaveApplication({
-      typeId: type, coach, from, days, balance, nonHolidayDates: counted.nonHolidayDates
+      typeId: type, coach, from, days, balance,
+      nonHolidayDates: counted.nonHolidayDates, reason
     });
 
     if (!check.ok) {
@@ -4450,9 +4653,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
       night_sessions: Number(draft.night_sessions) || 0,
       five_star_streak: Number(draft.streak) || 0,
       missed_sessions: Number(draft.missed_sessions) || 0,
-      // Normally written by settling a day; editable here so a wrong one can
-      // be corrected without unpicking the attendance behind it.
-      lop_days: Number(draft.lop_days) || 0,
+      // Normally written by settling a day. Only the roles that own pay may
+      // correct it; for everyone else the recorded figure stands, so opening
+      // a card cannot quietly reset what attendance worked out.
+      lop_days: PROFILE_PAY_ROLES.includes(currentRole)
+        ? (Number(draft.lop_days) || 0)
+        : (Number(run.lop_days) || 0),
       overrides: { ...(draft.overrides || {}) }
     };
 
@@ -4490,7 +4696,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // the edit is finished by hand, which is the act worth recording.
     const overrideCount = overrideKeys(updatedRecord.overrides).length;
     if (!opts.auto) {
-      logAudit("Score Card Edited", `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}${overrideCount ? `, ${overrideCount} manual override(s)` : ''}`);
+      const lopChanged = Number(updatedRecord.lop_days || 0) !== Number(run.lop_days || 0);
+      logAudit("Score Card Edited",
+        `Updated ${run.period_month} score card for ${coach.name} (${coach.id}) — HB+ Score now ${finalScore}` +
+        `${overrideCount ? `, ${overrideCount} manual override(s)` : ''}` +
+        `${lopChanged ? `, Loss of Pay days corrected by hand from ${run.lop_days || 0} to ${updatedRecord.lop_days}` : ''}`);
     }
     if (!opts.quiet) showToast(`${run.period_month} score card saved. HB+ Score: ${finalScore}`);
 
@@ -6159,14 +6369,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <p>{myScore?.band || 'Not scored yet'} · {currentPeriodMonth}</p>
                         </div>
                       </div>
-                      <div className="stat-card stat-amber">
-                        <div className="stat-icon"><i className="bx bxs-calendar"></i></div>
-                        <div className="stat-info">
-                          <h3>Paid Leave Left</h3>
-                          <h2>{leaveBalanceFor(me, 'PAID').available}</h2>
-                          <p>{myLeave.filter(a => a.status === 'Pending').length} application(s) pending</p>
-                        </div>
-                      </div>
+                      {(() => {
+                        const fromAttendance = periodVios.filter(v => v.reported_by === 'System — attendance');
+                        const charged = periodVios
+                          .filter(isPenaltyChargeable)
+                          .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                        const lop = Number(myRecord?.lop_days) || 0;
+                        return (
+                          <div className={`stat-card ${charged || lop ? 'stat-red' : 'stat-amber'}`}>
+                            <div className="stat-icon"><i className="bx bxs-receipt"></i></div>
+                            <div className="stat-info">
+                              <h3>Charged This Cycle</h3>
+                              <h2>{rupees(charged)}</h2>
+                              <p>
+                                {periodVios.length} incident{periodVios.length === 1 ? '' : 's'}
+                                {fromAttendance.length ? `, ${fromAttendance.length} from attendance` : ''}
+                                {lop ? ` · ${lop} day(s) Loss of Pay` : ''}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div className="stat-card stat-red">
                         <div className="stat-icon"><i className="bx bxs-error-circle"></i></div>
                         <div className="stat-info">
@@ -6175,6 +6398,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <p>{myVios.length} on record overall</p>
                         </div>
                       </div>
+                    </div>
+
+                    <div className="card" style={{ marginTop: '1.25rem' }}>
+                      <details className="demographics" open>
+                        <summary>Your details</summary>
+                        <div className="demographics-grid">
+                          {demographicsFor(me).map(d => (
+                            <div key={d.label}>
+                              <span>{d.label}</span>
+                              <strong className={d.flag ? 'text-red' : ''}>{d.value}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                      <p className="calc-notes">
+                        Anything wrong here is changed by Human Resources, not by you.
+                      </p>
                     </div>
 
                     <div className="card" style={{ marginTop: '1.25rem' }}>
@@ -7151,7 +7391,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           ].filter(Boolean).join(' ')}
                         >
                           {groups.flatMap(group => group.columns.map(col => {
-                            const isKeyed = col.entry === 'manual' || col.entry === 'profile';
+                            // A cell may be keyed in by hand and still not be
+                            // everybody's to key in.
+                            const roleMayKey = !col.restrictedTo
+                              || (col.restrictedTo === 'PROFILE_PAY' && PROFILE_PAY_ROLES.includes(currentRole));
+                            const isKeyed = roleMayKey && (col.entry === 'manual' || col.entry === 'profile');
                             const canOverride = OVERRIDABLE_KEYS.includes(col.key);
                             const isOverridden = (run.overrides || {})[col.key] !== undefined && (run.overrides || {})[col.key] !== null;
                             const isUnlocked = unlockedDynamicKeys.includes(col.key);
@@ -7169,7 +7413,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 key={col.key}
                                 title={bandMove
                                   ? `Moved ${bandMove.up ? 'up' : 'down'} from ${bandMove.from} (${bandMove.fromMonth})`
-                                  : (isOverridden ? 'Hand-entered — overrides the calculated value' : undefined)}
+                                  : (col.restrictedTo && !roleMayKey
+                                      ? 'Comes from settling the day. Only Human Resources and Finance may correct it.'
+                                      : (isOverridden ? 'Hand-entered — overrides the calculated value' : undefined))}
                                 className={[
                                   `col-${col.key}`,
                                   bandMove ? `band-moved band-moved-${bandMove.up ? 'up' : 'down'}` : '',
@@ -8997,7 +9243,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       onChange={(e) => setAttendanceCoachId(e.target.value)}
                     >
                       <option value="">No coach open — showing everyone</option>
-                      {coaches.filter(c => c.status === 'Active').map(c => (
+                      {attendanceRoster.filter(c => c.status === 'Active').map(c => (
                         <option key={c.id} value={c.id}>{c.id} — {c.name}</option>
                       ))}
                     </select>
@@ -9010,12 +9256,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     Admin see all of them. */}
                 {canApprove && (() => {
                   const scoped = leaveApplications.filter(a => {
-                    if (currentRole === 'Reporting Manager' && currentRmContext) {
-                      const applicant = coaches.find(c => c.id === a.coach_id);
-                      if (applicant?.reporting_manager_id !== currentRmContext) return false;
-                    }
+                    if (!inAttendanceScope(a.coach_id)) return false;
+                    // The picker at the top of the screen is the coach filter:
+                    // one control, so the two cannot disagree about who is
+                    // being looked at.
+                    if (coach && a.coach_id !== coach.id) return false;
                     if (leaveRegister.status !== 'All' && a.status !== leaveRegister.status) return false;
-                    if (leaveRegister.coach !== 'All' && a.coach_id !== leaveRegister.coach) return false;
                     // Overlap, not containment: a leave running across the window
                     // is in it, even if neither end falls inside.
                     if (leaveRegister.from && a.to_date < leaveRegister.from) return false;
@@ -9032,7 +9278,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   return (
                     <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Leave Register</h3>
+                        <h3>
+                          Leave Register
+                          {coach && <span className="text-muted" style={{ fontWeight: 400 }}> · {coach.name}</span>}
+                        </h3>
                         <div className="table-btn-group">
                           <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
                             {scoped.length} application{scoped.length === 1 ? '' : 's'} · {totalDays} day(s) approved
@@ -9085,10 +9334,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <div className="filter-chips">
                             {views.map(v => {
                               const n = leaveApplications.filter(a => {
-                                if (currentRole === 'Reporting Manager' && currentRmContext) {
-                                  const c = coaches.find(x => x.id === a.coach_id);
-                                  if (c?.reporting_manager_id !== currentRmContext) return false;
-                                }
+                                if (!inAttendanceScope(a.coach_id)) return false;
+                                if (coach && a.coach_id !== coach.id) return false;
                                 if (v.f.status !== 'All' && a.status !== v.f.status) return false;
                                 if (v.f.from && a.to_date < v.f.from) return false;
                                 if (v.extra && !v.extra(a)) return false;
@@ -9121,14 +9368,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </select>
                         </div>
                         <div className="form-group">
-                          <label>Coach</label>
-                          <select value={leaveRegister.coach}
-                            onChange={(e) => setLeaveRegister(f => ({ ...f, coach: e.target.value }))}>
-                            <option value="All">All coaches</option>
-                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
-                          </select>
-                        </div>
-                        <div className="form-group">
                           <label>Leave on or after</label>
                           <input type="date" value={leaveRegister.from}
                             onChange={(e) => setLeaveRegister(f => ({ ...f, from: e.target.value }))} />
@@ -9147,7 +9386,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <table className="data-table">
                             <thead>
                               <tr>
-                                <th>Coach</th><th>Type</th><th>Dates</th>
+                                {!coach && <th>Coach</th>}
+                                <th>Type</th><th>Dates</th>
                                 <th className="num-col">Days</th><th>Status</th>
                                 <th>Waiting</th><th>Note</th>
                                 <th className="actions-col">Decide</th>
@@ -9163,18 +9403,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   <tr key={a.id} className={
                                     overdue ? 'leave-overdue'
                                       : a.status === 'Pending' ? 'leave-pending' : ''}>
-                                    <td>
-                                      {/* The name is the way into the coach: a decision
-                                          often needs the attendance behind it. */}
-                                      <button
-                                        className="linklike"
-                                        title="Open this coach below — attendance, balances and history"
-                                        onClick={() => openCoachOnAttendance(a.coach_id)}
-                                      >
-                                        <strong>{c?.name || a.coach_id}</strong>
-                                      </button><br />
-                                      <small className="text-muted">{a.coach_id}</small>
-                                    </td>
+                                    {!coach && (
+                                      <td>
+                                        {/* The name is the way into the coach: a decision
+                                            often needs the attendance behind it. */}
+                                        <button
+                                          className="linklike"
+                                          title="Open this coach below — attendance, balances and history"
+                                          onClick={() => openCoachOnAttendance(a.coach_id)}
+                                        >
+                                          <strong>{c?.name || a.coach_id}</strong>
+                                        </button><br />
+                                        <small className="text-muted">{a.coach_id}</small>
+                                      </td>
+                                    )}
                                     <td>{leaveType(a.type_id)?.label}</td>
                                     <td>{a.from_date}{a.to_date !== a.from_date ? ` → ${a.to_date}` : ''}</td>
                                     <td className="num-col">
@@ -9251,9 +9493,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const day = loginLog.day || todayWorkingDay;
                   const inScope = (l) => {
                     if (loginLog.coach !== 'All' && l.coach_id !== loginLog.coach) return false;
-                    if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
-                    const c = coaches.find(x => x.id === l.coach_id);
-                    return c?.reporting_manager_id === currentRmContext;
+                    return inAttendanceScope(l.coach_id);
                   };
 
                   // Who is in right now is not a property of a day — somebody who
@@ -9277,11 +9517,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <h3>
                           Logins — Where and When
                           {(() => {
-                            const everyoneIn = attendanceLogs.filter(l => !l.logged_out_at).filter(l => {
-                              if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
-                              const c = coaches.find(x => x.id === l.coach_id);
-                              return c?.reporting_manager_id === currentRmContext;
-                            });
+                            const everyoneIn = attendanceLogs
+                              .filter(l => !l.logged_out_at)
+                              .filter(l => inAttendanceScope(l.coach_id));
                             return everyoneIn.length > 0 ? (
                               <span className="badge badge-success" style={{ marginLeft: '0.6rem' }}>
                                 {everyoneIn.length} logged in now
@@ -9291,6 +9529,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </h3>
                         <span className="text-muted" style={{ fontSize: '0.82rem' }}>
                           {rows.length} shown
+                          {(() => {
+                            // Gross time across every period on view, which is what
+                            // a manager is actually totting up by eye otherwise.
+                            const mins = rows.reduce((n, l) => n +
+                              (((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick))
+                                - new Date(l.logged_in_at)) / 60000), 0);
+                            return mins > 0 ? ` · ${asClock(mins / 60)} gross` : '';
+                          })()}
                           {noLocation ? ` · ${noLocation} without a location` : ''}
                           {offSite ? ` · ${offSite} off site` : ''}
                         </span>
@@ -9320,7 +9566,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <select value={loginLog.coach}
                             onChange={(e) => setLoginLog(f => ({ ...f, coach: e.target.value }))}>
                             <option value="All">All coaches</option>
-                            {coaches.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
+                            {attendanceRoster.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
                           </select>
                         </div>
                       </div>
@@ -9383,7 +9629,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       ? place(l.logout_lat, l.logout_lng, 'no location')
                                       : <span className="text-muted">—</span>}</td>
                                     <td>{l.photo_path
-                                      ? <span className="text-green">taken</span>
+                                      ? <button className="linklike" onClick={() => openPhoto(l)}
+                                          title="Open the photograph taken at this login">
+                                          view
+                                        </button>
                                       : <span className="text-amber">none</span>}</td>
                                   </tr>
                                 );
@@ -9400,25 +9649,40 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     before the approval queue, since it is the context a decision
                     needs rather than something to look up afterwards. */}
                 {canApprove && (() => {
-                  const days = Array.from({ length: 14 }, (_, i) => {
-                    const d = new Date();
-                    d.setDate(d.getDate() + i);
-                    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-                  });
+                  const days = awayDay
+                    ? [awayDay]
+                    : Array.from({ length: 14 }, (_, i) => {
+                        const d = new Date();
+                        d.setDate(d.getDate() + i);
+                        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                      });
                   const busy = days.map(d => ({ day: d, away: awayOn(d) })).filter(x => x.away.length > 0);
-                  if (busy.length === 0) return null;
                   return (
                     <div className="card" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Who Is Away — Next 14 Days</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          approved and pending
-                        </span>
+                        <h3>Who Is Away{awayDay ? ` — ${awayDay}` : ' — Next 14 Days'}</h3>
+                        <div className="table-btn-group">
+                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
+                            approved and pending
+                          </span>
+                          <input type="date" className="header-select" value={awayDay}
+                            onChange={(e) => setAwayDay(e.target.value)} />
+                          {awayDay && (
+                            <button className="btn btn-secondary btn-sm" onClick={() => setAwayDay('')}>
+                              Next 14 days
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="table-container">
                         <table className="data-table">
                           <thead><tr><th>Day</th><th>Away</th><th>Cover left</th></tr></thead>
                           <tbody>
+                            {busy.length === 0 && (
+                              <tr><td colSpan={3} className="text-muted">
+                                Nobody is away {awayDay ? `on ${awayDay}` : 'in the next 14 days'}.
+                              </td></tr>
+                            )}
                             {busy.map(({ day, away }) => {
                               const cover = coverCheck(day).filter(c => c.off > 0);
                               return (
@@ -9537,6 +9801,99 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     {/* Deciding leave is not about the coach on screen — an approver should
                     see everything waiting on them the moment they arrive, which is why
                     this sits outside the per-coach block rather than inside it. */}
+                {PROFILE_PAY_ROLES.includes(currentRole) && (
+                  <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
+                    <summary className="card-header-row">
+                      <h3>Leave Balances — Bulk</h3>
+                      <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                        opening balances and corrections
+                      </span>
+                    </summary>
+
+                    <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                      The template carries what is held today, so figures from Human Resources'
+                      sheet are typed over the ones they replace. Accrual is not in the file —
+                      it comes from the policy and the coach's eligibility date.
+                    </p>
+                    <div className="table-btn-group" style={{ marginBottom: '0.75rem' }}>
+                      <button className="btn btn-secondary btn-sm" onClick={downloadBalanceTemplate}>
+                        <i className="bx bx-download"></i> Download template
+                      </button>
+                      <label className="btn btn-secondary btn-sm" style={{ marginBottom: 0 }}>
+                        <i className="bx bx-upload"></i> Upload balances
+                        <input type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                          onChange={(e) => { readBalanceFile(e.target.files?.[0]); e.target.value = ''; }} />
+                      </label>
+                    </div>
+
+                    {balancePreview && (() => {
+                      const bad = balancePreview.rows.filter(r => r.problem).length;
+                      const same = balancePreview.rows.filter(r => !r.problem && r.unchanged).length;
+                      const change = balancePreview.rows.length - bad - same;
+                      return (
+                        <div className="bulk-preview-wrap">
+                          <div className="unsaved-drafts-bar">
+                            <i className="bx bx-list-check"></i>
+                            <span>
+                              <strong>{balancePreview.fileName}</strong>
+                              <small>
+                                {change} to change
+                                {same ? ` · ${same} already match` : ''}
+                                {bad ? ` · ${bad} with a problem` : ''}
+                              </small>
+                            </span>
+                            <button className="btn btn-secondary btn-sm" onClick={() => setBalancePreview(null)}>
+                              Cancel
+                            </button>
+                            <button className="btn btn-primary btn-sm" disabled={change === 0}
+                              onClick={applyBalancePreview}>
+                              Apply {change || ''}
+                            </button>
+                          </div>
+                          <div className="table-container">
+                            <table className="data-table">
+                              <thead>
+                                <tr>
+                                  <th>Line</th><th>Coach</th><th>Type</th>
+                                  <th className="num-col">Opening</th><th className="num-col">Used</th>
+                                  <th className="num-col">Adjust</th><th>Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {balancePreview.rows.map(r => (
+                                  <tr key={r.line} className={r.problem ? 'leave-overdue' : ''}>
+                                    <td>{r.line}</td>
+                                    <td>{r.name}<br /><small className="text-muted">{r.coachId}</small></td>
+                                    <td>{leaveType(r.type)?.label || r.type}</td>
+                                    <td className="num-col">
+                                      {r.opening}
+                                      {r.was && Number(r.was.opening) !== r.opening &&
+                                        <><br /><small className="text-muted">was {r.was.opening}</small></>}
+                                    </td>
+                                    <td className="num-col">
+                                      {r.used}
+                                      {r.was && Number(r.was.used) !== r.used &&
+                                        <><br /><small className="text-muted">was {r.was.used}</small></>}
+                                    </td>
+                                    <td className="num-col">{r.adjusted || '—'}</td>
+                                    <td>
+                                      {r.problem
+                                        ? <span className="text-red">{r.problem}</span>
+                                        : r.unchanged
+                                          ? <span className="text-muted">already matches</span>
+                                          : <span className="text-green">will be set</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </details>
+                )}
+
                 {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
                   <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
                     <summary className="card-header-row">
@@ -9573,27 +9930,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
                       <summary className="card-header-row">
                         <h3>Holiday List {year}</h3>
-                        <div className="table-btn-group">
-                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
-                            {list.length} published
-                          </span>
-                          <button className="btn btn-secondary btn-sm" onClick={downloadHolidayTemplate}>
-                            <i className="bx bx-download"></i> Template
-                          </button>
-                          <label className="btn btn-secondary btn-sm" style={{ marginBottom: 0 }}>
-                            <i className="bx bx-upload"></i> Upload list
-                            <input
-                              type="file" accept=".csv,text/csv" style={{ display: 'none' }}
-                              onChange={(e) => { readHolidayFile(e.target.files?.[0]); e.target.value = ''; }}
-                            />
-                          </label>
-                        </div>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          {list.length} published
+                        </span>
 </summary>
 
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
                         A day on this list is not counted against anyone. Leave the centre blank
                         for every coach, or name one for a local holiday.
                       </p>
+
+                      {/* Not in the summary above: a click inside one toggles the
+                          card rather than reaching the control, so the file
+                          picker never opened. */}
+                      <div className="table-btn-group" style={{ marginBottom: '0.75rem' }}>
+                        <button className="btn btn-secondary btn-sm" onClick={downloadHolidayTemplate}>
+                          <i className="bx bx-download"></i> Download template
+                        </button>
+                        <label className="btn btn-secondary btn-sm" style={{ marginBottom: 0 }}>
+                          <i className="bx bx-upload"></i> Upload list
+                          <input
+                            type="file" accept=".csv,text/csv" style={{ display: 'none' }}
+                            onChange={(e) => { readHolidayFile(e.target.files?.[0]); e.target.value = ''; }}
+                          />
+                        </label>
+                      </div>
                       <div className="form-grid">
                         <div className="form-group">
                           <label>Date</label>
@@ -9707,6 +10068,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <div className="card">
                       <div className="card-header-row" id="attendance-coach-card">
                         <h3>
+                          {(() => {
+                            const p = presenceOf(coach);
+                            return p ? (
+                              <span className={`presence presence-${p.state.toLowerCase()}`} title={p.detail}>
+                                {p.state}
+                              </span>
+                            ) : null;
+                          })()}
                           {!isOwn && (
                             <button className="linklike" title="Back to everyone"
                               onClick={() => setAttendanceCoachId('')}
@@ -9775,6 +10144,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </strong></div>
                         )}
                       </div>
+
+                      <details className="demographics">
+                        <summary>Who they are · {presenceOf(coach)?.detail}</summary>
+                        <div className="demographics-grid">
+                          {demographicsFor(coach).map(d => (
+                            <div key={d.label}>
+                              <span>{d.label}</span>
+                              <strong className={d.flag ? 'text-red' : ''}>{d.value}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
 
                       <div className="attendance-pattern">
                         <label>Weekly off</label>
@@ -9877,7 +10258,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     </td>
                                     <td>
                                       {l.photo_path
-                                        ? <span className="text-green">taken</span>
+                                        ? <button className="linklike" onClick={() => openPhoto(l)}
+                                            title="Open the photograph taken at this login">
+                                            view
+                                          </button>
                                         : <span className="text-amber">none</span>}
                                     </td>
                                   </tr>
@@ -9950,6 +10334,106 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           cannot be offered. It is set on the coach profile.
                         </p>
                       )}
+
+                      {(() => {
+                        const { year } = leaveYearFor(new Date());
+                        const mine = holidays
+                          .filter(h => h.leave_year === year
+                            && (!h.centre_name || h.centre_name === coach.centre_name))
+                          .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
+                        const today = new Date().toISOString().slice(0, 10);
+                        const taken = new Set(leaveApplications
+                          .filter(a => a.coach_id === coach.id && a.type_id === 'HOLIDAY'
+                            && a.status !== 'Rejected' && a.status !== 'Cancelled')
+                          .flatMap(a => [a.from_date]));
+                        return (
+                          <details className="demographics" open={mine.length > 0}>
+                            <summary>
+                              Holidays you can claim — {mine.length} published for {year}
+                            </summary>
+                            {mine.length === 0 ? (
+                              <p className="calc-notes">
+                                Human Resources has not published the {year} list yet. Holiday
+                                Leave can only be taken on a day that is on it.
+                              </p>
+                            ) : (
+                              <div className="table-container">
+                                <table className="data-table">
+                                  <thead><tr><th>Date</th><th>Day</th><th>Holiday</th><th>Status</th></tr></thead>
+                                  <tbody>
+                                    {mine.map(h => (
+                                      <tr key={h.id} className={h.holiday_date < today ? 'text-muted' : ''}>
+                                        <td><strong>{h.holiday_date}</strong></td>
+                                        <td>{WEEKDAYS[new Date(`${h.holiday_date}T12:00:00`).getDay()]}</td>
+                                        <td>
+                                          {h.name}
+                                          {h.centre_name && <small className="text-muted"> · {h.centre_name} only</small>}
+                                        </td>
+                                        <td>
+                                          {taken.has(h.holiday_date)
+                                            ? <span className="text-green">claimed</span>
+                                            : h.holiday_date < today
+                                              ? <span className="text-muted">passed</span>
+                                              : <span className="text-amber">not claimed</span>}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            <p className="calc-notes">
+                              A published holiday is already not counted against you. Claiming it
+                              as Holiday Leave is the formal record of the day off, and half days
+                              are allowed.
+                            </p>
+                          </details>
+                        );
+                      })()}
+
+                      {/* The rules themselves, beside the balances they govern —
+                          a coach refused for notice should be able to see the
+                          notice rule without asking anyone. */}
+                      <details className="demographics">
+                        <summary>What the policy allows</summary>
+                        <div className="policy-list">
+                          {leaveTypesFor(coach).map(t => (
+                            <div key={t.id}>
+                              <strong>{t.label}</strong>
+                              <small>
+                                {[
+                                  t.accrual ? `${t.accrual} day${t.accrual === 1 ? '' : 's'} credited each pay cycle` : null,
+                                  t.annualDays ? `${t.annualDays} days a year` : null,
+                                  t.holidayOnly ? 'only on a published holiday' : null,
+                                  t.unlimited ? 'always available, and unpaid' : null,
+                                  t.noticeDays ? `${t.noticeDays} days' notice` : 'no notice needed',
+                                  t.sameDayAllowed ? `may be applied for on the day, or within ${t.backdateDays} days of returning` : null,
+                                  t.certificateAfterDays ? `a medical certificate past ${t.certificateAfterDays} days in a row` : null,
+                                  t.halfDayAllowed
+                                    ? (coach.coach_category === 'Flexi'
+                                        ? 'half days do not apply to Flexi'
+                                        : `half days allowed — ${halfDayHours(coach.coach_category)} hours`)
+                                    : 'full days only',
+                                  t.carryForwardMax
+                                    ? `up to ${t.carryForwardMax} days carry over${t.encashBeyondCarry ? ', the rest is encashed' : ''}`
+                                    : 'does not carry over',
+                                  t.splittable ? 'may be split' : null
+                                ].filter(Boolean).join(' · ')}
+                              </small>
+                            </div>
+                          ))}
+                          <div>
+                            <strong>Everyone</strong>
+                            <small>
+                              A reason is required on every application · a decision is due within
+                              3 working days · nothing is marked Loss of Pay while an application
+                              waits · a weekly off or published holiday inside a span is not
+                              charged as leave · the balance is debited when applied for and
+                              returned if refused
+                            </small>
+                          </div>
+                        </div>
+                      </details>
                     </div>
 
                     {/* Apply */}
@@ -9991,10 +10475,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </span>
                         </div>
                         <div className="form-group w-full">
-                          <label>Reason</label>
+                          <label>Reason <span className="required-star">*</span></label>
                           <textarea rows="2" value={leaveForm.reason}
+                            className={leaveForm.reason.trim() ? '' : 'input-invalid'}
                             onChange={(e) => setLeaveForm(f => ({ ...f, reason: e.target.value }))}
-                            placeholder="Optional, but it helps the approver decide." />
+                            placeholder="Required — the approver decides on this, and you see it back on the decision." />
                         </div>
                       </div>
                       <div className="modal-footer">
@@ -11740,6 +12225,42 @@ export default function App({ session = null, profile = null, onSignOut = null }
           </div>
         );
       })()}
+
+      {photoViewer && (
+        <div className="modal-backdrop active-modal" onClick={() => setPhotoViewer(null)}>
+          <div className="modal-card" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                {photoViewer.coach?.name || photoViewer.log.coach_id}
+                {' · '}
+                {new Date(photoViewer.log.logged_in_at).toLocaleString('en-IN', {
+                  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+                })}
+              </h3>
+              <i className="bx bx-x modal-close-btn" onClick={() => setPhotoViewer(null)}></i>
+            </div>
+            <div className="modal-body-content">
+              {photoViewer.error
+                ? <p className="text-red">Could not open it — {photoViewer.error}.</p>
+                : photoViewer.url
+                  ? <img src={photoViewer.url} alt="" className="photo-viewer-img" />
+                  : <p className="text-muted">Fetching…</p>}
+              <p className="calc-notes" style={{ marginTop: '0.5rem' }}>
+                {photoViewer.log.login_lat != null ? (
+                  <>Logged in from{' '}
+                    <a href={`https://www.google.com/maps?q=${photoViewer.log.login_lat},${photoViewer.log.login_lng}`}
+                       target="_blank" rel="noreferrer">
+                      {Number(photoViewer.log.login_lat).toFixed(5)}, {Number(photoViewer.log.login_lng).toFixed(5)}
+                    </a>
+                    {photoViewer.log.within_centre === false && ' — outside the centre'}
+                  </>
+                ) : 'No location was recorded for this login.'}
+                {' '}Kept until {photoViewer.log.photo_expires_at || 'the retention date'}.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {photoCapture && (
         <div className="modal-backdrop active-modal">

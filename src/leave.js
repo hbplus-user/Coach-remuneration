@@ -176,7 +176,7 @@ export const LEAVE_TYPES = [
     // same list, bar a local holiday named for one centre.
     id: 'HOLIDAY', label: 'Holiday Leave', fromHolidayList: true, carryForwardMax: 0,
     holidayOnly: true,
-    noticeDays: 0, halfDayAllowed: false, paid: true,
+    noticeDays: 0, halfDayAllowed: true, paid: true,
     note: 'Only on a published holiday. The year\'s list is the entitlement.'
   },
   {
@@ -288,11 +288,16 @@ export function yearEndCarry(typeId, closingBalance) {
  * quietly converting them, which would hide a decision that is theirs to make.
  */
 export function checkLeaveApplication({
-  typeId, coach, from, days, balance, appliedOn = new Date(), nonHolidayDates = null
+  typeId, coach, from, days, balance, appliedOn = new Date(),
+  nonHolidayDates = null, reason = null
 }) {
   const policy = leaveType(typeId);
   const problems = [];
   if (!policy) return { ok: false, problems: ['Unknown leave type.'] };
+
+  if (!String(reason ?? '').trim()) {
+    problems.push('A reason is required — the approver decides on it, and the coach sees it back.');
+  }
 
   if (policy.gender && coach?.gender !== policy.gender) {
     problems.push(`${policy.label} does not apply to this coach.`);
