@@ -214,6 +214,15 @@ const MAPPERS = {
     ]), DATE_ISH),
     fromRow: r => r
   },
+  regularisations: {
+    table: 'attendance_regularisations',
+    key: r => r.id,
+    toRow: r => blanksToNull(pick(r, [
+      'id', 'coach_id', 'working_day', 'type_id', 'reason', 'status',
+      'outcome', 'days', 'applied_at', 'decided_by', 'decided_at', 'decision_note'
+    ]), DATE_ISH),
+    fromRow: r => r
+  },
   holidays: {
     table: 'holidays',
     key: h => h.id,
@@ -380,7 +389,7 @@ export async function loadState() {
   if (!supabase) return null;
 
   const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
-         attendanceLogs, attendanceDays, leaveBalances, leaveApplications, holidays,
+         attendanceLogs, attendanceDays, leaveBalances, leaveApplications, regularisations, holidays,
          violations, appeals, auditLog, cycles] =
     await Promise.all([
       supabase.from('variants').select('*').order('id'),
@@ -394,6 +403,7 @@ export async function loadState() {
       supabase.from('attendance_days').select('*'),
       supabase.from('leave_balances').select('*'),
       supabase.from('leave_applications').select('*').order('applied_at', { ascending: false }),
+      supabase.from('attendance_regularisations').select('*').order('working_day', { ascending: false }),
       supabase.from('holidays').select('*').order('holiday_date'),
       supabase.from('violations').select('*').order('incident_date', { ascending: false }),
       supabase.from('appeals').select('*'),
@@ -406,6 +416,17 @@ export async function loadState() {
                   violations, appeals, auditLog, cycles]
     .find(r => r.error);
   if (failed) throw failed.error;
+
+  // Regularisations are deliberately not in that list. The table arrives with
+  // its own migration, and a deploy that lands before the migration is run
+  // would otherwise throw here and leave the whole app unable to load any
+  // state at all — every coach, score and payslip gone from the screen over
+  // one table. A missing table reads as "none yet" instead; everything else
+  // keeps working, and the feature starts working the moment the migration
+  // lands. Any other error on it is still worth seeing.
+  if (regularisations.error && !/does not exist|schema cache/i.test(regularisations.error.message || '')) {
+    throw regularisations.error;
+  }
 
   const rows = periods.data ?? [];
   const openCycle = (cycles.data ?? []).find(c => !c.locked) ?? (cycles.data ?? [])[0];
@@ -423,6 +444,7 @@ export async function loadState() {
     attendanceDays: attendanceDays.data ?? [],
     leaveBalances: leaveBalances.data ?? [],
     leaveApplications: leaveApplications.data ?? [],
+    regularisations: regularisations.error ? [] : (regularisations.data ?? []),
     holidays: holidays.data ?? [],
     violations: violations.data ?? [],
     appeals: (appeals.data ?? []).map(MAPPERS.appeals.fromRow),

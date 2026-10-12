@@ -1671,6 +1671,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [attendanceDays, setAttendanceDays] = useState([]);
   const [leaveBalances, setLeaveBalances] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
+  // A coach's account of a day they did not log in for. Raised only by the
+  // coach; decided by Super Admin, HR, or their own Reporting Manager.
+  const [regularisations, setRegularisations] = useState([]);
+  const [regDraft, setRegDraft] = useState({ type: "", reason: "" });
   const [holidays, setHolidays] = useState([]);
   const [attendanceCoachId, setAttendanceCoachId] = useState("");
   // Attendance Regularization state: tracks missed punches / regularization requests
@@ -1989,6 +1993,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setAttendanceDays(next.attendanceDays || []);
     setLeaveBalances(next.leaveBalances || []);
     setLeaveApplications(next.leaveApplications || []);
+    setRegularisations(next.regularisations || []);
     setHolidays(next.holidays || []);
     setViolations(next.violations || []);
     setAppeals(next.appeals || []);
@@ -2183,6 +2188,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       attendanceDays,
       leaveBalances,
       leaveApplications,
+      regularisations,
       holidays,
       violations,
       appeals,
@@ -2215,7 +2221,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }, 700);
 
     return () => clearTimeout(timer);
-  }, [variants, certifications, educationLevels, educationFormats, coaches, historicMonths, currentMonth, orgWork, attendanceLogs, attendanceDays, leaveBalances, leaveApplications, holidays, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
+  }, [variants, certifications, educationLevels, educationFormats, coaches, historicMonths, currentMonth, orgWork, attendanceLogs, attendanceDays, leaveBalances, leaveApplications, regularisations, holidays, violations, appeals, auditLog, payrollLocked, openPeriodMonth, isStateLoaded, session]);
 
   // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
@@ -3264,6 +3270,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return;
     }
 
+    // Same principle as a waiting leave application: a day the coach has asked
+    // to regularise is not charged while it waits. Settling it now would make
+    // the approver's delay the coach's cost — and once it is decided, the
+    // decision already accounts for the day, so settling would count it twice.
+    // (`regularisations` is read straight from state: this runs on a click,
+    // long after every declaration in this component has been evaluated.)
+    const reg = regularisations.find(r =>
+      r.coach_id === coach.id && r.working_day === workingDay);
+    if (reg && reg.status === 'Pending') {
+      showToast(
+        `${coach.name} has asked for ${workingDay} to be regularised. Decide that ` +
+        `first — nothing is charged until then.`, "warning");
+      return;
+    }
+    if (reg && reg.status === 'Approved') {
+      showToast(
+        `${workingDay} was already settled by its regularisation — ` +
+        (reg.outcome === 'Leave'
+          ? `taken from their ${leaveType(reg.type_id)?.label || reg.type_id}.`
+          : 'recorded as 1 day of Loss of Pay.'), "info");
+      return;
+    }
+
     // A weekly off or a published holiday is not a day anybody failed to work,
     // so it is settled as neither a violation nor Loss of Pay. Without this,
     // every weekend would read as an absence.
@@ -4055,6 +4084,159 @@ export default function App({ session = null, profile = null, onSignOut = null }
       year, opening, accrued, used, adjusted,
       available: Math.round((opening + accrued + adjusted - used) * 10) / 10
     };
+  };
+
+  // -------------------------------------------------------------------------
+  // Regularisation
+  //
+  // A day with no login settles as Loss of Pay. A coach who worked and forgot
+  // the app, or was away for a reason nobody filed in time, had no way to say
+  // so — the only fix was an approver editing figures, which left no record of
+  // who decided what.
+  //
+  // Only the coach raises one, because it is their account of their own day.
+  // Super Admin, HR and the coach's own Reporting Manager decide it. On
+  // approval the day comes off the balance of the type they named if there is
+  // any left, and becomes Loss of Pay if there is not — the choice is made
+  // against the balance as it stands at that moment, and written down.
+  // -------------------------------------------------------------------------
+
+  const regularisationFor = (coachId, workingDay) =>
+    regularisations.find(r => r.coach_id === coachId && r.working_day === workingDay) || null;
+
+  /** Can this day be regularised at all, and if not, why not. */
+  const regularisableDay = (coach, workingDay) => {
+    if (!coach || !workingDay) return { ok: false, why: 'No day chosen.' };
+    if (workingDay >= todayWorkingDay) return { ok: false, why: 'Only a day that has finished can be regularised.' };
+    if (regularisationFor(coach.id, workingDay)) return { ok: false, why: 'Already raised for this day.' };
+    if (logsFor(coach.id, workingDay).length > 0) return { ok: false, why: 'There is a login on this day.' };
+    if (isWeeklyOffFor(coach, workingDay)) return { ok: false, why: 'That is their weekly off — nothing is owed.' };
+    if (holidayOn(coach, workingDay)) return { ok: false, why: 'That is a published holiday — nothing is owed.' };
+    const covered = leaveApplications.some(a => a.coach_id === coach.id
+      && a.status !== 'Rejected' && a.status !== 'Cancelled'
+      && a.from_date <= workingDay && a.to_date >= workingDay);
+    if (covered) return { ok: false, why: 'Leave already covers this day.' };
+    const settled = attendanceDays.find(d => d.coach_id === coach.id && d.working_day === workingDay);
+    if (settled) return { ok: false, why: 'The day is settled — ask HR to reopen it.' };
+    return { ok: true, why: null };
+  };
+
+  const raiseRegularisation = (coach, workingDay, typeId, reason) => {
+    // The coach's own account, so only the coach gives it. An approver who
+    // could raise and decide one would be both sides of the same decision.
+    if (currentRole !== 'Coach') {
+      showToast("Only a coach can raise a regularisation for their own day.", "error");
+      return false;
+    }
+    if (!coach || coach.id !== selfCoachId) {
+      showToast("You can only raise one against your own record.", "error");
+      return false;
+    }
+    const can = regularisableDay(coach, workingDay);
+    if (!can.ok) { showToast(can.why, "warning"); return false; }
+    if (!reason || !reason.trim()) {
+      showToast("Say what happened — the approver sees only this.", "error");
+      return false;
+    }
+
+    setRegularisations(prev => [...prev, {
+      id: `REG_${Date.now().toString().substring(6)}`,
+      coach_id: coach.id,
+      working_day: workingDay,
+      type_id: typeId,
+      reason: reason.trim(),
+      status: 'Pending',
+      outcome: null,
+      days: 1,
+      applied_at: new Date().toISOString(),
+      decided_by: null, decided_at: null, decision_note: null
+    }]);
+
+    logAudit("Regularisation Raised",
+      `${coach.name} (${coach.id}) asked for ${workingDay} to be regularised against ` +
+      `${leaveType(typeId)?.label || typeId} — "${reason.trim()}".`);
+    showToast("Sent. Nothing is charged for that day while it waits.", "success");
+    return true;
+  };
+
+  const decideRegularisation = (reg, decision) => {
+    const coach = coaches.find(c => c.id === reg.coach_id);
+    // Super Admin and HR see everyone; a Reporting Manager only their own squad.
+    const mine = currentRole === 'Reporting Manager'
+      ? coach?.reporting_manager_id === currentRmContext : true;
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole) || !mine) {
+      showToast("Your role cannot decide this regularisation.", "error");
+      return;
+    }
+    if (reg.status !== 'Pending') {
+      showToast("That one has already been decided.", "info");
+      return;
+    }
+
+    let note = null;
+    if (decision === 'Rejected') {
+      note = window.prompt("Why is this being refused? The coach sees this.");
+      if (!note || !note.trim()) { showToast("A refusal needs a reason.", "error"); return; }
+    }
+
+    let outcome = null;
+    if (decision === 'Approved') {
+      // Balance first, Loss of Pay only when there is none. Read now, not when
+      // it was raised: days may have been spent in between.
+      const bal = leaveBalanceFor(coach, reg.type_id);
+      const days = Number(reg.days) || 1;
+      outcome = bal.available >= days ? 'Leave' : 'LOP';
+
+      if (outcome === 'Leave') {
+        const { year } = leaveYearFor(new Date());
+        setLeaveBalances(prev => {
+          const has = prev.some(b => b.coach_id === coach.id
+            && b.leave_year === year && b.type_id === reg.type_id);
+          if (has) {
+            return prev.map(b => (b.coach_id === coach.id
+              && b.leave_year === year && b.type_id === reg.type_id)
+              ? { ...b, used: (Number(b.used) || 0) + days } : b);
+          }
+          // No row yet: the balance was accrued rather than stored, so write
+          // one that carries what was accrued and what has now been spent.
+          return [...prev, {
+            coach_id: coach.id, leave_year: year, type_id: reg.type_id,
+            opening: bal.opening, accrued: bal.accrued, adjusted: bal.adjusted, used: days
+          }];
+        });
+      } else {
+        // Onto the cycle the day falls in, which payroll already reads.
+        const patch = (list) => list.map(r => {
+          if (r.coach_id !== coach.id) return r;
+          if (reg.working_day < r.period_start || reg.working_day > r.period_end) return r;
+          return {
+            ...r,
+            lop_days: (Number(r.lop_days) || 0) + days,
+            unplanned_lop_days: (Number(r.unplanned_lop_days) || 0) + days
+          };
+        });
+        setCurrentMonth(patch);
+        setHistoricMonths(patch);
+      }
+    }
+
+    setRegularisations(prev => prev.map(r => r.id === reg.id
+      ? { ...r, status: decision, outcome,
+          decided_by: currentRole, decided_at: new Date().toISOString(),
+          decision_note: note }
+      : r));
+
+    logAudit(`Regularisation ${decision}`,
+      `${decision} ${reg.working_day} for ${coach?.name || reg.coach_id}` +
+      (outcome === 'Leave' ? ` — covered by ${leaveType(reg.type_id)?.label || reg.type_id}.`
+        : outcome === 'LOP' ? ` — no ${leaveType(reg.type_id)?.label || reg.type_id} left, so 1 day Loss of Pay.`
+        : `${note ? ` — ${note}` : ''}.`));
+
+    showToast(
+      decision === 'Rejected' ? "Refused. The day settles as it stood."
+        : outcome === 'Leave' ? `Approved — taken from their ${leaveType(reg.type_id)?.label || reg.type_id}.`
+        : "Approved — no balance left, so it is 1 day of Loss of Pay.",
+      decision === 'Rejected' ? "warning" : outcome === 'LOP' ? "danger" : "success");
   };
 
   /**
@@ -10822,6 +11004,77 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 })()}
 
 
+                {/* Regularisations. Raised only by the coach, decided only by
+                    Super Admin, HR, or that coach's own Reporting Manager. The
+                    decision is what turns the day into leave or into Loss of
+                    Pay, so what it will cost is said before it is taken. */}
+                {onTab('leave') && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                  const mineToDecide = regularisations.filter(r => {
+                    if (!inAttendanceScope(r.coach_id)) return false;
+                    if (coach && r.coach_id !== coach.id) return false;
+                    return r.status === 'Pending';
+                  }).sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
+                  if (mineToDecide.length === 0) return null;
+
+                  return (
+                    <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Regularisations · {mineToDecide.length}</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          Days with no login that the coach has accounted for
+                        </span>
+                      </div>
+                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                        Approving takes the day from the balance they named. If there is none left it
+                        becomes a day of Loss of Pay instead — the figures below say which it will be.
+                      </p>
+                      <section className="hb-queue">
+                        {mineToDecide.map(r => {
+                          const c = coaches.find(x => x.id === r.coach_id);
+                          const bal = leaveBalanceFor(c, r.type_id);
+                          const willBe = bal.available >= (Number(r.days) || 1) ? 'Leave' : 'LOP';
+                          const waited = Math.floor((Date.now() - new Date(r.applied_at)) / 86400000);
+                          return (
+                            <article className="card hb-qcard" key={r.id}>
+                              <div className="hb-qmain">
+                                <div className="hb-qwho">
+                                  <button className="linklike hb-qname"
+                                    onClick={() => openCoachOnAttendance(r.coach_id)}>
+                                    {c?.name || r.coach_id}
+                                  </button>
+                                  <span className="hb-qid">{r.coach_id}</span>
+                                  <span className={`hb-qage ${waited >= 3 ? 'is-late' : 'is-soon'}`}>
+                                    {waited === 0 ? 'raised today' : `raised ${waited} day${waited === 1 ? '' : 's'} ago`}
+                                  </span>
+                                </div>
+                                <p className="hb-qwhat">
+                                  <strong>No login on {new Date(`${r.working_day}T12:00:00`)
+                                    .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</strong>
+                                  {' · asks to use '}{leaveType(r.type_id)?.label || r.type_id}
+                                </p>
+                                <p className="hb-qreason">“{r.reason}”</p>
+                                <p className={willBe === 'LOP' ? 'hb-qcover' : 'hb-qok'}>
+                                  {willBe === 'Leave'
+                                    ? `They have ${bal.available} left, so approving takes 1 day of it.`
+                                    : `They have ${bal.available} left, so approving makes this 1 day of Loss of Pay.`}
+                                </p>
+                              </div>
+                              <div className="hb-qacts">
+                                <button className="hb-btn hb-btn-primary"
+                                  onClick={() => decideRegularisation(r, 'Approved')}>
+                                  {willBe === 'Leave' ? 'Approve as leave' : 'Approve as Loss of Pay'}
+                                </button>
+                                <button className="hb-btn hb-btn-danger"
+                                  onClick={() => decideRegularisation(r, 'Rejected')}>Refuse</button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </section>
+                    </div>
+                  );
+                })()}
+
                 {/* Every application across every coach, which is the view the
                     per-coach history cannot give and the pending queue only half
                     gives. A Reporting Manager sees their squad; HR and Super
@@ -11171,6 +11424,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                   return (
                     <div style={{ marginBottom: '1.5rem' }}>
+                      {/* Settling moved here off the coach card. It is the only
+                          control that writes a day down — a short day becomes a
+                          violation, a very short one becomes Loss of Pay — and it
+                          belongs beside the requests that change what a day was. */}
+                      {coach && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                        const settled = attendanceDays.some(d =>
+                          d.coach_id === coach.id && d.working_day === todayWorkingDay);
+                        const openNow = openLogFor(coach.id);
+                        const logged = logsFor(coach.id, todayWorkingDay);
+                        const why = settled ? 'Today is already settled'
+                          : openNow ? 'Still logged in — they must log out first'
+                          : logged.length === 0 ? 'Nothing logged today'
+                          : null;
+                        return (
+                          <div className="card" style={{ marginBottom: '1.25rem' }}>
+                            <div className="card-header-row">
+                              <h3>Settle today — {coach.name}</h3>
+                              <button className="btn btn-secondary" disabled={!!why}
+                                title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
+                                onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
+                                <i className="bx bx-check-double"></i> {why || 'Settle day'}
+                              </button>
+                            </div>
+                            <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                              A day waiting on a regularisation or a leave decision cannot be settled —
+                              nothing is charged while the coach waits on an answer.
+                            </p>
+                          </div>
+                        );
+                      })()}
+
                       {/* Metric summary banner */}
                       <div className="attendance-today" style={{ marginBottom: '1.25rem' }}>
                         <div>
@@ -12005,17 +12289,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   <button
                                     className={`btn ${coachPending.length > 0 ? 'btn-primary' : 'btn-secondary'}`}
                                     title={coachPending.length > 0
-                                      ? `${coachPending.length} pending regularization request(s) for ${coach.name}`
-                                      : `View or manage attendance regularization for ${coach.name}`}
-                                    onClick={() => {
-                                      if (coachPending.length > 0) {
-                                        openReviewRegularization(coachPending[0]);
-                                      } else if (coachRegs.length > 0) {
-                                        openReviewRegularization(coachRegs[0]);
-                                      } else {
-                                        openRaiseRegularization(coach, todayWorkingDay);
-                                      }
-                                    }}
+                                      ? `${coachPending.length} waiting — open the Regularizations tab`
+                                      : `Open the Regularizations tab`}
+                                    onClick={() => setAttendanceTab('regularization')}
                                   >
                                     <i className="bx bx-time-five"></i> Regularization
                                     {coachPending.length > 0 && (
@@ -12031,21 +12307,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         {coachPending.length} Pending
                                       </span>
                                     )}
-                                  </button>
-                                );
-                              })()}
-                              {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
-                                const settled = attendanceDays.some(d =>
-                                  d.coach_id === coach.id && d.working_day === todayWorkingDay);
-                                const why = settled ? 'Already settled'
-                                  : open ? 'Still logged in — log out first'
-                                  : todays.length === 0 ? 'Nothing logged today'
-                                  : null;
-                                return (
-                                  <button className="btn btn-secondary" disabled={!!why}
-                                    title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
-                                    onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
-                                    <i className="bx bx-check-double"></i> {why || 'Settle day'}
                                   </button>
                                 );
                               })()}
@@ -12236,6 +12497,84 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             {logs.length === 0 && (
                               <p className="calc-notes">Nothing was logged on this day.</p>
                             )}
+
+                            {/* A day with no login costs a day's pay once it is
+                                settled. This is the coach's chance to say what
+                                actually happened, before anyone settles it. */}
+                            {logs.length === 0 && (() => {
+                              const can = regularisableDay(coach, shown);
+                              const existing = regularisationFor(coach.id, shown);
+                              const types = applicableLeaveTypes(coach).filter(t => t.id !== 'LOP');
+                              if (existing) {
+                                return (
+                                  <div className={`hb-reg-note hb-reg-${existing.status.toLowerCase()}`}>
+                                    <strong>
+                                      {existing.status === 'Pending' ? 'Regularisation waiting on a decision'
+                                        : existing.status === 'Approved'
+                                          ? (existing.outcome === 'Leave'
+                                              ? `Approved — taken from your ${leaveType(existing.type_id)?.label || existing.type_id}`
+                                              : 'Approved — no balance left, so this is 1 day of Loss of Pay')
+                                          : 'Refused'}
+                                    </strong>
+                                    <span>
+                                      “{existing.reason}”
+                                      {existing.decision_note ? ` · ${existing.decision_note}` : ''}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                              if (currentRole !== 'Coach') {
+                                return (
+                                  <p className="calc-notes">
+                                    Only {coach.name.split(' ')[0]} can raise a regularisation for this day.
+                                  </p>
+                                );
+                              }
+                              if (!can.ok) return <p className="calc-notes">{can.why}</p>;
+                              return (
+                                <div className="hb-reg-form">
+                                  <strong>No login on this day — say what happened</strong>
+                                  <span>
+                                    If it is approved it comes off the balance you name. If you have none
+                                    left, the day becomes Loss of Pay.
+                                  </span>
+                                  <div className="hb-reg-fields">
+                                    <label className="hb-f">
+                                      <span>Cover it with</span>
+                                      <select
+                                        value={regDraft.type || types[0]?.id || ''}
+                                        onChange={(e) => setRegDraft(d => ({ ...d, type: e.target.value }))}
+                                      >
+                                        {types.map(t => {
+                                          const b = leaveBalanceFor(coach, t.id);
+                                          return (
+                                            <option key={t.id} value={t.id}>
+                                              {t.label} — {b.available} left
+                                            </option>
+                                          );
+                                        })}
+                                      </select>
+                                    </label>
+                                    <label className="hb-f hb-f-grow">
+                                      <span>What happened</span>
+                                      <input
+                                        value={regDraft.reason}
+                                        placeholder="Worked but forgot to log in, unwell, travelling…"
+                                        onChange={(e) => setRegDraft(d => ({ ...d, reason: e.target.value }))}
+                                      />
+                                    </label>
+                                    <button
+                                      className="hb-btn hb-btn-primary"
+                                      onClick={() => {
+                                        const ok = raiseRegularisation(
+                                          coach, shown, regDraft.type || types[0]?.id, regDraft.reason);
+                                        if (ok) setRegDraft({ type: '', reason: '' });
+                                      }}
+                                    >Send for approval</button>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })()}

@@ -4616,3 +4616,35 @@ form {
   font-weight: 700; color: var(--text-secondary);
 }
 .card-feature .hb-queue .hb-foot { padding: 0.25rem 0 0; }
+
+/* Regularisation. The coach's account of a day with no login, and the decision
+   that turns it into leave or into Loss of Pay. */
+.hb-reg-form {
+  margin-top: 0.9rem; padding: 1rem 1.1rem; border-radius: 12px;
+  background: var(--brand-cream); border: 1px solid var(--border-strong);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.hb-reg-form > strong { font-size: 0.95rem; }
+.hb-reg-form > span { font-size: 0.84rem; color: var(--text-secondary); }
+.hb-reg-fields {
+  display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: flex-end; margin-top: 0.5rem;
+}
+.hb-reg-fields .hb-f { flex: 0 1 auto; min-width: 180px; }
+.hb-reg-fields .hb-f-grow { flex: 1 1 260px; }
+.hb-reg-fields .hb-f span { font-size: 0.8rem; font-weight: 600; }
+.hb-reg-fields select, .hb-reg-fields input {
+  min-height: 42px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 11px; width: 100%; box-sizing: border-box;
+  font: 500 0.9rem var(--font-body); color: var(--text-primary);
+}
+.hb-reg-fields .hb-btn { min-height: 42px; }
+.hb-reg-note {
+  margin-top: 0.9rem; padding: 0.85rem 1.05rem; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 3px; border: 1px solid;
+}
+.hb-reg-note strong { font-size: 0.9rem; }
+.hb-reg-note span { font-size: 0.83rem; }
+.hb-reg-pending { background: rgba(201,157,93,0.2); border-color: rgba(201,157,93,0.5); color: #6b4a14; }
+.hb-reg-approved { background: rgba(111,142,124,0.18); border-color: rgba(111,142,124,0.45); color: #3b5a49; }
+.hb-reg-rejected { background: rgba(159,64,34,0.14); border-color: rgba(159,64,34,0.4); color: var(--brand-rust); }
+.hb-qok { margin: 5px 0 0; font-size: 0.82rem; font-weight: 700; color: #3b5a49; }
