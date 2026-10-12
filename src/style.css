@@ -1817,6 +1817,80 @@ button, input, select, textarea {
   border-left: 2px solid var(--accent-amber);
 }
 
+/* Probation Period toggle & duration calculation styling */
+.probation-toggle-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.probation-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-main);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.probation-pill-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.probation-pill-btn.active-yes {
+  background: var(--brand-rust);
+  color: #fff;
+  border-color: var(--brand-rust);
+  box-shadow: 0 1px 3px rgba(159, 64, 34, 0.25);
+}
+.probation-pill-btn.active-no {
+  background: var(--brand-brown);
+  color: #fff;
+  border-color: var(--brand-brown);
+}
+.probation-presets-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+  flex-wrap: wrap;
+}
+.probation-quick-btn {
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--wash);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.probation-quick-btn:hover {
+  background: var(--wash-strong);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.probation-calc-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--wash);
+  border-left: 3px solid var(--brand-rust);
+}
+.probation-calc-days {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--brand-rust);
+}
+
 .detail-cert-list {
   list-style: none;
   display: flex;
@@ -4526,3 +4600,19 @@ form {
 .cell-input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
 .score-tracker-table .btn-row-icon[disabled] { opacity: 0.35; cursor: not-allowed; }
 .score-tracker-table .linklike { font-weight: 600; text-align: left; }
+
+/* The register holds both jobs: the ones waiting as cards, the decided ones as
+   the table. One filter set feeds both, so a preset narrows them together. */
+.card-feature .hb-queue { margin: 1rem 0 0; gap: 0.7rem; }
+.card-feature .hb-queue-head { padding: 0; }
+.card-feature .hb-queue-head h4 {
+  margin: 0; font-family: var(--font-title); font-size: 1.05rem; font-weight: 700;
+}
+.card-feature .hb-qcard { border-color: var(--border-strong); }
+.hb-qname { font-size: 1rem; font-weight: 700; }
+.hb-decided { margin-top: 1.5rem; }
+.hb-decided-head {
+  margin: 0 0 0.6rem; font-family: var(--font-title); font-size: 1rem;
+  font-weight: 700; color: var(--text-secondary);
+}
+.card-feature .hb-queue .hb-foot { padding: 0.25rem 0 0; }

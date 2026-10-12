@@ -58,7 +58,7 @@ const PERIOD_COLS = [
 const COACH_COLS = [
   'id', 'name', 'email', 'phone', 'gender', 'variant_id', 'coach_type',
   // Stage, working pattern and centre, for attendance and leave.
-  'employment_stage', 'training_end_date', 'probation_end_date',
+  'employment_stage', 'training_end_date', 'probation_start_date', 'probation_end_date',
   'weekly_off_day', 'work_mode', 'centre_name', 'centre_lat', 'centre_lng',
   'coach_category', 'internal_designation', 'date_of_joining',
   'date_of_first_relevant_certification', 'freelance_past_exp_with_document',
@@ -85,7 +85,7 @@ const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
   'per_session_override', 'fixed_pay_override',
-  'training_end_date', 'probation_end_date', 'weekly_off_day',
+  'training_end_date', 'probation_start_date', 'probation_end_date', 'weekly_off_day',
   'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'
 ];
 

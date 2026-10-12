@@ -279,6 +279,39 @@ const overrideKeys = (overrides) => Object.keys(overrides || {}).filter(k => !k.
 // out from them. The same map drives the fields in Record mode and the cells
 // you can edit in the full table, so the two can never offer different ones.
 // `key` is the draft key, which is not always the column key.
+// Where a coach sits in their first year. 'Probation' is the one the Profile
+// card asks dates for; the other two carry no span of their own.
+const EMPLOYMENT_STAGES = ['Training', 'Probation', 'Confirmed'];
+
+// The probation span, worked out rather than stored: a date range is two facts
+// and a length, and storing the length as a third would let them disagree.
+// Counted inclusively — a 1 Jan to 31 Mar probation is 90 days, not 89.
+const probationSpan = (coach) => {
+  if (!coach) return null;
+  const onProbation = (coach.employment_stage || '') === 'Probation';
+  const from = coach.probation_start_date || null;
+  const to = coach.probation_end_date || null;
+  if (!onProbation && !from && !to) return null;
+
+  const DAY = 86400000;
+  const midday = (d) => new Date(`${d}T12:00:00`);
+  const rawDiff = from && to ? Math.round((midday(to) - midday(from)) / DAY) + 1 : null;
+  const totalDays = rawDiff != null && rawDiff > 0 ? rawDiff : null;
+  const elapsed = from
+    ? Math.min(Math.round((Date.now() - midday(from)) / DAY) + 1, totalDays ?? Infinity) : null;
+  const daysLeft = to
+    ? Math.round((midday(to) - Date.now()) / DAY) : null;
+
+  return {
+    onProbation, from, to, totalDays,
+    elapsed: elapsed != null ? Math.max(elapsed, 0) : null,
+    daysLeft,
+    over: daysLeft != null && daysLeft < 0,
+    incomplete: onProbation && (!from || !to),
+    invalidRange: rawDiff != null && rawDiff <= 0
+  };
+};
+
 const TRACKER_MANUAL_FIELDS = {
   exp_doc:             { draft: 'exp_doc',             max: null, hint: 'years, with documents' },
   exp_nodoc:           { draft: 'exp_nodoc',           max: null, hint: 'years, counted at 50%' },
@@ -1814,6 +1847,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Inline editing of the coach's profile and experience cards.
   const [editingCoachCard, setEditingCoachCard] = useState(null); // 'profile' | 'experience'
   const [coachDraft, setCoachDraft] = useState({});
+
+  // Change Leave Type modal state
+  const [changeLeaveTarget, setChangeLeaveTarget] = useState(null);
+  const [selectedNewLeaveType, setSelectedNewLeaveType] = useState("");
+  const [changeLeaveNote, setChangeLeaveNote] = useState("");
+
+  // Partial Leave Approval modal state
+  const [partialLeaveTarget, setPartialLeaveTarget] = useState(null);
+  const [partialApprovedDays, setPartialApprovedDays] = useState(0.5);
+  const [partialLeaveNote, setPartialLeaveNote] = useState("");
 
   const [scoreSearch, setScoreSearch] = useState("");
   const [scoreMonthFilter, setScoreMonthFilter] = useState("All");
@@ -3989,38 +4032,49 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * arbitrary without it.
    */
   const handlePartialApproval = (application) => {
-    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) {
+      showToast("Your role cannot decide leave applications.", "error");
+      return;
+    }
+    const totalDays = Number(application.days) || 1;
+    const defaultApproved = totalDays > 1 ? Math.floor(totalDays / 2) || 0.5 : 0.5;
+    setPartialLeaveTarget(application);
+    setPartialApprovedDays(defaultApproved);
+    setPartialLeaveNote("");
+    setActiveModal('partial-leave');
+  };
+
+  const handleConfirmPartialApproval = (e) => {
+    if (e) e.preventDefault();
+    if (!partialLeaveTarget) return;
+    const application = partialLeaveTarget;
     const coach = coaches.find(c => c.id === application.coach_id);
+    const totalDays = Number(application.days);
+    const approved = Number(partialApprovedDays);
 
-    const raw = window.prompt(
-      `${coach?.name || application.coach_id} asked for ${application.days} day(s) ` +
-      `${leaveType(application.type_id)?.label}, ${application.from_date} to ${application.to_date}.\n\n` +
-      `How many days are you approving?`,
-      String(application.days));
-    if (raw === null) return;
-
-    const approved = Number(raw);
-    if (!Number.isFinite(approved) || approved <= 0 || approved > Number(application.days)) {
-      showToast(`Enter a number between 0.5 and ${application.days}.`, "error");
+    if (!Number.isFinite(approved) || approved <= 0 || approved > totalDays) {
+      showToast(`Enter an approved amount between 0.5 and ${totalDays}.`, "error");
       return;
     }
-    if (approved === Number(application.days)) {
+
+    if (approved === totalDays) {
       handleLeaveDecision(application, 'Approved');
+      setActiveModal(null);
+      setPartialLeaveTarget(null);
       return;
     }
 
-    const note = window.prompt(
-      `Why are the other ${Math.round((application.days - approved) * 10) / 10} day(s) refused? ` +
-      `The coach sees this.`);
-    if (!note || !note.trim()) {
-      showToast("Refusing part of an application needs a reason.", "error");
+    if (!partialLeaveNote || !partialLeaveNote.trim()) {
+      showToast("Refusing part of an application requires a reason.", "error");
       return;
     }
 
-    const returned = Math.round((Number(application.days) - approved) * 10) / 10;
+    const note = partialLeaveNote.trim();
+    const returned = Math.round((totalDays - approved) * 10) / 10;
+
     setLeaveApplications(prev => prev.map(a => a.id === application.id
       ? { ...a, status: 'Partially_Approved', approved_days: approved,
-          decided_by: currentRole, decided_at: new Date().toISOString(), decision_note: note.trim() }
+          decided_by: currentRole, decided_at: new Date().toISOString(), decision_note: note }
       : a));
     setLeaveBalances(prev => prev.map(b =>
       (b.coach_id === application.coach_id && b.type_id === application.type_id)
@@ -4029,36 +4083,57 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     logAudit("Leave Partially Approved",
       `${approved} of ${application.days} day(s) ${leaveType(application.type_id)?.label} approved for ` +
-      `${coach?.name || application.coach_id}; ${returned} returned — ${note.trim()}`);
-    showToast(`${approved} day(s) approved, ${returned} returned to the balance.`, "info");
+      `${coach?.name || application.coach_id}; ${returned} returned — ${note}`);
+    showToast(`${approved} day(s) approved, ${returned} returned to balance.`, "info");
+
+    setActiveModal(null);
+    setPartialLeaveTarget(null);
+    setPartialLeaveNote("");
   };
 
   /**
    * Change what kind of leave this is, which is how a refused Paid Leave
    * becomes Loss of Pay rather than a flat no. The old type's balance is
    * returned and the new one charged, so neither is left wrong.
+   * Opens the in-app modal dropdown instead of window.prompt.
    */
   const handleLeaveTypeChange = (application) => {
-    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) {
+      showToast("Your role cannot decide leave applications.", "error");
+      return;
+    }
     const coach = coaches.find(c => c.id === application.coach_id);
     const options = applicableLeaveTypes(coach).filter(t => t.id !== application.type_id);
-
-    const raw = window.prompt(
-      `Change ${leaveType(application.type_id)?.label} to which type?\n\n` +
-      options.map((t, i) => `${i + 1}. ${t.label}`).join('\n') +
-      `\n\nEnter a number.`);
-    if (raw === null) return;
-    const picked = options[Number(raw) - 1];
-    if (!picked) { showToast("That is not one of the options.", "error"); return; }
-
-    const note = window.prompt(
-      `Why is this becoming ${picked.label}? The coach is told, and sees this.`);
-    if (!note || !note.trim()) {
-      showToast("Changing the leave type needs a reason.", "error");
+    if (!options.length) {
+      showToast("No other leave types are available for this coach.", "warning");
       return;
     }
 
+    setChangeLeaveTarget(application);
+    setSelectedNewLeaveType(options[0]?.id || "");
+    setChangeLeaveNote("");
+    setActiveModal('change-leave-type');
+  };
+
+  const handleConfirmLeaveTypeChange = (e) => {
+    if (e) e.preventDefault();
+    if (!changeLeaveTarget) return;
+    const application = changeLeaveTarget;
+    const coach = coaches.find(c => c.id === application.coach_id);
+    const options = applicableLeaveTypes(coach).filter(t => t.id !== application.type_id);
+    const picked = options.find(t => t.id === selectedNewLeaveType);
+    if (!picked) {
+      showToast("Please choose a valid leave type.", "error");
+      return;
+    }
+    if (!changeLeaveNote || !changeLeaveNote.trim()) {
+      showToast("Changing the leave type requires a reason.", "error");
+      return;
+    }
+
+    const note = changeLeaveNote.trim();
     const days = Number(application.days);
+
     setLeaveBalances(prev => {
       // Back to the type it came from, charged to the one it became.
       let next = prev.map(b => (b.coach_id === application.coach_id && b.type_id === application.type_id)
@@ -4078,13 +4153,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setLeaveApplications(prev => prev.map(a => a.id === application.id
       ? { ...a, type_id: picked.id, status: 'Approved', approved_days: days,
           decided_by: currentRole, decided_at: new Date().toISOString(),
-          decision_note: `Changed from ${leaveType(application.type_id)?.label} — ${note.trim()}` }
+          decision_note: `Changed from ${leaveType(application.type_id)?.label} — ${note}` }
       : a));
 
     logAudit("Leave Type Changed",
       `${coach?.name || application.coach_id}: ${leaveType(application.type_id)?.label} → ${picked.label} ` +
-      `for ${days} day(s) — ${note.trim()}`);
+      `for ${days} day(s) — ${note}`);
     showToast(`Approved as ${picked.label}. The coach is told why.`, "info");
+
+    setActiveModal(null);
+    setChangeLeaveTarget(null);
+    setChangeLeaveNote("");
   };
 
   const handleLeaveDecision = (application, decision) => {
@@ -4469,10 +4548,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
         }));
     }
 
-    if (card === 'profile' && updated.coach_type !== coach.coach_type) {
-      const typeConfig = COACH_TYPES.find(t => t.value === updated.coach_type);
-      if (typeConfig && updated.variant_id === coach.variant_id) {
-        updated.variant_id = typeConfig.variant_id;
+    if (card === 'profile') {
+      if (updated.coach_type !== coach.coach_type) {
+        const typeConfig = COACH_TYPES.find(t => t.value === updated.coach_type);
+        if (typeConfig && updated.variant_id === coach.variant_id) {
+          updated.variant_id = typeConfig.variant_id;
+        }
+      }
+      if (updated.employment_stage !== 'Probation') {
+        updated.probation_start_date = null;
+        updated.probation_end_date = null;
       }
     }
 
@@ -8225,6 +8310,143 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             </div>
                             )
                           )}
+                          {/* Probation Period setting:
+                              Clear Yes / No selection. Clicking Yes displays
+                              from-to dates and automatically calculates the days. */}
+                          {(() => {
+                            const currentStage = coachDraft.employment_stage ?? coach.employment_stage;
+                            const isOnProbation = currentStage === 'Probation' || Boolean(coachDraft.probation_start_date || coachDraft.probation_end_date);
+                            const from = coachDraft.probation_start_date ?? coach.probation_start_date ?? '';
+                            const to = coachDraft.probation_end_date ?? coach.probation_end_date ?? '';
+                            
+                            const sp = probationSpan({
+                              employment_stage: 'Probation',
+                              probation_start_date: from || null,
+                              probation_end_date: to || null
+                            });
+
+                            return (
+                              <>
+                                {editItem(
+                                  "Probation Period",
+                                  <div className="probation-toggle-pills">
+                                    <button
+                                      type="button"
+                                      className={`probation-pill-btn ${isOnProbation ? 'active-yes' : ''}`}
+                                      onClick={() => {
+                                        setCoachDraft(prev => ({
+                                          ...prev,
+                                          employment_stage: 'Probation',
+                                          probation_start_date: prev.probation_start_date || prev.date_of_joining || new Date().toISOString().slice(0, 10)
+                                        }));
+                                      }}
+                                    >
+                                      <i className="bx bx-check"></i> Yes
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`probation-pill-btn ${!isOnProbation ? 'active-no' : ''}`}
+                                      onClick={() => {
+                                        setCoachDraft(prev => ({
+                                          ...prev,
+                                          employment_stage: 'Confirmed',
+                                          probation_start_date: null,
+                                          probation_end_date: null
+                                        }));
+                                      }}
+                                    >
+                                      <i className="bx bx-x"></i> No
+                                    </button>
+                                  </div>
+                                )}
+
+                                {isOnProbation && (
+                                  <>
+                                    {editItem(
+                                      "Probation From",
+                                      <input
+                                        type="date"
+                                        className="detail-input"
+                                        value={coachDraft.probation_start_date ?? ""}
+                                        onChange={(e) => setCoachField("probation_start_date", e.target.value)}
+                                      />
+                                    )}
+
+                                    {editItem(
+                                      "Probation To",
+                                      <div>
+                                        <input
+                                          type="date"
+                                          className="detail-input"
+                                          value={coachDraft.probation_end_date ?? ""}
+                                          onChange={(e) => setCoachField("probation_end_date", e.target.value)}
+                                        />
+                                        {from && (
+                                          <div className="probation-presets-row">
+                                            {[
+                                              { label: '+30d', days: 30 },
+                                              { label: '+60d', days: 60 },
+                                              { label: '+90d (3m)', days: 90 },
+                                              { label: '+180d (6m)', days: 180 },
+                                            ].map(p => (
+                                              <button
+                                                key={p.days}
+                                                type="button"
+                                                className="probation-quick-btn"
+                                                title={`Set end date to ${p.days} days from start`}
+                                                onClick={() => {
+                                                  const start = new Date(`${from}T12:00:00`);
+                                                  const end = new Date(start.getTime() + (p.days - 1) * 86400000);
+                                                  setCoachField("probation_end_date", end.toISOString().slice(0, 10));
+                                                }}
+                                              >
+                                                {p.label}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {editItem(
+                                      "Probation Days",
+                                      (() => {
+                                        if (!from || !to) {
+                                          return (
+                                            <span className="detail-readonly">
+                                              <span className="text-muted">
+                                                {!from && !to ? 'Set start and end dates' : !from ? 'Set start date' : 'Set end date'}
+                                              </span>
+                                              <small>Calculated automatically</small>
+                                            </span>
+                                          );
+                                        }
+                                        if (sp?.invalidRange) {
+                                          return (
+                                            <div className="probation-calc-box" style={{ borderColor: 'var(--brand-rust)' }}>
+                                              <strong style={{ color: 'var(--brand-rust)', fontSize: '0.85rem' }}>Invalid Date Range</strong>
+                                              <small className="text-muted">End date must be on or after start date</small>
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <div className="probation-calc-box">
+                                            <span className="probation-calc-days">
+                                              {sp?.totalDays} {sp?.totalDays === 1 ? 'day' : 'days'}
+                                            </span>
+                                            <small className="text-muted">
+                                              {sp?.totalDays >= 30 ? `~${Math.round(sp.totalDays / 30)} month${Math.round(sp.totalDays / 30) > 1 ? 's' : ''} · ` : ''}
+                                              counted inclusively
+                                            </small>
+                                          </div>
+                                        );
+                                      })()
+                                    )}
+                                  </>
+                                )}
+                              </>
+                            );
+                          })()}
                           {editItem("Status", selectField("status", COACH_STATUSES))}
                         </>
                       ) : (
@@ -8250,6 +8472,42 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 : 'None selected'
                           )}
                           {detailRow("Status", coach.status)}
+                          {/* Probation details in Profile View */}
+                          {(() => {
+                            const isProbation = (coach.employment_stage === 'Probation') || Boolean(coach.probation_start_date || coach.probation_end_date);
+                            if (!isProbation) {
+                              return detailRow("Probation Period", "No");
+                            }
+
+                            const sp = probationSpan(coach);
+                            const fmt = (d) => d ? new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
+                            const datesText = sp?.from && sp?.to
+                              ? `${fmt(sp.from)} → ${fmt(sp.to)}`
+                              : sp?.from
+                                ? `${fmt(sp.from)} → end not set`
+                                : sp?.to
+                                  ? `start not set → ${fmt(sp.to)}`
+                                  : 'Dates not set';
+
+                            const lengthText = (() => {
+                              if (sp?.totalDays == null) return '—';
+                              if (sp.over) {
+                                return `${sp.totalDays} days — ended ${Math.abs(sp.daysLeft)} day${Math.abs(sp.daysLeft) === 1 ? '' : 's'} ago, awaiting HR`;
+                              }
+                              if (sp.daysLeft != null) {
+                                return `${sp.totalDays} days — day ${sp.elapsed}, ${sp.daysLeft} left`;
+                              }
+                              return `${sp.totalDays} days`;
+                            })();
+
+                            return (
+                              <>
+                                {detailRow("Probation Period", <span className="badge badge-warning" style={{ fontWeight: 600 }}>Yes</span>)}
+                                {detailRow("Probation Dates", datesText)}
+                                {detailRow("Probation Days", lengthText)}
+                              </>
+                            );
+                          })()}
                         </>
                       )}
                     </div>
@@ -10394,111 +10652,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 })()}
 
 
-                {/* The decision queue. The register below is still the record
-                    of every application; this is only the ones waiting, oldest
-                    first, with the four decisions spelled out instead of hidden
-                    behind row icons. Each button calls the same handler the
-                    register's icons call. */}
-                {onTab('leave') && canApprove && (() => {
-                  const waiting = leaveApplications
-                    .filter(a => a.status === 'Pending' && inAttendanceScope(a.coach_id))
-                    .filter(a => !coach || a.coach_id === coach.id)
-                    .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
-
-                  const dayFmt = (d) =>
-                    new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-                  const todayISO = new Date().toISOString().slice(0, 10);
-
-                  return (
-                    <div className="hb-leave-wrap">
-                      <section className="hb-queue" aria-label="Leave waiting on you">
-                        <div className="hb-queue-head">
-                          <h3>Waiting on you · {waiting.length}</h3>
-                          <span>Oldest first. Decisions are due within 3 working days.</span>
-                        </div>
-
-                        {waiting.length === 0 && (
-                          <div className="card hb-queue-empty">
-                            <strong>Nothing is waiting.</strong>
-                            <span>
-                              Every application {coach ? `from ${coach.name} ` : ''}has been decided.
-                              The register below has the full history.
-                            </span>
-                          </div>
-                        )}
-
-                        {waiting.map(a => {
-                          const c = coaches.find(x => x.id === a.coach_id);
-                          const waited = Math.floor((Date.now() - new Date(a.applied_at)) / 86400000);
-                          const overdue = waited >= 3;
-                          const span = a.from_date === a.to_date
-                            ? `${dayFmt(a.from_date)}${a.from_date === todayISO ? ' (today)' : ''}`
-                            : `${dayFmt(a.from_date)} – ${dayFmt(a.to_date)}`;
-                          const days = Number(a.approved_days ?? a.days ?? 0);
-                          // The cover the first day of this leave would be left
-                          // with, so a thin day is visible before it is agreed.
-                          const thin = coverCheck(a.from_date)
-                            .find(x => x.off > 0 && x.working > 0 && x.working < x.total);
-                          return (
-                            <article className="card hb-qcard" key={a.id}>
-                              <div className="hb-qmain">
-                                <div className="hb-qwho">
-                                  <strong>{c?.name || a.coach_id}</strong>
-                                  {c && <em>{c.coach_type || findVariant(variants, c.variant_id).discipline}</em>}
-                                  <span className="hb-qid">{a.coach_id}</span>
-                                  <span className={`hb-qage ${overdue ? 'is-late' : 'is-soon'}`}>
-                                    {overdue
-                                      ? `${waited} day${waited === 1 ? '' : 's'} overdue`
-                                      : waited === 0 ? 'applied today' : `applied ${waited} day${waited === 1 ? '' : 's'} ago`}
-                                  </span>
-                                </div>
-                                <p className="hb-qwhat">
-                                  <strong>{leaveType(a.type_id)?.label || a.type_id}</strong>
-                                  {' · '}{span}{' · '}{days} day{days === 1 ? '' : 's'}
-                                  {a.half_day ? ' · half day' : ''}
-                                </p>
-                                <p className="hb-qreason">{a.reason ? `“${a.reason}”` : '“No reason given”'}</p>
-                                {thin && (
-                                  <p className="hb-qcover">
-                                    {thin.discipline} is down to {thin.working} of {thin.total} on {dayFmt(a.from_date)}
-                                  </p>
-                                )}
-                              </div>
-                              <div className="hb-qacts">
-                                <button className="hb-btn hb-btn-primary"
-                                        onClick={() => handleLeaveDecision(a, 'Approved')}>Approve</button>
-                                <button className="hb-btn"
-                                        onClick={() => handlePartialApproval(a)}>Part of it</button>
-                                <button className="hb-btn"
-                                        onClick={() => handleLeaveTypeChange(a)}>As another type</button>
-                                <button className="hb-btn hb-btn-danger"
-                                        onClick={() => handleLeaveDecision(a, 'Rejected')}>Reject</button>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </section>
-
-                      <aside className="hb-leave-rail">
-                        <div className="card">
-                          <strong>How a decision works</strong>
-                          <p>
-                            Approving part of it, or as another type, needs a comment. Rejecting needs a
-                            reason, and the coach can appeal. Unused days go back to their balance.
-                          </p>
-                        </div>
-                        <div className="card">
-                          <strong>Why decide first</strong>
-                          <p>
-                            A day holding an undecided request cannot be settled, and nobody is marked
-                            Loss of Pay while they wait — so the cycle cannot close until this list is empty.
-                          </p>
-                        </div>
-                      </aside>
-                    </div>
-                  );
-                })()}
-
                 {/* Every application across every coach, which is the view the
                     per-coach history cannot give and the pending queue only half
                     gives. A Reporting Manager sees their squad; HR and Super
@@ -10519,6 +10672,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       && Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) < 3) return false;
                     return true;
                   }).sort((a, b) => b.from_date.localeCompare(a.from_date));
+
+                  // Waiting and decided are two different jobs, so they are
+                  // shown two different ways off one filtered set: the ones
+                  // needing a decision as cards, oldest first, and the rest as
+                  // the table. Both honour every filter above.
+                  const scopedWaiting = scoped
+                    .filter(a => a.status === 'Pending')
+                    .sort((x, y) => new Date(x.applied_at) - new Date(y.applied_at));
+                  const scopedDecided = scoped.filter(a => a.status !== 'Pending');
 
                   const totalDays = scoped
                     .filter(a => a.status === 'Approved' || a.status === 'Partially_Approved')
@@ -10628,10 +10790,90 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </div>
                       </div>
 
-                      {scoped.length === 0 ? (
+                      {scoped.length === 0 && (
                         <p className="text-muted">Nothing matches those filters.</p>
-                      ) : (
-                        <div className="table-container">
+                      )}
+
+                      {/* Waiting on you, as cards: the four decisions named
+                          rather than four row icons, with how long it has sat
+                          and what the cover looks like on the first day off. */}
+                      {scopedWaiting.length > 0 && (
+                        <section className="hb-queue" aria-label="Leave waiting on you">
+                          <div className="hb-queue-head">
+                            <h4>Waiting on you · {scopedWaiting.length}</h4>
+                            <span>Oldest first. Decisions are due within 3 working days.</span>
+                          </div>
+                          {scopedWaiting.map(a => {
+                            const c = coaches.find(x => x.id === a.coach_id);
+                            const waited = a.applied_at
+                              ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : 0;
+                            const overdue = waited >= 3;
+                            const dayFmt = (d) => new Date(`${d}T12:00:00`)
+                              .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                            const todayISO = new Date().toISOString().slice(0, 10);
+                            const span = a.from_date === a.to_date
+                              ? `${dayFmt(a.from_date)}${a.from_date === todayISO ? ' (today)' : ''}`
+                              : `${dayFmt(a.from_date)} – ${dayFmt(a.to_date)}`;
+                            const days = Number(a.approved_days ?? a.days ?? 0);
+                            const thin = coverCheck(a.from_date)
+                              .find(x => x.off > 0 && x.working > 0 && x.working < x.total);
+                            return (
+                              <article className="card hb-qcard" key={a.id}>
+                                <div className="hb-qmain">
+                                  <div className="hb-qwho">
+                                    <button className="linklike hb-qname"
+                                      title="Open this coach below — attendance, balances and history"
+                                      onClick={() => openCoachOnAttendance(a.coach_id)}>
+                                      {c?.name || a.coach_id}
+                                    </button>
+                                    {c && <em>{c.coach_type || findVariant(variants, c.variant_id).discipline}</em>}
+                                    <span className="hb-qid">{a.coach_id}</span>
+                                    <span className={`hb-qage ${overdue ? 'is-late' : 'is-soon'}`}>
+                                      {overdue
+                                        ? `${waited} day${waited === 1 ? '' : 's'} overdue`
+                                        : waited === 0 ? 'applied today'
+                                          : `applied ${waited} day${waited === 1 ? '' : 's'} ago`}
+                                    </span>
+                                  </div>
+                                  <p className="hb-qwhat">
+                                    <strong>{leaveType(a.type_id)?.label || a.type_id}</strong>
+                                    {' · '}{span}{' · '}{days} day{days === 1 ? '' : 's'}
+                                    {a.half_day ? ' · half day' : ''}
+                                  </p>
+                                  <p className="hb-qreason">{a.reason ? `“${a.reason}”` : '“No reason given”'}</p>
+                                  {thin && (
+                                    <p className="hb-qcover">
+                                      {thin.discipline} is down to {thin.working} of {thin.total} on {dayFmt(a.from_date)}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="hb-qacts">
+                                  <button className="hb-btn hb-btn-primary"
+                                    onClick={() => handleLeaveDecision(a, 'Approved')}>Approve</button>
+                                  <button className="hb-btn"
+                                    onClick={() => handlePartialApproval(a)}>Part of it</button>
+                                  <button className="hb-btn"
+                                    onClick={() => handleLeaveTypeChange(a)}>As another type</button>
+                                  <button className="hb-btn hb-btn-danger"
+                                    onClick={() => handleLeaveDecision(a, 'Rejected')}>Reject</button>
+                                </div>
+                              </article>
+                            );
+                          })}
+                          <p className="hb-foot">
+                            Approving part of it, or as another type, needs a comment. Rejecting needs a
+                            reason, and the coach can appeal. Unused days go back to their balance.
+                          </p>
+                        </section>
+                      )}
+
+                      {scopedDecided.length > 0 && (
+                        <div className="table-container hb-decided">
+                          {scopedWaiting.length > 0 && (
+                            <h4 className="hb-decided-head">
+                              Already decided · {scopedDecided.length}
+                            </h4>
+                          )}
                           <table className="data-table">
                             <thead>
                               <tr>
@@ -10643,7 +10885,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </tr>
                             </thead>
                             <tbody>
-                              {scoped.map(a => {
+                              {scopedDecided.map(a => {
                                 const c = coaches.find(x => x.id === a.coach_id);
                                 const waited = a.applied_at
                                   ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : null;
@@ -13871,6 +14113,262 @@ HB+_030,185,0,96`} />
                 <div className="modal-footer" style={{ marginTop: '1.5rem' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setActiveModal(null)}>Cancel</button>
                   <button type="submit" className="btn btn-primary">File Appeal</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal: Change Leave Type */}
+      {activeModal === 'change-leave-type' && changeLeaveTarget && (() => {
+        const app = changeLeaveTarget;
+        const coach = coaches.find(c => c.id === app.coach_id);
+        const options = applicableLeaveTypes(coach).filter(t => t.id !== app.type_id);
+        const currentType = leaveType(app.type_id);
+        const picked = options.find(t => t.id === selectedNewLeaveType) || options[0];
+        const dayFmt = (d) => d ? new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        const spanText = app.from_date === app.to_date
+          ? dayFmt(app.from_date)
+          : `${dayFmt(app.from_date)} – ${dayFmt(app.to_date)}`;
+
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card" style={{ maxWidth: '520px' }}>
+              <div className="modal-header">
+                <h3><i className="bx bx-transfer-alt"></i> Change Leave Type</h3>
+                <i className="bx bx-x modal-close-btn" onClick={() => { setActiveModal(null); setChangeLeaveTarget(null); }}></i>
+              </div>
+              <form onSubmit={handleConfirmLeaveTypeChange}>
+                <div style={{
+                  padding: '12px 14px',
+                  backgroundColor: 'var(--wash)',
+                  borderRadius: 'var(--radius-sm)',
+                  marginBottom: '1.25rem',
+                  border: '1px solid var(--border-color)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ fontSize: '0.95rem' }}>{coach?.name || app.coach_id}</strong>
+                    <span className="text-muted" style={{ fontSize: '0.8rem' }}>{app.coach_id}</span>
+                  </div>
+                  <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)' }}>
+                    <span>{spanText}</span>
+                    <span> · </span>
+                    <strong>{app.days} day{Number(app.days) === 1 ? '' : 's'}</strong>
+                    {app.half_day ? ' (Half Day)' : ''}
+                  </div>
+                  <div style={{ fontSize: '0.84rem', marginTop: '2px' }}>
+                    <span className="text-muted">Applied as: </span>
+                    <span className="badge badge-info" style={{ fontWeight: 600 }}>{currentType?.label || app.type_id}</span>
+                    {app.reason && <span className="text-muted" style={{ marginLeft: '6px' }}>“{app.reason}”</span>}
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1.2rem' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
+                    Change To Leave Type <span className="required-star">*</span>
+                  </label>
+                  <select
+                    className="detail-input"
+                    value={selectedNewLeaveType}
+                    onChange={(e) => setSelectedNewLeaveType(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '8px 10px', fontSize: '0.9rem' }}
+                  >
+                    {options.map(t => {
+                      const bal = leaveBalanceFor(coach, t.id);
+                      const avail = bal ? (bal.accrued + bal.opening + bal.adjusted - bal.used) : null;
+                      return (
+                        <option key={t.id} value={t.id}>
+                          {t.label} {avail != null ? `(${avail} day${avail === 1 ? '' : 's'} available)` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <small className="text-muted" style={{ display: 'block', marginTop: '4px' }}>
+                    Days will be deducted from {picked?.label} instead of {currentType?.label}.
+                  </small>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
+                    Reason for Changing Type <span className="required-star">*</span>
+                  </label>
+                  <textarea
+                    rows="3"
+                    className="detail-input"
+                    placeholder={`Why is this becoming ${picked?.label || 'another type'}? The coach will see this reason.`}
+                    value={changeLeaveNote}
+                    onChange={(e) => setChangeLeaveNote(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '8px 10px', fontSize: '0.88rem', resize: 'vertical' }}
+                  />
+                  <small className="text-muted" style={{ display: 'block', marginTop: '4px' }}>
+                    The coach receives this explanation on their application record.
+                  </small>
+                </div>
+
+                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => { setActiveModal(null); setChangeLeaveTarget(null); }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                  >
+                    <i className="bx bx-check"></i> Approve as {picked?.label || 'New Type'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal: Approve Part of Leave */}
+      {activeModal === 'partial-leave' && partialLeaveTarget && (() => {
+        const app = partialLeaveTarget;
+        const coach = coaches.find(c => c.id === app.coach_id);
+        const currentType = leaveType(app.type_id);
+        const totalDays = Number(app.days) || 1;
+        const approved = Number(partialApprovedDays);
+        const returned = Math.max(0, Math.round((totalDays - approved) * 10) / 10);
+        const dayFmt = (d) => d ? new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        const spanText = app.from_date === app.to_date
+          ? dayFmt(app.from_date)
+          : `${dayFmt(app.from_date)} – ${dayFmt(app.to_date)}`;
+
+        const dayOptions = [];
+        for (let d = 0.5; d < totalDays; d += 0.5) {
+          dayOptions.push(Math.round(d * 10) / 10);
+        }
+
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card" style={{ maxWidth: '520px' }}>
+              <div className="modal-header">
+                <h3><i className="bx bx-slider-alt"></i> Approve Part of Leave</h3>
+                <i className="bx bx-x modal-close-btn" onClick={() => { setActiveModal(null); setPartialLeaveTarget(null); }}></i>
+              </div>
+              <form onSubmit={handleConfirmPartialApproval}>
+                <div style={{
+                  padding: '12px 14px',
+                  backgroundColor: 'var(--wash)',
+                  borderRadius: 'var(--radius-sm)',
+                  marginBottom: '1.25rem',
+                  border: '1px solid var(--border-color)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ fontSize: '0.95rem' }}>{coach?.name || app.coach_id}</strong>
+                    <span className="text-muted" style={{ fontSize: '0.8rem' }}>{app.coach_id}</span>
+                  </div>
+                  <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)' }}>
+                    <span>{spanText}</span>
+                    <span> · </span>
+                    <strong>{totalDays} day{totalDays === 1 ? '' : 's'} total</strong>
+                  </div>
+                  <div style={{ fontSize: '0.84rem', marginTop: '2px' }}>
+                    <span className="text-muted">Applied as: </span>
+                    <span className="badge badge-info" style={{ fontWeight: 600 }}>{currentType?.label || app.type_id}</span>
+                    {app.reason && <span className="text-muted" style={{ marginLeft: '6px' }}>“{app.reason}”</span>}
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1.2rem' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
+                    How many days are you approving? <span className="required-star">*</span>
+                  </label>
+                  {dayOptions.length > 0 ? (
+                    <select
+                      className="detail-input"
+                      value={partialApprovedDays}
+                      onChange={(e) => setPartialApprovedDays(Number(e.target.value))}
+                      required
+                      style={{ width: '100%', padding: '8px 10px', fontSize: '0.9rem' }}
+                    >
+                      {dayOptions.map(opt => {
+                        const rem = Math.round((totalDays - opt) * 10) / 10;
+                        return (
+                          <option key={opt} value={opt}>
+                            Approve {opt} day{opt === 1 ? '' : 's'} (refuse {rem} day{rem === 1 ? '' : 's'})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  ) : (
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      max={totalDays}
+                      className="detail-input"
+                      value={partialApprovedDays}
+                      onChange={(e) => setPartialApprovedDays(Number(e.target.value))}
+                      required
+                      style={{ width: '100%', padding: '8px 10px', fontSize: '0.9rem' }}
+                    />
+                  )}
+                  <div style={{
+                    marginTop: '8px',
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: 'rgba(201, 157, 93, 0.12)',
+                    border: '1px solid rgba(201, 157, 93, 0.35)',
+                    fontSize: '0.82rem',
+                    color: 'var(--text-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <i className="bx bx-info-circle" style={{ color: 'var(--brand-rust, #9f4022)', fontSize: '1rem' }}></i>
+                    <span>
+                      Approving <strong>{approved} day(s)</strong>. The remaining <strong>{returned} day(s)</strong> will be returned to the coach's balance.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
+                    Reason for refusing the remaining {returned} day{returned === 1 ? '' : 's'} <span className="required-star">*</span>
+                  </label>
+                  <textarea
+                    rows="3"
+                    className="detail-input"
+                    placeholder={`Why are the other ${returned} day(s) refused? The coach sees this explanation.`}
+                    value={partialLeaveNote}
+                    onChange={(e) => setPartialLeaveNote(e.target.value)}
+                    required
+                    style={{ width: '100%', padding: '8px 10px', fontSize: '0.88rem', resize: 'vertical' }}
+                  />
+                  <small className="text-muted" style={{ display: 'block', marginTop: '4px' }}>
+                    The coach receives this explanation on their application record.
+                  </small>
+                </div>
+
+                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => { setActiveModal(null); setPartialLeaveTarget(null); }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                  >
+                    <i className="bx bx-check"></i> Approve {approved} Day{approved === 1 ? '' : 's'}
+                  </button>
                 </div>
               </form>
             </div>
