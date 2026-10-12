@@ -3725,3 +3725,804 @@ form {
   background-color: #000;
   display: block;
 }
+
+/* ---------------------------------------------------------------------------
+   What a screen is for, said once at the top. Three kinds exist here and they
+   look alike: ones that record, ones that only compute, ones that read back.
+--------------------------------------------------------------------------- */
+.view-purpose {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.view-purpose h2 { margin: 0; }
+.view-purpose p {
+  margin: 4px 0 0;
+  max-width: 62ch;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.view-purpose-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+.view-purpose-side small { font-size: 0.74rem; color: var(--text-muted); max-width: 30ch; }
+.writes-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.writes-records { background-color: rgba(20, 184, 166, 0.15); color: var(--accent-teal); }
+.writes-model   { background-color: rgba(139, 92, 246, 0.15); color: var(--accent-violet, #8b5cf6); }
+.writes-reads   { background-color: var(--border-color);      color: var(--text-secondary); }
+
+/* Task tabs: the jobs people arrive with, not the tables data sits in. */
+.task-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.task-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.95rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+.task-tab:hover { background-color: var(--bg-main); color: var(--text-primary); }
+.task-tab i { font-size: 1.05rem; }
+.task-tab-on {
+  background-color: rgba(20, 184, 166, 0.12);
+  border-color: var(--accent-teal);
+  color: var(--accent-teal);
+  font-weight: 600;
+}
+.task-tab-count {
+  min-width: 1.2rem;
+  padding: 0 0.32rem;
+  border-radius: 999px;
+  background-color: var(--accent-amber, #f59e0b);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* A heading over a run of nav items. Says when they are used, which is what
+   somebody is actually reasoning about when they go looking for a screen. */
+.nav-group {
+  padding: 1.1rem 1.5rem 0.35rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: rgba(255, 255, 255, 0.38);
+  pointer-events: none;
+}
+.nav-group:first-child { padding-top: 0.35rem; }
+
+/* ===========================================================================
+   Home — the cycle as five jobs
+
+   The dashboard used to be six stat cards and a chart: true, but it never
+   said what to do next. This lays the month out as the five steps that stand
+   between today and a paid cycle, then lists only the things blocking them.
+   Colours come from the brand variables so it sits in the same family as the
+   rest of the app rather than looking like a separate product.
+   =========================================================================== */
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.hb-home { display: flex; flex-direction: column; gap: 1.5rem; }
+
+.hb-home-head {
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  justify-content: space-between; gap: 1.25rem;
+}
+.hb-home-today {
+  font-size: 0.85rem; color: var(--text-secondary); font-weight: 500;
+}
+.hb-home-head h1 {
+  margin: 4px 0 6px; font-family: var(--font-title);
+  font-size: clamp(1.75rem, 3vw, 2.4rem); line-height: 1.1; font-weight: 700;
+  color: var(--text-primary);
+}
+.hb-home-head > div > p { margin: 0; color: var(--text-secondary); font-size: 0.95rem; }
+
+.hb-home-find { position: relative; flex: 0 1 340px; max-width: 100%; }
+.hb-home-find input {
+  width: 100%; min-height: 46px; box-sizing: border-box;
+  border-radius: 12px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 14px;
+  font: 400 0.95rem var(--font-body); color: var(--text-primary);
+}
+.hb-home-find input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.hb-home-results {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40;
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 12px; box-shadow: 0 12px 28px rgba(26, 26, 26, 0.12);
+  overflow: hidden; max-height: 320px; overflow-y: auto;
+}
+.hb-home-results button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; min-height: 48px; padding: 8px 14px; border: 0; cursor: pointer;
+  background: none; text-align: left; font: inherit; color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+.hb-home-results button:last-child { border-bottom: 0; }
+.hb-home-results button:hover { background: var(--wash); }
+.hb-home-results button small { color: var(--text-secondary); font-size: 0.78rem; }
+.hb-home-results p { margin: 0; padding: 12px 14px; color: var(--text-secondary); font-size: 0.85rem; }
+
+.hb-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 16px; padding: 1.25rem 1.5rem;
+}
+.hb-card-head {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  justify-content: space-between; gap: 0.75rem; margin-bottom: 1rem;
+}
+.hb-card-head h2 {
+  margin: 0; font-family: var(--font-title); font-size: 1.15rem; font-weight: 700;
+  color: var(--text-primary);
+}
+.hb-card-head span { font-size: 0.82rem; color: var(--text-secondary); }
+
+/* --- the five steps --- */
+.hb-step-row {
+  list-style: none; margin: 0; padding: 0; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 0.85rem;
+}
+.hb-step {
+  display: flex; flex-direction: column; gap: 0.6rem; box-sizing: border-box;
+  padding: 1rem 1.1rem; border-radius: 14px;
+  border: 1px solid var(--border-color); background: var(--bg-surface);
+}
+.hb-step.is-todo { background: var(--brand-cream); border-color: var(--border-strong); }
+.hb-step.is-done { background: rgba(111, 142, 124, 0.12); border-color: rgba(111, 142, 124, 0.4); }
+.hb-step-n {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.hb-step.is-todo .hb-step-n { color: var(--brand-rust); }
+.hb-step h3 {
+  margin: 0; font-family: var(--font-title); font-size: 1.05rem; font-weight: 700;
+  color: var(--text-primary);
+}
+.hb-step p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
+.hb-step .hb-step-note { color: var(--text-secondary); line-height: 1.45; flex: 1 1 auto; }
+.hb-step .hb-btn { margin-top: auto; }
+
+.hb-bar { height: 7px; border-radius: 99px; background: var(--wash-strong); overflow: hidden; }
+.hb-bar > div { height: 100%; border-radius: 99px; background: var(--brand-orange); }
+.hb-step.is-done .hb-bar > div { background: var(--brand-sage); }
+
+.hb-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 42px; padding: 0 16px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  font: 600 0.88rem var(--font-body); color: var(--text-primary); white-space: nowrap;
+}
+.hb-btn:hover { background: var(--wash); }
+.hb-btn-primary {
+  background: var(--brand-olive); border-color: var(--brand-olive); color: #fff;
+}
+.hb-btn-primary:hover { background: #5f5f34; }
+
+/* --- the two columns below --- */
+.hb-home-grid {
+  display: grid; gap: 1.25rem; align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+}
+.hb-home-side { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.hb-attention .hb-att-row {
+  display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: flex-start;
+  padding: 0.9rem 0; border-top: 1px solid var(--border-color);
+}
+.hb-attention .hb-att-row:first-of-type { border-top: 0; padding-top: 0; }
+.hb-att-row > div { flex: 1 1 240px; min-width: 0; }
+.hb-att-row strong { display: block; font-size: 0.95rem; color: var(--text-primary); }
+.hb-att-row p { margin: 2px 0 0; font-size: 0.85rem; color: var(--text-secondary); line-height: 1.45; }
+.hb-att-row .hb-btn { min-height: 38px; flex: none; }
+.hb-dot { flex: none; margin-top: 6px; width: 10px; height: 10px; border-radius: 99px; }
+.hb-dot-red { background: var(--brand-rust); }
+.hb-dot-amber { background: var(--brand-orange); }
+.hb-dot-blue { background: var(--brand-navy); }
+.hb-empty { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
+
+/* --- band distribution --- */
+.hb-dist { display: flex; flex-direction: column; gap: 0.55rem; }
+.hb-dist-row { display: grid; grid-template-columns: 11rem 1fr 2rem; gap: 0.75rem; align-items: center; }
+.hb-dist-label { font-size: 0.85rem; color: var(--text-primary); }
+.hb-dist-track { height: 12px; border-radius: 99px; background: var(--wash-strong); overflow: hidden; }
+.hb-dist-track > div { height: 100%; border-radius: 99px; min-width: 0; }
+.hb-dist-n { font-size: 0.9rem; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.hb-foot { margin: 0.9rem 0 0; font-size: 0.8rem; color: var(--text-secondary); }
+
+/* --- today on the floor --- */
+.hb-floor { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 0.85rem; }
+.hb-floor button {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 1rem 1.1rem; border-radius: 14px; cursor: pointer; text-align: left;
+  border: 1px solid var(--border-color); background: var(--brand-cream); font: inherit;
+}
+.hb-floor button:hover { border-color: var(--border-strong); }
+.hb-floor strong {
+  font-family: var(--font-title); font-size: 1.8rem; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.hb-floor span { font-size: 0.82rem; color: var(--text-secondary); }
+
+@media (max-width: 720px) {
+  .hb-dist-row { grid-template-columns: 8.5rem 1fr 1.75rem; }
+  .hb-dist-label { font-size: 0.78rem; }
+}
+
+/* ===========================================================================
+   Coach profile — one record, six tabs
+
+   Same cards as before and the same controls; what changed is that they are
+   grouped by the question being asked instead of stacked in one scroll, and
+   Overview answers the common ones without opening any tab.
+   =========================================================================== */
+
+.hb-coach-head {
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 1.25rem; padding: 1.4rem 1.5rem;
+}
+.hb-coach-ident { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.hb-coach-avatar {
+  flex: none; width: 60px; height: 60px; border-radius: 99px;
+  background: var(--brand-brown); color: #fff; display: grid; place-items: center;
+  font-family: var(--font-title); font-size: 1.25rem; font-weight: 700;
+}
+.hb-coach-ident h2 {
+  margin: 0; font-family: var(--font-title); font-size: 1.6rem; font-weight: 700;
+  line-height: 1.15; color: var(--text-primary);
+}
+.hb-coach-meta {
+  display: flex; flex-wrap: wrap; gap: 0.1rem 0.75rem; margin: 5px 0 0;
+  font-size: 0.85rem; color: var(--text-secondary);
+}
+.hb-coach-meta span { position: relative; }
+.hb-coach-meta span + span { padding-left: 0.85rem; }
+.hb-coach-meta span + span::before {
+  content: "·"; position: absolute; left: 0.25rem; color: var(--text-muted);
+}
+.hb-coach-head .coach-detail-badges { margin-top: 0.6rem; }
+.hb-coach-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-btn-danger { color: var(--brand-rust); border-color: rgba(159, 64, 34, 0.35); }
+.hb-btn-danger:hover { background: rgba(159, 64, 34, 0.08); }
+
+/* the "not recorded yet" banner */
+.hb-notice {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1rem 1.25rem; margin-bottom: 1.25rem;
+  border-radius: 14px; background: rgba(201, 157, 93, 0.18);
+  border: 1px solid rgba(201, 157, 93, 0.5);
+}
+.hb-notice strong { display: block; color: #6b4a14; font-size: 0.98rem; }
+.hb-notice p { margin: 3px 0 0; font-size: 0.88rem; color: #6b4a14; }
+
+.hb-overview { display: block; }
+.hb-overview-grid {
+  display: grid; gap: 1.25rem; align-items: start; margin-bottom: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
+}
+.hb-ov-card { display: flex; flex-direction: column; gap: 1rem; padding: 1.35rem 1.5rem; }
+.hb-ov-head {
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  justify-content: space-between; gap: 0.75rem;
+}
+.hb-ov-head h3 {
+  margin: 0; font-family: var(--font-title); font-size: 1.1rem; font-weight: 700;
+  color: var(--text-primary);
+}
+.hb-ov-head > div > span, .hb-ov-note { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-ov-score { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.hb-ov-score strong {
+  font-family: var(--font-title); font-size: 2.5rem; line-height: 1;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.hb-ov-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+/* score scale */
+.hb-scale { position: relative; height: 10px; }
+.hb-scale-track {
+  height: 10px; border-radius: 99px;
+  background: linear-gradient(90deg,
+    rgba(159,64,34,0.30) 0 33%, rgba(201,157,93,0.40) 33% 55%, rgba(116,116,64,0.30) 55% 100%);
+}
+.hb-scale-pin {
+  position: absolute; top: -5px; width: 4px; height: 20px; border-radius: 2px;
+  background: var(--text-primary); transform: translateX(-2px);
+}
+.hb-scale-ticks {
+  display: flex; justify-content: space-between; font-size: 0.75rem;
+  color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.hb-crit { display: flex; flex-direction: column; gap: 0.85rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color); }
+.hb-crit-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 0.75rem; }
+.hb-crit-row > div:first-child { font-size: 0.88rem; }
+.hb-crit-row > div:first-child span { color: var(--text-secondary); }
+.hb-crit-n { font-size: 0.88rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hb-crit-n small { font-weight: 400; color: var(--text-secondary); }
+.hb-crit-bar { grid-column: 1 / -1; height: 8px; border-radius: 99px; background: var(--wash-strong); overflow: hidden; }
+.hb-crit-bar > div { height: 100%; border-radius: 99px; background: var(--brand-olive); }
+
+.hb-link {
+  align-self: flex-start; border: 0; background: none; cursor: pointer; padding: 6px 0;
+  font: 600 0.88rem var(--font-body); color: var(--brand-olive); text-decoration: underline;
+}
+.hb-link:hover { color: #3c4419; }
+
+/* pay breakdown */
+.hb-pay { display: flex; flex-direction: column; }
+.hb-pay-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: 0.62rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.9rem;
+}
+.hb-pay-row strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hb-pay-total { border-bottom: 0; padding-top: 0.9rem; }
+.hb-pay-total span { font-size: 1rem; font-weight: 700; }
+.hb-pay-total strong {
+  font-family: var(--font-title); font-size: 1.75rem; color: var(--brand-olive);
+}
+.hb-src {
+  display: inline-block; font-style: normal; font-size: 0.72rem; font-weight: 600;
+  color: var(--text-secondary); background: var(--wash); padding: 2px 7px;
+  border-radius: 5px; margin-left: 4px; white-space: nowrap;
+}
+
+/* month by month */
+.hb-months { display: flex; flex-direction: column; }
+.hb-month-row {
+  display: grid; grid-template-columns: 9.5rem 1fr auto; gap: 0.75rem;
+  align-items: center; padding: 0.6rem 0; border-top: 1px solid var(--border-color);
+  font-size: 0.88rem;
+}
+.hb-month-row:first-child { border-top: 0; }
+.hb-month-row > span:first-of-type { color: var(--text-secondary); }
+
+/* details list */
+.hb-dl {
+  margin: 0; display: grid; gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(165px, 100%), 1fr));
+}
+.hb-dl dt { font-size: 0.78rem; color: var(--text-secondary); }
+.hb-dl dd { margin: 3px 0 0; font-weight: 600; font-size: 0.92rem; }
+.hb-missing { color: var(--brand-rust); font-weight: 600; }
+
+/* leave balances */
+.hb-bal { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); }
+.hb-bal > div {
+  padding: 0.85rem 1rem; border-radius: 12px; background: var(--brand-cream);
+  border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 2px;
+}
+.hb-bal strong {
+  font-family: var(--font-title); font-size: 1.5rem; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.hb-bal span { font-size: 0.78rem; color: var(--text-secondary); }
+
+@media (max-width: 700px) {
+  .hb-month-row { grid-template-columns: 1fr auto; }
+  .hb-month-row > span:first-of-type { grid-column: 1 / -1; }
+  .hb-ov-score { align-items: flex-start; text-align: left; }
+}
+
+/* ===========================================================================
+   Score Tracker — Record mode
+
+   The wide grid is still there under "Full table"; it is the only way to
+   compare coaches or sort a column. This is the other half of the job:
+   working down the roster one coach at a time. Both write through the same
+   scoreDraft and the same debounced save, so they cannot disagree.
+   =========================================================================== */
+
+.hb-rec-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.9rem; }
+
+.hb-seg {
+  display: inline-flex; padding: 3px; gap: 3px; border-radius: 11px;
+  background: var(--wash-strong); border: 1px solid var(--border-color);
+}
+.hb-seg button {
+  min-height: 34px; padding: 0 14px; border: 0; border-radius: 8px; cursor: pointer;
+  background: none; font: 600 0.85rem var(--font-body); color: var(--text-secondary);
+}
+.hb-seg button.is-on { background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 1px 3px rgba(26,26,26,0.12); }
+
+.hb-rec {
+  display: grid; gap: 1.25rem; align-items: start; margin-top: 1.5rem;
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+}
+@media (max-width: 980px) { .hb-rec { grid-template-columns: 1fr; } }
+
+.hb-rec-queue { display: flex; flex-direction: column; gap: 0.75rem; padding: 1.1rem; position: sticky; top: 1rem; }
+.hb-rec-qhead { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.hb-rec-qhead h3 { margin: 0; font-family: var(--font-title); font-size: 1.05rem; font-weight: 700; }
+.hb-rec-qhead span { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.hb-rec-queue > input {
+  min-height: 42px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 12px; font: 400 0.9rem var(--font-body);
+}
+.hb-rec-queue > input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.hb-rec-list { display: flex; flex-direction: column; gap: 2px; max-height: 58vh; overflow-y: auto; }
+.hb-rec-list button {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  min-height: 54px; padding: 7px 10px; border: 0; border-radius: 10px; cursor: pointer;
+  background: none; text-align: left; font: inherit; color: var(--text-primary);
+}
+.hb-rec-list button:hover { background: var(--wash); }
+.hb-rec-list button.is-on { background: rgba(116, 116, 64, 0.12); box-shadow: inset 0 0 0 1.5px var(--brand-olive); }
+.hb-rec-list button > span:first-child { display: flex; flex-direction: column; min-width: 0; }
+.hb-rec-list strong { font-size: 0.9rem; font-weight: 600; }
+.hb-rec-list small { font-size: 0.75rem; color: var(--text-secondary); }
+
+.hb-rec-form { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.hb-rec-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1.2rem 1.4rem;
+}
+.hb-rec-head h3 { margin: 0; font-family: var(--font-title); font-size: 1.3rem; font-weight: 700; }
+.hb-rec-head > div:first-child > span { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-rec-score { text-align: right; display: flex; flex-direction: column; }
+.hb-rec-score span { font-size: 0.75rem; color: var(--text-secondary); }
+.hb-rec-score strong {
+  font-family: var(--font-title); font-size: 2.1rem; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.hb-saved {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 7px;
+  font-size: 0.75rem; font-weight: 700; padding: 3px 10px; border-radius: 99px;
+}
+.hb-saved-saved { background: rgba(111,142,124,0.22); color: #3b5a49; }
+.hb-saved-saving { background: rgba(201,157,93,0.25); color: #6b4a14; }
+.hb-saved-idle { background: var(--wash-strong); color: var(--text-secondary); }
+
+.hb-rec-sec { border: 1px solid var(--border-color); padding: 1.2rem 1.4rem; margin: 0; }
+.hb-rec-sec[disabled] { opacity: 0.6; }
+.hb-rec-sechead {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 0.75rem; margin-bottom: 1rem;
+}
+.hb-rec-sechead h4 {
+  margin: 0; font-family: var(--font-title); font-size: 1.05rem; font-weight: 700;
+}
+.hb-rec-sechead h4 em { font-style: normal; font-weight: 600; font-size: 0.85rem; color: var(--text-secondary); }
+.hb-rec-sechead > span { font-weight: 700; font-variant-numeric: tabular-nums; }
+.hb-pos { color: #3b5a49; }
+.hb-neg { color: var(--brand-rust); }
+.hb-rec-fields {
+  display: grid; gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(185px, 100%), 1fr));
+}
+.hb-f { display: flex; flex-direction: column; gap: 5px; }
+.hb-f label { font-size: 0.85rem; font-weight: 600; }
+.hb-f input {
+  min-height: 44px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 12px; width: 100%; box-sizing: border-box;
+  font: 600 1rem var(--font-body); font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.hb-f input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.hb-f input[readonly] { background: var(--wash); color: var(--text-secondary); }
+.hb-f small { font-size: 0.75rem; color: var(--text-secondary); }
+.hb-f small em { font-style: normal; font-weight: 700; }
+
+.hb-rec-foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1.1rem 1.4rem; background: var(--brand-cream);
+}
+.hb-rec-foot > span { font-size: 0.87rem; color: var(--text-secondary); flex: 1 1 320px; }
+.hb-rec-foot > div { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-rec-foot .hb-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* Record mode: calculated columns, read back beside the boxes that drive them.
+   Same values and same formatting as the wide table — they share the builder. */
+.hb-readout {
+  display: grid; gap: 0.75rem; margin-top: 1rem; padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+  grid-template-columns: repeat(auto-fit, minmax(min(155px, 100%), 1fr));
+}
+.hb-rec-sec .hb-readout:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.hb-readout > div { display: flex; flex-direction: column; gap: 2px; }
+.hb-readout dt { font-size: 0.75rem; color: var(--text-secondary); line-height: 1.3; }
+.hb-readout dd {
+  margin: 0; font-weight: 700; font-size: 0.95rem; font-variant-numeric: tabular-nums;
+}
+.hb-readout .is-emph dd { color: var(--brand-olive); font-size: 1.1rem; }
+
+/* a quiet left edge per group, picking up the tone the table uses */
+.hb-rec-sec { border-left: 3px solid var(--border-color); }
+.hb-sec-blue { border-left-color: var(--brand-navy); }
+.hb-sec-amber { border-left-color: var(--brand-tan); }
+.hb-sec-violet { border-left-color: var(--brand-terracotta); }
+.hb-sec-teal { border-left-color: var(--brand-olive); }
+.hb-sec-green { border-left-color: var(--brand-sage); }
+.hb-sec-red { border-left-color: var(--brand-rust); }
+.hb-sec-indigo { border-left-color: #414e6d; }
+
+/* ===========================================================================
+   Close & pay
+
+   The seventeen-column run is still there under "Full breakdown". This is the
+   ten columns Finance actually signs off against, plus the state of the lock
+   said out loud: what is outstanding, what locking will do, and how to undo it.
+   =========================================================================== */
+
+.hb-pay-head {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+  gap: 1rem; margin-bottom: 1.25rem;
+}
+.hb-pay-head h2 {
+  margin: 0; font-family: var(--font-title); font-size: clamp(1.5rem, 2.6vw, 2rem);
+  font-weight: 700; line-height: 1.15;
+}
+.hb-pay-head p { margin: 5px 0 0; font-size: 0.9rem; color: var(--text-secondary); }
+
+.hb-ready {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1.5rem; padding: 1.3rem 1.5rem; margin-bottom: 1.25rem;
+}
+.hb-ready > div:first-child { flex: 1 1 460px; min-width: 0; }
+.hb-ready h3 { margin: 0 0 0.9rem; font-family: var(--font-title); font-size: 1.15rem; font-weight: 700; }
+.hb-ready ul {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+}
+.hb-ready li { display: flex; gap: 0.65rem; align-items: flex-start; font-size: 0.86rem; }
+.hb-ring {
+  flex: none; margin-top: 4px; width: 14px; height: 14px; border-radius: 99px;
+  border: 2px solid var(--brand-rust); box-sizing: border-box;
+}
+.hb-ready li span span { color: var(--text-secondary); }
+.hb-inline {
+  border: 0; background: none; padding: 0; cursor: pointer; font: inherit;
+  color: var(--brand-olive); text-decoration: underline;
+}
+.hb-part { margin: 0.8rem 0 0; font-size: 0.85rem; color: var(--brand-rust); }
+.hb-ready-act { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; text-align: right; }
+.hb-ready-act .hb-btn { min-height: 48px; padding: 0 22px; }
+.hb-ready-act .hb-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.hb-ready-act > span { font-size: 0.76rem; color: var(--text-secondary); max-width: 21rem; }
+
+.hb-lock-explain {
+  display: grid; gap: 1.25rem; margin-bottom: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+}
+.hb-lock-explain .card { padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 6px; }
+.hb-lock-explain strong { font-family: var(--font-title); font-size: 1rem; font-weight: 700; }
+.hb-lock-explain span { font-size: 0.87rem; color: var(--text-secondary); line-height: 1.5; }
+
+.hb-ladder { padding: 1.3rem 1.5rem; margin-bottom: 1.25rem; }
+.hb-ladder-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.9rem;
+  padding: 0.8rem 0; border-top: 1px solid var(--border-color);
+}
+.hb-ladder-row > div { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; }
+.hb-ladder-row strong { font-size: 0.95rem; }
+.hb-ladder-row > div span { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-ladder-sum { font-weight: 700; font-variant-numeric: tabular-nums; }
+.hb-lock-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font-size: 0.74rem; font-weight: 700; padding: 5px 11px; border-radius: 99px;
+}
+.hb-lock-chip.is-open { background: rgba(116,116,64,0.16); color: #3c4419; }
+.hb-lock-chip.is-shut { background: var(--wash-strong); color: var(--text-secondary); }
+.hb-lock-chip.is-part { background: rgba(201,157,93,0.25); color: #6b4a14; }
+
+.hb-tiles {
+  display: grid; gap: 1rem; margin-bottom: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+}
+.hb-tiles .card { padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: 3px; }
+.hb-tiles span { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-tiles strong {
+  font-family: var(--font-title); font-size: 1.6rem; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.hb-tiles small { font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.hb-tile-dark { background: var(--brand-brown); border-color: var(--brand-brown); color: #fff; }
+.hb-tile-dark span, .hb-tile-dark small { color: #d8cdbf; }
+
+.hb-pay-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+.hb-pay-filters > span:first-child { font-size: 0.88rem; font-weight: 600; }
+.hb-pay-filters .hb-btn { min-height: 38px; }
+.hb-btn-dark { background: var(--brand-brown); border-color: var(--brand-brown); color: #fff; }
+.hb-btn-dark:hover { background: #42291f; }
+.hb-pay-filters .hb-seg { margin-left: auto; }
+
+.hb-pay-count { padding: 0.9rem 1.1rem 0; font-size: 0.82rem; color: var(--text-secondary); }
+.hb-pay-table .hb-sub { font-size: 0.75rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.hb-pay-table td { vertical-align: middle; }
+.hb-pay-table .hb-pos { color: #3b5a49; }
+.hb-pay-table .hb-neg { color: var(--brand-rust); }
+.hb-ladder .hb-foot, .score-tracker-card .hb-foot { padding: 0 1.1rem 1rem; }
+
+/* ===========================================================================
+   Leave — the decision queue
+
+   The register below is still every application, filterable and complete.
+   This is only the ones waiting, oldest first, with the four decisions named
+   instead of hidden behind row icons. Each button calls the same handler.
+   =========================================================================== */
+
+.hb-leave-wrap {
+  display: grid; gap: 1.25rem; align-items: start; margin-bottom: 1.25rem;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+}
+@media (max-width: 1080px) { .hb-leave-wrap { grid-template-columns: 1fr; } }
+
+.hb-queue { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.hb-queue-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 0.75rem; padding: 0 0.2rem;
+}
+.hb-queue-head h3 { margin: 0; font-family: var(--font-title); font-size: 1.2rem; font-weight: 700; }
+.hb-queue-head span { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-queue-empty { padding: 1.3rem 1.5rem; display: flex; flex-direction: column; gap: 4px; }
+.hb-queue-empty span { font-size: 0.88rem; color: var(--text-secondary); }
+
+.hb-qcard {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1.1rem 1.3rem;
+}
+.hb-qmain { flex: 1 1 320px; min-width: 0; }
+.hb-qwho { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.hb-qwho strong { font-size: 1rem; font-weight: 700; }
+.hb-qwho em { font-style: normal; font-size: 0.9rem; color: var(--text-secondary); }
+.hb-qid { font-size: 0.8rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.hb-qage {
+  font-size: 0.73rem; font-weight: 700; padding: 3px 9px; border-radius: 99px; white-space: nowrap;
+}
+.hb-qage.is-late { background: rgba(159, 64, 34, 0.16); color: var(--brand-rust); }
+.hb-qage.is-soon { background: rgba(201, 157, 93, 0.25); color: #6b4a14; }
+.hb-qwhat { margin: 7px 0 0; font-size: 0.92rem; }
+.hb-qreason { margin: 3px 0 0; font-size: 0.88rem; color: var(--text-secondary); }
+.hb-qcover { margin: 5px 0 0; font-size: 0.82rem; font-weight: 700; color: var(--brand-rust); }
+.hb-qacts { display: flex; flex-wrap: wrap; gap: 0.45rem; flex: none; }
+.hb-qacts .hb-btn { min-height: 40px; }
+
+.hb-leave-rail { display: flex; flex-direction: column; gap: 1.25rem; }
+.hb-leave-rail .card { padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 6px; }
+.hb-leave-rail strong { font-family: var(--font-title); font-size: 1rem; font-weight: 700; }
+.hb-leave-rail p { margin: 0; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.5; }
+
+/* Coach tab: the profile facts are on the card now rather than behind a
+   disclosure — "Not set" is the thing worth seeing, so it should not be shut. */
+.demographics.is-open { margin: 1rem 0 0; padding-top: 1rem; border-top: 1px solid var(--border-color); }
+
+/* The last five working days. Today's clock, status and buttons stay bound to
+   today; these chips only move the table of logins underneath. */
+.att-days { margin-top: 1.25rem; display: flex; flex-direction: column; gap: 0.85rem; }
+.att-day-chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.att-day-chips button {
+  min-height: 38px; padding: 0 14px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  font: 600 0.84rem var(--font-body); color: var(--text-primary); white-space: nowrap;
+}
+.att-day-chips button:hover { background: var(--wash); }
+.att-day-chips button.is-on {
+  background: var(--brand-brown); border-color: var(--brand-brown); color: #fff;
+}
+.att-day-tiles {
+  display: grid; gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+}
+.att-day-tiles > div {
+  padding: 0.9rem 1.05rem; border-radius: 12px; background: var(--brand-cream);
+  border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 3px;
+}
+.att-day-tiles span { font-size: 0.78rem; color: var(--text-secondary); }
+.att-day-tiles strong {
+  font-family: var(--font-title); font-size: 1.4rem; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===========================================================================
+   Incidents
+
+   What has been logged, and the form to log the next one beside it. The form
+   shares its state and submit handler with the modal that the coach page and
+   the tracker open, so the two cannot drift. The Annexure matrix stays below.
+   =========================================================================== */
+
+.hb-inc {
+  display: grid; gap: 1.25rem; align-items: start; margin-bottom: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(290px, 370px);
+}
+@media (max-width: 1100px) { .hb-inc { grid-template-columns: 1fr; } }
+.hb-inc-main { min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
+.hb-inc-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.hb-inc-chips .hb-btn { min-height: 40px; gap: 7px; }
+.hb-inc-n {
+  font-size: 0.74rem; font-weight: 700; padding: 1px 7px; border-radius: 99px;
+  background: var(--wash-strong); font-variant-numeric: tabular-nums;
+}
+.hb-btn-dark .hb-inc-n { background: rgba(255,255,255,0.22); }
+
+.hb-inc-table td { vertical-align: top; }
+.hb-inc-table .hb-sub { font-size: 0.76rem; color: var(--text-secondary); }
+.hb-inc-table strong { font-variant-numeric: tabular-nums; }
+.hb-st {
+  display: inline-block; font-size: 0.74rem; font-weight: 700;
+  padding: 3px 9px; border-radius: 99px; white-space: nowrap;
+}
+.hb-st-warn { background: rgba(201,157,93,0.28); color: #6b4a14; }
+.hb-st-info { background: rgba(52,65,97,0.14); color: var(--brand-navy); }
+.hb-st-good { background: rgba(111,142,124,0.22); color: #3b5a49; }
+.hb-st-mute { background: var(--wash-strong); color: var(--text-secondary); }
+
+.hb-inc-form { padding: 1.3rem 1.4rem; position: sticky; top: 1rem; }
+.hb-inc-form h3 {
+  margin: 0 0 1rem; font-family: var(--font-title); font-size: 1.15rem; font-weight: 700;
+}
+.hb-inc-form form { display: flex; flex-direction: column; gap: 0.9rem; }
+.hb-inc-form select, .hb-inc-form textarea {
+  min-height: 44px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 10px 12px; width: 100%; box-sizing: border-box;
+  font: 500 0.92rem var(--font-body); color: var(--text-primary);
+}
+.hb-inc-form textarea { min-height: 78px; resize: vertical; }
+.hb-inc-form select:focus, .hb-inc-form textarea:focus, .hb-inc-form input:focus {
+  outline: 2px solid var(--accent-teal); outline-offset: 1px;
+}
+.hb-inc-mean {
+  background: var(--brand-cream); border-radius: 12px; padding: 0.9rem 1rem;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.hb-inc-mean > span {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; color: var(--text-secondary);
+}
+.hb-inc-mean p { margin: 0; font-size: 0.85rem; line-height: 1.5; }
+.hb-inc-warn { color: var(--brand-rust); font-weight: 600; }
+.hb-inc-submit { width: 100%; min-height: 46px; }
+
+/* Record ↔ Incidents. The violation counts on the score card are the reason a
+   consistency bonus is or is not paid, so both ways between them live here. */
+.hb-rec-link {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.85rem; margin-top: 1rem; padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+.hb-rec-link > span { flex: 1 1 260px; font-size: 0.85rem; color: var(--text-secondary); }
+.hb-rec-link > div { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.hb-rec-link .hb-btn { min-height: 38px; }
+.hb-inc-coach { font-weight: 700; text-align: left; }
+
+/* The full table edits in place. Same draft and same save as Record mode, so a
+   figure typed in either lands the same way; only the manual columns open. */
+.tracker-actions { width: 76px; text-align: center; }
+.score-tracker-table tr.row-editing { background: rgba(201, 157, 93, 0.12); }
+.score-tracker-table td.cell-editing { padding: 4px 6px; }
+.cell-input {
+  width: 100%; min-width: 68px; box-sizing: border-box; min-height: 36px;
+  border-radius: 8px; border: 1px solid var(--brand-olive); background: var(--bg-surface);
+  padding: 0 8px; font: 600 0.88rem var(--font-body); font-variant-numeric: tabular-nums;
+  color: var(--text-primary); text-align: right;
+}
+.cell-input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.score-tracker-table .btn-row-icon[disabled] { opacity: 0.35; cursor: not-allowed; }
+.score-tracker-table .linklike { font-weight: 600; text-align: left; }

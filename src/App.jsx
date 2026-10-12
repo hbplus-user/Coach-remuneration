@@ -275,6 +275,30 @@ const SCORE_TRACKER_GROUPS = [
 // everything that counts or lists cell overrides skips them.
 const overrideKeys = (overrides) => Object.keys(overrides || {}).filter(k => !k.startsWith('__'));
 
+// Which Score Tracker columns a person types, as opposed to the ones worked
+// out from them. The same map drives the fields in Record mode and the cells
+// you can edit in the full table, so the two can never offer different ones.
+// `key` is the draft key, which is not always the column key.
+const TRACKER_MANUAL_FIELDS = {
+  exp_doc:             { draft: 'exp_doc',             max: null, hint: 'years, with documents' },
+  exp_nodoc:           { draft: 'exp_nodoc',           max: null, hint: 'years, counted at 50%' },
+  exp_non_coach_years: { draft: 'exp_non_coach_years', max: 10,   hint: 'years, halved then capped at 10' },
+  edu_raw:             { draft: 'edu_raw',             max: 10,   hint: 'out of 10 · overrides the qualification' },
+  prof_appearance:     { draft: 'prof_appearance',     max: 20,   hint: 'out of 20 · by RM' },
+  client_engagement:   { draft: 'client_engagement',   max: 20,   hint: 'out of 20 · from the app' },
+  safety:              { draft: 'safety',              max: 15,   hint: 'out of 15 · by RM' },
+  punctuality:         { draft: 'punctuality',         max: 10,   hint: 'out of 10 · by RM' },
+  team_conduct:        { draft: 'team_conduct',        max: 15,   hint: 'out of 15 · by RM' },
+  communication:       { draft: 'communication',       max: 20,   hint: 'out of 20 · by RM' },
+  meetings_scheduled:  { draft: 'meetings_scheduled',  max: null, hint: 'meetings held this cycle' },
+  meetings_attended:   { draft: 'meetings_attended',   max: null, hint: 'of those, how many attended' },
+  sessions:            { draft: 'sessions',            max: null, hint: 'extra pay starts past the threshold' },
+  night_sessions:      { draft: 'night_sessions',      max: null, hint: 'paid at the night rate' },
+  streak:              { draft: 'streak',              max: null, hint: '₹200 per 10 in a row' },
+  missed_sessions:     { draft: 'missed_sessions',     max: null, hint: 'tiered: 1–5 ×1, 6–10 ×1.5, 11+ ×2' },
+  lop_days:            { draft: 'lop_days',            max: null, hint: 'normally set by settling attendance' }
+};
+
 const SCORE_TRACKER_COLUMNS = SCORE_TRACKER_GROUPS.flatMap(g => g.columns);
 
 // A few columns carry the same field under a different key.
@@ -1193,6 +1217,59 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   );
 }
 
+/**
+ * The bar at the top of a screen: what it is for, and what it writes.
+ *
+ * Three kinds of screen live in this app and they look identical — ones that
+ * record, ones that only work something out, and ones that read back. Saying
+ * which, in a line, is what stops somebody filling in a calculator and
+ * hunting for the Save button that was never going to be there.
+ */
+function ViewPurpose({ title, does, writes, children }) {
+  return (
+    <div className="view-purpose">
+      <div>
+        <h2>{title}</h2>
+        <p>{does}</p>
+      </div>
+      <div className="view-purpose-side">
+        <span className={`writes-badge writes-${writes.kind}`}>
+          {writes.kind === 'records' ? 'Records' : writes.kind === 'reads' ? 'Read only' : 'Works it out'}
+        </span>
+        <small>{writes.detail}</small>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Task tabs for a screen that answers more than one question.
+ *
+ * Attendance & Leave was eleven cards on one scroll, and finding anything
+ * meant reading past the ten you did not want. These are the jobs people
+ * arrive with, not the tables the data sits in.
+ */
+function TaskTabs({ tabs, active, onChange }) {
+  return (
+    <div className="task-tabs" role="tablist">
+      {tabs.map(t => (
+        <button
+          key={t.key}
+          role="tab"
+          aria-selected={active === t.key}
+          className={`task-tab ${active === t.key ? 'task-tab-on' : ''}`}
+          onClick={() => onChange(t.key)}
+        >
+          <i className={`bx ${t.icon}`}></i>
+          <span>{t.label}</span>
+          {t.count > 0 && <span className="task-tab-count">{t.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Compensation reference tables A–E, rendered from the selected policy variant. */
 function PayReferenceTables({ vConfig, penaltyMatrix }) {
   if (!vConfig) return null;
@@ -1376,10 +1453,17 @@ function PayReferenceTables({ vConfig, penaltyMatrix }) {
 // from the palette are used elsewhere, not here.
 // The coach page reads as three separate records — who they are, where they
 // are paid, and what they bring — so it is tabbed rather than stacked.
+// The coach record, grouped the way someone looks for it rather than the way
+// it is stored: what they scored, what they are paid, when they were away,
+// what was logged against them, and the standing facts behind all four.
+// Overview answers the common question without opening any of the others.
 const COACH_DETAIL_TABS = [
-  { key: 'profile',    label: 'Profile',                tone: 'teal' },
-  { key: 'bank',       label: 'Bank Details',           tone: 'blue', pay: true },
-  { key: 'experience', label: 'Experience & Education', tone: 'violet' }
+  { key: 'overview',  label: 'Overview',           tone: 'teal' },
+  { key: 'scorecard', label: 'Score card',         tone: 'violet' },
+  { key: 'pay',       label: 'Pay & payslips',     tone: 'blue',   pay: true },
+  { key: 'leave',     label: 'Leave & attendance', tone: 'indigo' },
+  { key: 'incidents', label: 'Incidents',          tone: 'amber' },
+  { key: 'details',   label: 'Details',            tone: 'teal' }
 ];
 
 // Section 194J of the Income Tax Act: 10% withheld at source on professional
@@ -1576,6 +1660,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
   });
   const [loginLog, setLoginLog] = useState({ coach: 'All', day: '', show: 'all' });
   const [awayDay, setAwayDay] = useState('');
+  const [attendanceTab, setAttendanceTab] = useState('leave');
+  const onTab = (key) => currentRole === 'Coach' || attendanceTab === key;
   // A photograph opened full size, fetched on demand — the list holds paths,
   // not images, and signing every one of them to render thumbnails would be a
   // request per row for something nobody has asked to see yet.
@@ -1606,6 +1692,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [savingUserId, setSavingUserId] = useState(null);
   const [userDrafts, setUserDrafts] = useState({});
   const [activeView, setActiveView] = useState("dashboard");
+  // The Home screen's own coach search. Kept here rather than inside the view
+  // so typing in it does not reset when the cycle figures recompute.
+  const [homeFind, setHomeFind] = useState("");
   const [sidebarActive, setSidebarActive] = useState(false);
 
   // Toasts State
@@ -1717,7 +1806,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Org work decides what a coach is put on and what it is worth, so it is
   // locked until deliberately taken over — as a calculated cell is.
   const [orgWorkUnlocked, setOrgWorkUnlocked] = useState(false);
-  const [coachDetailTab, setCoachDetailTab] = useState("profile");
+  const [coachDetailTab, setCoachDetailTab] = useState("overview");
   // Which pay cycles the score card tables show. Blank means the full span,
   // so a coach with only a few periods needs no filtering at all.
   const [scorecardFrom, setScorecardFrom] = useState("");
@@ -1778,6 +1867,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // tells the person whether what they typed is safe yet.
   const [autoSaveAt, setAutoSaveAt] = useState("");
   const draftKey = (coachId, periodMonth) => `${coachId}|${periodMonth}`;
+
+  // Score Tracker presentation. 'record' is one coach at a time, the way the
+  // month is actually worked through; 'table' is the wide grid, which is still
+  // the only way to compare coaches or sort by a column. Both read and write
+  // the same records.
+  // Which day the coach-tab login table is showing. Today's own block —
+  // the clock, the status, Log in / Log out / Settle — stays bound to
+  // today; this only moves the table of logins underneath it.
+  const [attLogDay, setAttLogDay] = useState("");
+  const [penaltyFilter, setPenaltyFilter] = useState("All");
+  const [trackerMode, setTrackerMode] = useState("record");
+  // Close & pay: 'summary' is the ten columns Finance signs off against,
+  // 'full' is the seventeen-column breakdown behind them.
+  const [payMode, setPayMode] = useState("summary");
+  const [payFilter, setPayFilter] = useState("Everyone");
+  const [trackerFind, setTrackerFind] = useState("");
+  const [trackerPick, setTrackerPick] = useState("");
+  const fmtTrackerDay = (d) =>
+    new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   // The live draft, mirrored so it can be read outside a render without
   // reaching into a state updater to do it.
   const scoreDraftRef = useRef({});
@@ -3187,6 +3295,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
    */
   const openCoachOnAttendance = (coachId) => {
     setAttendanceCoachId(coachId);
+    setAttendanceTab('coach');
     // After the re-render, or the card being scrolled to is the previous one.
     setTimeout(() => {
       document.getElementById('attendance-coach-card')
@@ -5423,88 +5532,92 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   // Build one Monthly Score Records row per coach per evaluated month.
+  // One Score Tracker row: every column the wide table shows, worked out
+  // for a single coach and record. Record mode renders the same values as
+  // fields, so the two presentations cannot drift apart.
+  const trackerRowFor = (coach, record) => {
+    if (!coach || !record) return null;
+
+    const vConfig = findVariant(variants, coach.variant_id);
+
+    const inPeriod = violations.filter(v =>
+      v.coach_id === coach.id &&
+      v.status !== 'Appeal_Approved' &&
+      new Date(v.incident_date) >= new Date(record.period_start) &&
+      new Date(v.incident_date) <= new Date(record.period_end)
+    );
+    const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === record.period_month && o.status === 'Approved');
+
+    const calc = computeHBPlusScore(coach, record, vConfig);
+    const hbScore = record.hb_score != null ? record.hb_score : calc.hbScore;
+    const band = record.band || getPerformanceBand(hbScore).label;
+    const pay = computeMonthlyPay(coach, carryPay(record), { hbScore }, inPeriod, vConfig, coachOrgWork);
+    const threshold = vConfig.rates[coach.coach_category]?.[band]?.threshold
+      ?? (coach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96);
+
+    return {
+      id: `${coach.id}-${record.period_month}`,
+      coachId: coach.id,
+      variantId: coach.variant_id,
+      weights: vConfig.weights,
+      month: record.period_month,
+      coach_id: coach.id,
+      coach_name: coach.name,
+      category: coach.coach_category || '—',
+      designation: coach.internal_designation || 'Coach',
+      exp_doc: Number(coach.freelance_past_exp_with_document) || 0,
+      exp_nodoc: Number(coach.freelance_past_exp_without_document) || 0,
+      exp_post_doj: calculateTenureYears(coach.date_of_joining, record.period_end),
+      exp_coach_score: calc.breakdown.coachingExpYears * vConfig.weights.coaching_exp / 10,
+      exp_non_coach_years: Number(coach.non_coaching_exp_years) || 0,
+      exp_non_coach_score: calc.breakdown.nonCoachingExpYears * vConfig.weights.non_coaching_exp / 10,
+      experience: calc.breakdown.expScore,
+      edu_raw: calc.breakdown.eduScore,
+      edu_score: calc.breakdown.eduScore * vConfig.weights.education / 10,
+      cert_raw: calc.breakdown.certScore,
+      cert_score: calc.breakdown.techScore - (calc.breakdown.eduScore * vConfig.weights.education / 10),
+      technical: calc.breakdown.techScore,
+      prof_appearance: record.prof_appearance,
+      client_engagement: record.client_engagement,
+      safety: record.safety,
+      punctuality: record.punctuality,
+      team_conduct: record.team_conduct,
+      communication: record.communication,
+      core_total: calc.breakdown.coreTotal,
+      core: calc.breakdown.coreScore,
+      tenure_years: calc.breakdown.tenureYears,
+      org: calc.breakdown.tenureScore,
+      meetings_scheduled: record.meetings_scheduled,
+      meetings_attended: record.meetings_attended,
+      attendance_pct: calc.breakdown.attendancePct,
+      attendance: calc.breakdown.attendanceScore,
+      hb_score: hbScore,
+      band,
+      coach_type: coach.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : 'Strength'),
+      range: `${new Date(record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+      status: record.status,
+      sessions: Number(record.sessions_completed) || 0,
+      night_sessions: record.night_sessions,
+      threshold,
+      extra_sessions: pay.extraSessions,
+      violations: inPeriod.length,
+      late_count: inPeriod.filter(v => v.type && v.type.includes('Late Arrival')).length,
+      noshow_count: inPeriod.filter(v => v.type && v.type.includes('No-Show')).length,
+      milestone: pay.milestoneIncentive,
+      consistency: pay.consistencyBonus,
+      streak: Number(record.five_star_streak) || 0,
+      missed_sessions: Number(record.missed_sessions) || 0,
+      missed_penalty: pay.missedSessionDeduction,
+      lop_days: Number(record.lop_days) || 0,
+      lop_amount: pay.lossOfPay
+    };
+  };
+
   const buildScoreTrackerRows = () => {
     const query = scoreSearch.trim().toLowerCase();
 
     return [...historicMonths, ...currentMonth]
-      .map(record => {
-        const coach = coaches.find(c => c.id === record.coach_id);
-        if (!coach) return null;
-
-        const vConfig = findVariant(variants, coach.variant_id);
-
-        const inPeriod = violations.filter(v =>
-          v.coach_id === coach.id &&
-          v.status !== 'Appeal_Approved' &&
-          new Date(v.incident_date) >= new Date(record.period_start) &&
-          new Date(v.incident_date) <= new Date(record.period_end)
-        );
-        const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === record.period_month && o.status === 'Approved');
-
-        const calc = computeHBPlusScore(coach, record, vConfig);
-        const hbScore = record.hb_score != null ? record.hb_score : calc.hbScore;
-        const band = record.band || getPerformanceBand(hbScore).label;
-        const pay = computeMonthlyPay(coach, carryPay(record), { hbScore }, inPeriod, vConfig, coachOrgWork);
-        const threshold = vConfig.rates[coach.coach_category]?.[band]?.threshold
-          ?? (coach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96);
-
-        return {
-          id: `${coach.id}-${record.period_month}`,
-          coachId: coach.id,
-          variantId: coach.variant_id,
-          weights: vConfig.weights,
-          month: record.period_month,
-          coach_id: coach.id,
-          coach_name: coach.name,
-          category: coach.coach_category || '—',
-          designation: coach.internal_designation || 'Coach',
-          exp_doc: Number(coach.freelance_past_exp_with_document) || 0,
-          exp_nodoc: Number(coach.freelance_past_exp_without_document) || 0,
-          exp_post_doj: calculateTenureYears(coach.date_of_joining, record.period_end),
-          exp_coach_score: calc.breakdown.coachingExpYears * vConfig.weights.coaching_exp / 10,
-          exp_non_coach_years: Number(coach.non_coaching_exp_years) || 0,
-          exp_non_coach_score: calc.breakdown.nonCoachingExpYears * vConfig.weights.non_coaching_exp / 10,
-          experience: calc.breakdown.expScore,
-          edu_raw: calc.breakdown.eduScore,
-          edu_score: calc.breakdown.eduScore * vConfig.weights.education / 10,
-          cert_raw: calc.breakdown.certScore,
-          cert_score: calc.breakdown.techScore - (calc.breakdown.eduScore * vConfig.weights.education / 10),
-          technical: calc.breakdown.techScore,
-          prof_appearance: record.prof_appearance,
-          client_engagement: record.client_engagement,
-          safety: record.safety,
-          punctuality: record.punctuality,
-          team_conduct: record.team_conduct,
-          communication: record.communication,
-          core_total: calc.breakdown.coreTotal,
-          core: calc.breakdown.coreScore,
-          tenure_years: calc.breakdown.tenureYears,
-          org: calc.breakdown.tenureScore,
-          meetings_scheduled: record.meetings_scheduled,
-          meetings_attended: record.meetings_attended,
-          attendance_pct: calc.breakdown.attendancePct,
-          attendance: calc.breakdown.attendanceScore,
-          hb_score: hbScore,
-          band,
-          coach_type: coach.coach_type || (vConfig ? (vConfig.discipline === 'S&C' ? 'Strength' : vConfig.discipline) : 'Strength'),
-          range: `${new Date(record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
-          status: record.status,
-          sessions: Number(record.sessions_completed) || 0,
-          night_sessions: record.night_sessions,
-          threshold,
-          extra_sessions: pay.extraSessions,
-          violations: inPeriod.length,
-          late_count: inPeriod.filter(v => v.type && v.type.includes('Late Arrival')).length,
-          noshow_count: inPeriod.filter(v => v.type && v.type.includes('No-Show')).length,
-          milestone: pay.milestoneIncentive,
-          consistency: pay.consistencyBonus,
-          streak: Number(record.five_star_streak) || 0,
-          missed_sessions: Number(record.missed_sessions) || 0,
-          missed_penalty: pay.missedSessionDeduction,
-          lop_days: Number(record.lop_days) || 0,
-          lop_amount: pay.lossOfPay
-        };
-      })
+      .map(record => trackerRowFor(coaches.find(c => c.id === record.coach_id), record))
       .filter(Boolean)
       .filter(row => {
         const matchesSearch = !query || row.coach_name.toLowerCase().includes(query) || row.coach_id.toLowerCase().includes(query);
@@ -6083,6 +6196,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
         <nav className="nav-menu">
           <ul>
+            {/* Grouped by when something is used, not by which table it reads.
+                People arrive with a task — "approve this week's leave", "close
+                the month" — rather than knowing which screen holds the data. */}
+            <li className="nav-group">Every day</li>
             <li className={`nav-item ${activeView === 'dashboard' ? 'active' : ''}`} onClick={() => handleNavClick('dashboard')}>
               <a href="#dashboard"><i className="bx bxs-dashboard nav-icon"></i><span>Dashboard</span></a>
             </li>
@@ -6101,10 +6218,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 <a href="#pay-calculator"><i className="bx bxs-calculator nav-icon"></i><span>Payroll Calculator</span></a>
               </li>
             )}
+            {verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager") && (
+              <li className="nav-group">Set up</li>
+            )}
             {isViewEnabled('attendance') && verifyAccess(ATTENDANCE_ROLES.join(',')) && (
               <li className={`nav-item ${activeView === 'attendance' ? 'active' : ''}`} onClick={() => handleNavClick('attendance', ATTENDANCE_ROLES.join(','))}>
                 <a href="#attendance"><i className="bx bxs-time-five nav-icon"></i><span>Attendance &amp; Leave</span></a>
               </li>
+            )}
+            {verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor") && (
+              <li className="nav-group">Each month</li>
             )}
             {isViewEnabled('evaluations') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor") && (
               <li className={`nav-item ${activeView === 'evaluations' ? 'active' : ''}`} onClick={() => handleNavClick('evaluations', "Super Admin,HR Manager,Reporting Manager,Finance,Showrunner,Auditor")}>
@@ -6525,211 +6648,296 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 );
               })()}
 
-              {(currentRole === "Super Admin" || currentRole === "HR Manager") && (
-                <>
-                  <div className="stats-row">
-                    <div className="stat-card stat-teal">
-                      <div className="stat-icon"><i className="bx bxs-group"></i></div>
-                      <div className="stat-info">
-                        <h3>Active Coaches</h3>
-                        <h2>{coaches.filter(c => c.status === 'Active').length} / {coaches.length}</h2>
-                        <p>Direct &amp; Partners</p>
+              {(currentRole === "Super Admin" || currentRole === "HR Manager") && (() => {
+                // The cycle, told as the five jobs that stand between today and
+                // a paid month. Everything on this screen is one of those five
+                // or a reason one of them cannot finish.
+                const active = coaches.filter(c => c.status === 'Active');
+                const today = new Date();
+                const periodEnd = new Date(openPeriod.period_end);
+                const daysLeft = Math.ceil((periodEnd - today) / 86400000);
+                const anyLocked = currentMonth.some(e => e.status === 'FINANCE_LOCKED');
+
+                // 1 — scores
+                const recorded = currentMonth.filter(e => e.status !== 'DRAFT').length;
+                const unscored = active.filter(c =>
+                  !currentMonth.some(e => e.coach_id === c.id && e.status !== 'DRAFT'));
+
+                // 2 — leave
+                const waitingLeave = leaveApplications.filter(a => a.status === 'Pending');
+                const overdueLeave = waitingLeave.filter(a =>
+                  Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3);
+                const oldestLeave = [...overdueLeave].sort(
+                  (a, b) => new Date(a.applied_at) - new Date(b.applied_at));
+                const oldestDays = oldestLeave.length
+                  ? Math.floor((Date.now() - new Date(oldestLeave[0].applied_at)) / 86400000) : 0;
+                const oldestWho = oldestLeave.slice(0, 2)
+                  .map(a => coaches.find(c => c.id === a.coach_id)?.name || a.coach_id).join(' & ');
+
+                // 3 — attendance. A day holding an undecided leave cannot be
+                // settled, so step 2 gates step 3 and the card says so.
+                const inCycle = (d) => {
+                  const t = new Date(d);
+                  return t >= new Date(openPeriod.period_start) && t <= periodEnd;
+                };
+                const settledDays = attendanceDays.filter(d => inCycle(d.working_day)).length;
+                const loggedDays = new Set(
+                  attendanceLogs.filter(l => inCycle(l.working_day))
+                    .map(l => `${l.coach_id}|${l.working_day}`));
+                const unsettledDays = Math.max(loggedDays.size - settledDays, 0);
+
+                // 4 — incidents dated inside the cycle, still undecided.
+                const openVios = violations.filter(v =>
+                  inCycle(v.incident_date) && (v.status === 'Pending_Acknowledge' || v.status === 'Appealed'));
+
+                // 5 — what the month costs as it stands.
+                let draftGross = 0;
+                currentMonth.forEach(m => {
+                  const coach = coaches.find(c => c.id === m.coach_id);
+                  if (!coach) return;
+                  const vConfig = findVariant(variants, coach.variant_id);
+                  const activeVio = violations.filter(v => v.coach_id === coach.id && inCycle(v.incident_date));
+                  const coachOrgWork = orgWork.filter(o =>
+                    o.coach_id === coach.id && o.period_month === m.period_month && o.status === 'Approved');
+                  const calc = m.hb_score != null ? m : computeHBPlusScore(coach, m, vConfig);
+                  draftGross += computeMonthlyPay(coach, carryPay(m), calc, activeVio, vConfig, coachOrgWork).grossPay;
+                });
+
+                // Data faults that quietly distort the numbers above.
+                const noJoinDate = active.filter(c => !c.date_of_joining);
+                const noPolicy = active.filter(c => findVariant(variants, c.variant_id).placeholder);
+
+                // Today on the floor.
+                const openNow = attendanceLogs.filter(l => !l.logged_out_at);
+                const todayISO = todayWorkingDay;
+                const awayToday = leaveApplications.filter(a =>
+                  (a.status === 'Approved' || a.status === 'Partially_Approved' || a.status === 'Pending') &&
+                  new Date(a.from_date) <= new Date(todayISO) && new Date(a.to_date) >= new Date(todayISO));
+                const awayNames = awayToday.slice(0, 1).map(a => {
+                  const c = coaches.find(x => x.id === a.coach_id);
+                  return `${c?.name || a.coach_id}${a.status === 'Pending' ? ' (leave pending)' : ''}`;
+                }).join(', ');
+
+                const steps = [
+                  {
+                    n: 1, title: 'Record scores', done: recorded >= active.length,
+                    pct: active.length ? (recorded / active.length) * 100 : 0,
+                    line: `${recorded} of ${active.length} recorded`,
+                    cta: 'Start recording', go: () => setActiveView('score-tracker')
+                  },
+                  {
+                    n: 2, title: 'Decide leave', done: waitingLeave.length === 0,
+                    pct: waitingLeave.length ? 35 : 100,
+                    line: `${waitingLeave.length} waiting${overdueLeave.length ? ` · ${overdueLeave.length} overdue` : ''}`,
+                    cta: 'Decide leave', go: () => setActiveView('attendance')
+                  },
+                  {
+                    n: 3, title: 'Settle attendance', done: unsettledDays === 0,
+                    note: waitingLeave.length
+                      ? "Days with a pending leave can't be settled — finish step 2 first."
+                      : `${unsettledDays} day-records still to settle.`,
+                    cta: 'Open attendance', go: () => setActiveView('attendance')
+                  },
+                  {
+                    n: 4, title: 'Check incidents', done: openVios.length === 0,
+                    note: `Confirm, waive or uphold anything dated ${currentPeriodRange}.`,
+                    cta: 'Review incidents', go: () => setActiveView('penalties')
+                  },
+                  {
+                    n: 5, title: 'Lock & pay', done: anyLocked,
+                    note: `Draft gross ${rupees(draftGross)} — will change as scores land.`,
+                    cta: 'Preview payroll', go: () => setActiveView('pay-calculator')
+                  }
+                ];
+
+                const attention = [
+                  overdueLeave.length && {
+                    k: 'leave', tone: 'red',
+                    title: `${overdueLeave.length} leave request${overdueLeave.length > 1 ? 's are' : ' is'} past the 3-day deadline`,
+                    detail: oldestWho
+                      ? `Oldest: ${oldestWho}, ${oldestDays} days. Those days can't be settled until decided.`
+                      : "Those days can't be settled until they are decided.",
+                    cta: 'Decide', go: () => setActiveView('attendance')
+                  },
+                  unscored.length && {
+                    k: 'scores', tone: 'red',
+                    title: `${unscored.length} coaches have no ${currentPeriodMonth} score card`,
+                    detail: 'Their pay is worked out from fixed points only, so it reads low.',
+                    cta: 'Record', go: () => setActiveView('score-tracker')
+                  },
+                  bandMovements.length && {
+                    k: 'band', tone: 'amber',
+                    title: `${bandMovements.length} coaches changed band — pay did not follow`,
+                    detail: `${bandMovements.filter(m => m.up).length} up (${bandMovements.filter(m => m.up).slice(0, 3).map(m => m.name.split(' ')[0]).join(', ') || '—'}) · ${bandMovements.filter(m => !m.up).length} down (${bandMovements.filter(m => !m.up).slice(0, 3).map(m => m.name.split(' ')[0]).join(', ') || '—'}). Decide whether to change their pay.`,
+                    cta: 'Review', go: () => setActiveView('score-tracker')
+                  },
+                  noJoinDate.length && {
+                    k: 'doj', tone: 'blue',
+                    title: `${noJoinDate.length} coaches have no joining date`,
+                    detail: "They get full tenure marks (15% of the score) for free until it's set.",
+                    cta: 'Fix data', go: () => setActiveView('coaches')
+                  },
+                  noPolicy.length && {
+                    k: 'policy', tone: 'blue',
+                    title: `${noPolicy.length} coaches have no pay policy`,
+                    detail: 'They show as unscored and unpaid until a variant is assigned.',
+                    cta: 'Fix data', go: () => setActiveView('coaches')
+                  }
+                ].filter(Boolean);
+
+                const BANDS = [
+                  ['0–30 Non-functional', 0, 30, '#A8431F'],
+                  ['30–40 Weak', 30, 40, '#C9772E'],
+                  ['40–50 Basic', 40, 50, '#C9A25E'],
+                  ['50–60 Stable', 50, 60, '#7E9142'],
+                  ['60–70 Good', 60, 70, '#4F5D23'],
+                  ['70–80 High-quality', 70, 80, '#3E6B55'],
+                  ['80–90 Exceptional', 80, 999, '#2E4A78']
+                ];
+                const dist = BANDS.map(([label, lo, hi, colour]) => ({
+                  label, colour,
+                  n: active.filter(c => {
+                    const rec = currentMonth.find(e => e.coach_id === c.id);
+                    const sc = rec && rec.hb_score != null ? rec.hb_score : 0;
+                    return sc >= lo && sc < hi;
+                  }).length
+                }));
+                const distMax = Math.max(...dist.map(d => d.n), 1);
+
+                return (
+                  <div className="hb-home">
+                    <div className="hb-home-head">
+                      <div>
+                        <span className="hb-home-today">
+                          {today.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        </span>
+                        <h1>
+                          {daysLeft > 0
+                            ? `${currentPeriodMonth} cycle closes in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`
+                            : `${currentPeriodMonth} cycle has closed`}
+                        </h1>
+                        <p>
+                          Covers {currentPeriodRange}.{' '}
+                          {anyLocked ? 'Part of it is locked.' : 'Still open — nothing is locked yet.'}
+                        </p>
                       </div>
-                    </div>
-                    <div className="stat-card stat-violet">
-                      <div className="stat-icon"><i className="bx bxs-check-circle"></i></div>
-                      <div className="stat-info">
-                        <h3>Evaluations Done</h3>
-                        <h2>{currentMonth.filter(e => e.status !== 'DRAFT').length} / {coaches.filter(c => c.status === 'Active').length}</h2>
-                        <p>{currentPeriodMonth} performance cycle</p>
-                      </div>
-                    </div>
-                    <div className="stat-card stat-amber">
-                      <div className="stat-icon"><i className="bx bxs-shield-alt"></i></div>
-                      <div className="stat-info">
-                        <h3>Pending HR Review</h3>
-                        <h2>{currentMonth.filter(e => e.status === 'RM_SUBMITTED').length}</h2>
-                        <p>Needs score validation</p>
-                      </div>
-                    </div>
-                    {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
-                      const openNow = attendanceLogs.filter(l => !l.logged_out_at).filter(l => {
-                        if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
-                        const c = coaches.find(x => x.id === l.coach_id);
-                        return c?.reporting_manager_id === currentRmContext;
-                      });
-                      const offSite = openNow.filter(l => l.within_centre === false).length;
-                      return (
-                        <div
-                          className="stat-card stat-teal stat-card-action"
-                          role="button"
-                          tabIndex={0}
-                          title="Open Attendance & Leave to see where they logged in from"
-                          onClick={() => setActiveView('attendance')}
-                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('attendance'); }}
-                        >
-                          <div className="stat-icon"><i className="bx bxs-user-check"></i></div>
-                          <div className="stat-info">
-                            <h3>Logged In Now</h3>
-                            <h2>{openNow.length}</h2>
-                            <p>
-                              {openNow.length === 0 ? 'Nobody is logged in'
-                                : offSite ? `${offSite} away from their centre`
-                                : 'Locations recorded'}
-                            </p>
+                      <label className="hb-home-find">
+                        <span className="sr-only">Find a coach by name or ID</span>
+                        <input
+                          type="search"
+                          placeholder="Find a coach by name or ID"
+                          value={homeFind}
+                          onChange={(e) => setHomeFind(e.target.value)}
+                        />
+                        {homeFind.trim() && (
+                          <div className="hb-home-results">
+                            {active.filter(c =>
+                              c.name.toLowerCase().includes(homeFind.trim().toLowerCase()) ||
+                              String(c.id).toLowerCase().includes(homeFind.trim().toLowerCase())
+                            ).slice(0, 6).map(c => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => { setCurrentCoachContext(c.id); setHomeFind(''); setActiveView('coaches'); }}
+                              >
+                                <strong>{c.name}</strong>
+                                <small>{c.id} · {c.coach_type || findVariant(variants, c.variant_id).discipline}</small>
+                              </button>
+                            ))}
+                            {active.filter(c =>
+                              c.name.toLowerCase().includes(homeFind.trim().toLowerCase()) ||
+                              String(c.id).toLowerCase().includes(homeFind.trim().toLowerCase())
+                            ).length === 0 && <p>No coach matches that.</p>}
                           </div>
-                        </div>
-                      );
-                    })()}
-                    {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
-                      const waiting = leaveApplications.filter(a => a.status === 'Pending');
-                      if (waiting.length === 0) return null;
-                      const overdue = waiting.filter(a =>
-                        Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3).length;
-                      return (
-                        <div
-                          className={`stat-card ${overdue ? 'stat-red' : 'stat-amber'} stat-card-action`}
-                          role="button"
-                          tabIndex={0}
-                          title="Open Attendance & Leave to decide them"
-                          onClick={() => setActiveView('attendance')}
-                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('attendance'); }}
-                        >
-                          <div className="stat-icon"><i className="bx bxs-calendar-check"></i></div>
-                          <div className="stat-info">
-                            <h3>Leave Awaiting You</h3>
-                            <h2>{waiting.length}</h2>
-                            <p>
-                              {overdue
-                                ? `${overdue} past the 3-day deadline`
-                                : 'Decide within 3 working days'}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                    {PROFILE_PAY_ROLES.includes(currentRole) && bandMovements.length > 0 && (
-                      <div
-                        className="stat-card stat-violet stat-card-action"
-                        role="button"
-                        tabIndex={0}
-                        title="Open the Score Tracker, where the moves are marked on the band"
-                        onClick={() => setActiveView('score-tracker')}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setActiveView('score-tracker'); }}
-                      >
-                        <div className="stat-icon"><i className="bx bx-transfer-alt"></i></div>
-                        <div className="stat-info">
-                          <h3>Band Movement</h3>
-                          <h2>
-                            {bandMovements.filter(m => m.up).length}↑ {bandMovements.filter(m => !m.up).length}↓
-                          </h2>
-                          <p>
-                            {bandMovements.slice(0, 3).map(m => m.name.split(' ')[0]).join(', ')}
-                            {bandMovements.length > 3 ? ` +${bandMovements.length - 3} more` : ''}
-                            {' '}— pay does not follow, review it
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                    <div className="stat-card stat-red">
-                      <div className="stat-icon"><i className="bx bxs-error-circle"></i></div>
-                      <div className="stat-info">
-                        <h3>Risk Watchlist</h3>
-                        <h2>{
-                          coaches.filter(c => {
-                            // A month with no recorded score is not a weak month:
-                            // `null < 40` is true, so without this an unrecorded
-                            // period counts against the coach.
-                            const combined = [...historicMonths, ...currentMonth]
-                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT" && e.hb_score != null)
-                              .sort((a, b) => new Date(b.period_end) - new Date(a.period_end));
-                            return combined.length >= 2 && combined[0].hb_score < 40 && combined[1].hb_score < 40;
-                          }).length
-                        }</h2>
-                        <p>Consecutive scores &lt; 40</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="dashboard-grid" style={{ marginTop: '1.5rem' }}>
-                    {/* SVG column chart for band distributions */}
-                    <div className="card grid-span-8">
-                      <div className="card-header-row">
-                        <h3>HB+ Score Performance Band Distribution</h3>
-                        <span className="badge badge-success">{currentPeriodMonth}</span>
-                      </div>
-                      <div className="chart-container-box">
-                        {(() => {
-                          const dist = { "0-30": 0, "30-40": 0, "40-50": 0, "50-60": 0, "60-70": 0, "70-80": 0, "80+": 0 };
-                          currentMonth.forEach(e => {
-                            const sc = e.hb_score || 0;
-                            if (sc < 30) dist["0-30"]++;
-                            else if (sc < 40) dist["30-40"]++;
-                            else if (sc < 50) dist["40-50"]++;
-                            else if (sc < 60) dist["50-60"]++;
-                            else if (sc < 70) dist["60-70"]++;
-                            else if (sc < 80) dist["70-80"]++;
-                            else dist["80+"]++;
-                          });
-                          const maxCount = Math.max(...Object.values(dist), 1);
-                          return Object.entries(dist).map(([band, val]) => {
-                            const pct = (val / maxCount) * 80;
-                            let color = "var(--accent-red)";
-                            if (band === "40-50") color = "var(--accent-amber)";
-                            if (band === "50-60") color = "var(--accent-teal)";
-                            if (band === "60-70") color = "var(--accent-blue)";
-                            if (band === "70-80") color = "var(--accent-violet)";
-                            if (band === "80+") color = "var(--accent-teal)";
-                            return (
-                              <div className="chart-bar-col" key={band}>
-                                <div className="chart-bar-pillar" style={{ height: `${pct}%`, backgroundColor: color }} data-tooltip={`${val} Coach(es)`}></div>
-                                <div className="chart-bar-label">{band}</div>
-                              </div>
-                            );
-                          });
-                        })()}
-                      </div>
+                        )}
+                      </label>
                     </div>
 
-                    {/* Alerts Watchlist */}
-                    <div className="card grid-span-4" style={{ maxHeight: '290px', overflowY: 'auto' }}>
-                      <div className="card-header-row">
-                        <h3>Performance Alerts</h3>
-                        <i className="bx bxs-bell-ring text-red animate-pulse"></i>
+                    <section className="hb-card hb-steps" aria-label="Getting this cycle paid">
+                      <div className="hb-card-head">
+                        <h2>Getting {currentPeriodMonth.split(' ')[0] || currentPeriodMonth} paid — 5 steps</h2>
+                        <span>Work left to right. Payroll can only be locked once steps 1–4 are clear.</span>
                       </div>
-                      <div className="interaction-history-list">
-                        {(() => {
-                          const wList = coaches.map(c => {
-                            // Same guard as the count above: only months that
-                            // actually carry a score can be weak ones.
-                            const hist = [...historicMonths, ...currentMonth]
-                              .filter(e => e.coach_id === c.id && e.status !== "DRAFT" && e.hb_score != null)
-                              .sort((a, b) => new Date(b.period_end) - new Date(a.period_end));
-                            if (hist.length >= 2 && hist[0].hb_score < 40 && hist[1].hb_score < 40) {
-                              return { c, score1: hist[0].hb_score, score2: hist[1].hb_score };
-                            }
-                            return null;
-                          }).filter(Boolean);
+                      <ol className="hb-step-row">
+                        {steps.map(s => (
+                          <li key={s.n} className={`hb-step ${s.done ? 'is-done' : (s.n <= 2 ? 'is-todo' : '')}`}>
+                            <span className="hb-step-n">
+                              Step {s.n}{s.done ? ' · done' : (s.n <= 2 ? ' · to do' : '')}
+                            </span>
+                            <h3>{s.title}</h3>
+                            {s.pct != null ? (
+                              <>
+                                <div className="hb-bar"><div style={{ width: `${Math.max(s.pct, 0)}%` }} /></div>
+                                <p>{s.line}</p>
+                              </>
+                            ) : <p className="hb-step-note">{s.note}</p>}
+                            <button
+                              type="button"
+                              className={`hb-btn ${s.n <= 2 ? 'hb-btn-primary' : ''}`}
+                              onClick={s.go}
+                            >
+                              {s.cta}
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
 
-                          if (wList.length === 0) {
-                            return <p className="text-secondary" style={{ fontSize: '0.85rem' }}>No critical performance reviews triggered.</p>;
-                          }
-
-                          return wList.map(item => (
-                            <div key={item.c.id} className="underperform-alert-banner" style={{ padding: '8px 12px', fontSize: '0.8rem', marginBottom: '6px' }}>
-                              <i className="bx bxs-error-circle" style={{ fontSize: '1.2rem' }}></i>
-                              <div>
-                                <strong>{item.c.name} ({item.c.id})</strong>
-                                <p className="text-secondary">Consecutive weak scores: {item.score2.toFixed(2)} &rarr; {item.score1.toFixed(2)}</p>
-                              </div>
+                    <div className="hb-home-grid">
+                      <section className="hb-card hb-attention" aria-label="Needs your attention">
+                        <div className="hb-card-head"><h2>Needs your attention</h2></div>
+                        {attention.length === 0 ? (
+                          <p className="hb-empty">Nothing is waiting. Every coach has a score card, no leave is overdue, and the data is clean.</p>
+                        ) : attention.map(a => (
+                          <div className="hb-att-row" key={a.k}>
+                            <span className={`hb-dot hb-dot-${a.tone}`} aria-hidden="true" />
+                            <div>
+                              <strong>{a.title}</strong>
+                              <p>{a.detail}</p>
                             </div>
-                          ));
-                        })()}
+                            <button type="button" className="hb-btn" onClick={a.go}>{a.cta}</button>
+                          </div>
+                        ))}
+                      </section>
+
+                      <div className="hb-home-side">
+                        <section className="hb-card" aria-label="Where coaches sit">
+                          <div className="hb-card-head">
+                            <h2>Where coaches sit</h2>
+                            <span>Latest recorded score</span>
+                          </div>
+                          <div className="hb-dist">
+                            {dist.map(d => (
+                              <div className="hb-dist-row" key={d.label}>
+                                <span className="hb-dist-label">{d.label}</span>
+                                <div className="hb-dist-track">
+                                  <div style={{ width: `${(d.n / distMax) * 100}%`, background: d.colour }} />
+                                </div>
+                                <span className="hb-dist-n">{d.n}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="hb-foot">The 0–30 group includes coaches with no score recorded yet.</p>
+                        </section>
+
+                        <section className="hb-card" aria-label="Today on the floor">
+                          <div className="hb-card-head"><h2>Today on the floor</h2></div>
+                          <div className="hb-floor">
+                            <button type="button" onClick={() => setActiveView('attendance')}>
+                              <strong>{openNow.length}</strong>
+                              <span>logged in now</span>
+                            </button>
+                            <button type="button" onClick={() => setActiveView('attendance')}>
+                              <strong>{awayToday.length}</strong>
+                              <span>{awayNames ? `away — ${awayNames}` : 'away'}</span>
+                            </button>
+                          </div>
+                        </section>
                       </div>
                     </div>
                   </div>
-                </>
-              )}
+                );
+              })()}
 
               {/* Finance Dashboard View */}
               {currentRole === "Finance" && (
@@ -7611,75 +7819,40 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <i className="bx bx-arrow-back"></i> Back to Coach Master
                 </button>
 
-                <div className="card coach-detail-header">
-                  <div className="coach-detail-identity">
-                    <div className="coach-detail-avatar">{coach.name.substring(0, 2).toUpperCase()}</div>
+                <div className="card hb-coach-head">
+                  <div className="hb-coach-ident">
+                    <div className="hb-coach-avatar">{coach.name.substring(0, 2).toUpperCase()}</div>
                     <div>
                       <h2>{coach.name}</h2>
-                      <p className="text-secondary">
-                        {coach.id} &middot; {coach.coach_type || (vConfig ? vConfig.discipline : '—')} &middot; {coach.coach_category}
+                      <p className="hb-coach-meta">
+                        <span>{coach.id}</span>
+                        <span>{coach.coach_type || vConfig.discipline} · {coach.coach_category}</span>
+                        {coach.employment_stage && <span>{coach.employment_stage}</span>}
+                        {coach.centre_name && <span>{coach.centre_name}</span>}
+                        <span>{coach.reporting_manager_id ? `Reports to ${coach.reporting_manager_id}` : 'No reporting manager'}</span>
                       </p>
                       <div className="coach-detail-badges">
                         <span className={`badge ${statusClass}`}>{coach.status}</span>
-                        <span className="badge badge-info">{vConfig ? vConfig.name : coach.variant_id}</span>
+                        <span className="badge badge-info">{vConfig.name}</span>
                         {!isDraft && <span className="badge badge-warning">{finalBand}</span>}
                       </div>
                     </div>
                   </div>
                   {canManage && (
-                    <div className="table-btn-group">
+                    <div className="hb-coach-actions">
                       {coach.pdfData && (
-                        <a className="btn btn-secondary" href={coach.pdfData} download={coach.pdfName || "profile.pdf"} target="_blank" rel="noreferrer">
+                        <a className="hb-btn" href={coach.pdfData} download={coach.pdfName || "profile.pdf"} target="_blank" rel="noreferrer">
                           <i className={getFileIcon(coach.pdfName)}></i> Document
                         </a>
                       )}
-                      <button className="btn btn-secondary" onClick={() => handleOpenViolationModal(coach.id)}>
-                        <i className="bx bx-error-circle"></i> Log Incident
+                      <button className="hb-btn" onClick={() => handleOpenViolationModal(coach.id)}>
+                        Log incident
                       </button>
-                      <button className="btn btn-secondary btn-delete-item" onClick={() => handleExitCoach(coach.id)}>
-                        <i className="bx bx-log-out"></i> Suspend / Exit
+                      <button className="hb-btn hb-btn-danger" onClick={() => handleExitCoach(coach.id)}>
+                        Suspend / Exit
                       </button>
                     </div>
                   )}
-                </div>
-
-                <div className="stats-row" style={{ marginTop: '1.5rem' }}>
-                  <div className="stat-card stat-teal">
-                    <div className="stat-icon"><i className="bx bxs-medal"></i></div>
-                    <div className="stat-info">
-                      <h3>HB+ Score</h3>
-                      <h2>{isDraft ? "—" : finalScore.toFixed(2)}</h2>
-                      <p>{isDraft
-                        ? `${statPeriod || 'No period'} — awaiting entry`
-                        : `${finalBand} · ${statPeriod}${statIsCurrent ? '' : ' (last recorded)'}`}</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-violet">
-                    <div className="stat-icon"><i className="bx bx-calendar-event"></i></div>
-                    <div className="stat-info">
-                      <h3>Attendance Rate</h3>
-                      <h2>{attendance === null || attendance === undefined ? '—' : `${Number(attendance).toFixed(0)}%`}</h2>
-                      <p>{statRun && statRun.meetings_scheduled
-                        ? `${statRun.meetings_attended ?? 0} of ${statRun.meetings_scheduled} meetings · ${statPeriod}`
-                        : `${statPeriod || 'No period'}`}</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-amber">
-                    <div className="stat-icon"><i className="bx bxs-star"></i></div>
-                    <div className="stat-info">
-                      <h3>Sessions Completed</h3>
-                      <h2>{sessions === null || sessions === undefined ? '—' : sessions}</h2>
-                      <p>{statPeriod || 'No active period'}</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-red">
-                    <div className="stat-icon"><i className="bx bxs-error"></i></div>
-                    <div className="stat-info">
-                      <h3>Active Violations</h3>
-                      <h2>{activeVio.length}</h2>
-                      <p>Annexure-1 incidents</p>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="dashboard-grid" style={{ marginTop: '1.5rem' }}>
@@ -7694,7 +7867,286 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     />
                   </div>
 
-                  {coachDetailTab === 'profile' && (
+                  {coachDetailTab === 'overview' && (() => {
+                    // Overview reads; it never writes. Every figure here is the
+                    // same one the tab behind it shows, so there is one answer
+                    // to each question rather than two that can disagree.
+                    const cycleRun = curr;
+                    const cycleRecorded = cycleRun && isRecorded(cycleRun);
+                    const shownRun = statRun;
+                    const shownMonth = shownRun?.period_month || '—';
+
+                    const vios = shownRun ? coachVios.filter(v =>
+                      new Date(v.incident_date) >= new Date(shownRun.period_start) &&
+                      new Date(v.incident_date) <= new Date(shownRun.period_end)) : [];
+                    const ow = shownRun ? orgWork.filter(o =>
+                      o.coach_id === coach.id && o.period_month === shownRun.period_month &&
+                      o.status === 'Approved') : [];
+                    const calc = shownRun
+                      ? (shownRun.hb_score != null ? shownRun : computeHBPlusScore(coach, shownRun, vConfig))
+                      : null;
+                    const pay = shownRun
+                      ? computeMonthlyPay(coach, carryPay(shownRun), calc, vios, vConfig, ow)
+                      : null;
+                    const tds = pay ? pay.grossPay * TDS_194J_RATE : 0;
+
+                    // Where the fixed pay came from. resolvePay already walks
+                    // the chain and records which link answered, so this reads
+                    // that rather than guessing at it a second time.
+                    const src = shownRun ? resolvePay(shownRun) : null;
+                    const fromLabel = (f) => f === 'month' ? 'set on this month'
+                      : f === 'profile' ? 'from the profile'
+                      : f === 'band' ? 'from the band'
+                      : `carried from ${f}`;
+                    const payFrom = src ? fromLabel(src.fixedFrom) : '—';
+                    const threshold = (vConfig.rates?.threshold)
+                      || (vConfig.discipline === 'Yoga' ? 117 : 156);
+
+                    // The stored record holds a total, not its parts, so the
+                    // breakdown is recomputed for display. It is the same
+                    // function the score card itself uses.
+                    const w = vConfig.weights || {};
+                    const bd = shownRun ? computeHBPlusScore(coach, shownRun, vConfig).breakdown : null;
+                    const fixedW = (w.tenure || 0) + (w.technical_cert || 0) +
+                      (w.coaching_exp || 0) + (w.non_coaching_exp || 0) + (w.education || 0);
+                    const fixedPts = bd
+                      ? (bd.tenureScore || 0) + (bd.techScore || 0) + (bd.expScore || 0) + (bd.eduScore || 0)
+                      : null;
+
+                    const criteria = [
+                      ['Core performance', bd ? bd.coreScore : null, w.core_performance || 0,
+                        bd ? `${bd.coreTotal ?? 0} of 100 rated by the Reporting Manager` : 'rated by the Reporting Manager'],
+                      ['Elevate+ attendance', bd ? bd.attendanceScore : null, w.attendance || 0,
+                        shownRun?.meetings_scheduled
+                          ? `${shownRun.meetings_attended ?? 0} of ${shownRun.meetings_scheduled} meetings`
+                          : 'no meetings recorded'],
+                      ['Tenure, certification, experience & education', fixedPts, fixedW, 'set on the profile']
+                    ];
+
+                    return (
+                      <div className="grid-span-12 hb-overview">
+                        {!cycleRecorded && (
+                          <div className="hb-notice">
+                            <div>
+                              <strong>{currentPeriodMonth}'s score card isn't recorded yet</strong>
+                              <p>
+                                {shownRun && shownRun !== cycleRun
+                                  ? `The numbers below use ${shownMonth}, the last recorded month. Record ${currentPeriodMonth} to see the real pay.`
+                                  : `Nothing has been recorded for ${coach.name} yet, so the figures below are fixed points only.`}
+                              </p>
+                            </div>
+                            {canEditScores && (
+                              <button className="hb-btn hb-btn-primary" onClick={() => switchCoachDetailTab('scorecard')}>
+                                Record {currentPeriodMonth} scores
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="hb-overview-grid">
+                          <section className="card hb-ov-card" aria-label="HB+ score">
+                            <div className="hb-ov-head">
+                              <div>
+                                <h3>HB+ score</h3>
+                                <span>{shownMonth}{shownRun?.status === 'FINANCE_LOCKED' ? ' · locked' : ''}</span>
+                              </div>
+                              <div className="hb-ov-score">
+                                <strong>{isDraft ? '—' : finalScore.toFixed(2)}</strong>
+                                {!isDraft && <span className="badge badge-warning">{finalBand}</span>}
+                              </div>
+                            </div>
+                            <div className="hb-scale" aria-hidden="true">
+                              <div className="hb-scale-track" />
+                              {!isDraft && (
+                                <span className="hb-scale-pin" style={{ left: `${Math.min(Math.max(finalScore / 90 * 100, 0), 100)}%` }} />
+                              )}
+                            </div>
+                            <div className="hb-scale-ticks"><span>0</span><span>30</span><span>60</span><span>90</span></div>
+                            <div className="hb-crit">
+                              {criteria.map(([name, pts, max, note]) => (
+                                <div className="hb-crit-row" key={name}>
+                                  <div>
+                                    <strong>{name}</strong> <span>· {note}</span>
+                                  </div>
+                                  <span className="hb-crit-n">
+                                    {pts == null ? '—' : Number(pts).toFixed(2)} <small>/ {Number(max).toFixed(0)}</small>
+                                  </span>
+                                  <div className="hb-crit-bar">
+                                    <div style={{ width: `${pts != null && max ? Math.min(pts / max * 100, 100) : 0}%` }} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <button className="hb-link" onClick={() => switchCoachDetailTab('scorecard')}>
+                              See every cell of the score card →
+                            </button>
+                          </section>
+
+                          {!HIDES_PAY(currentRole) && (
+                            <section className="card hb-ov-card" aria-label="Pay">
+                              <div className="hb-ov-head">
+                                <div>
+                                  <h3>{shownMonth} pay</h3>
+                                  <span>{cycleRecorded ? 'as recorded' : 'forecast — no score card yet'}</span>
+                                </div>
+                                <span className="hb-ov-note">Each figure says where it came from</span>
+                              </div>
+                              {!pay ? (
+                                <p className="hb-empty">No period has been opened for this coach yet.</p>
+                              ) : (
+                                <>
+                                  <div className="hb-pay">
+                                    <div className="hb-pay-row">
+                                      <span>Fixed pay <em className="hb-src">{payFrom}</em></span>
+                                      <strong>{rupees(pay.basePay)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row">
+                                      <span>Extra sessions · {pay.extraSessions || 0} beyond {threshold} at {rupees(pay.perSessionRate)} <em className="hb-src">worked out</em></span>
+                                      <strong>{rupees(pay.extraSessionPay)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row">
+                                      <span>Incentives &amp; bonuses</span>
+                                      <strong>{rupees(pay.milestoneIncentive + pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row">
+                                      <span>Loss of Pay · {pay.lopDays || 0} day{pay.lopDays === 1 ? '' : 's'}</span>
+                                      <strong>−{rupees(pay.lossOfPay)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row">
+                                      <span>Penalties · {vios.length ? `${vios.length} incident${vios.length === 1 ? '' : 's'} this cycle` : 'no incidents this cycle'}</span>
+                                      <strong>−{rupees(pay.penaltyDeductions)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row">
+                                      <span>TDS u/s 194J · 10%</span>
+                                      <strong>−{rupees(tds)}</strong>
+                                    </div>
+                                    <div className="hb-pay-row hb-pay-total">
+                                      <span>Reaches the coach</span>
+                                      <strong>{rupees(pay.grossPay - tds)}</strong>
+                                    </div>
+                                  </div>
+                                  <p className="hb-foot">
+                                    Pay does not change on its own when a band moves — someone sets it.
+                                  </p>
+                                  {canManage && (
+                                    <div className="hb-ov-actions">
+                                      <button className="hb-btn" onClick={() => switchCoachDetailTab('pay')}>Open the calculator</button>
+                                      <button className="hb-btn" onClick={() => switchCoachDetailTab('details')}>Change their pay</button>
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </section>
+                          )}
+                        </div>
+
+                        <div className="hb-overview-grid">
+                          <section className="card hb-ov-card" aria-label="Month by month">
+                            <div className="hb-ov-head"><div><h3>Month by month</h3></div></div>
+                            {allRuns.length === 0 ? (
+                              <p className="hb-empty">No periods yet.</p>
+                            ) : (
+                              <div className="hb-months">
+                                {[...allRuns].reverse().map(r => {
+                                  const rec = isRecorded(r);
+                                  const locked = r.status === 'FINANCE_LOCKED';
+                                  const isCurrent = curr && r.period_month === curr.period_month;
+                                  return (
+                                    <div className="hb-month-row" key={r.period_month}>
+                                      <strong>{r.period_month}</strong>
+                                      <span>
+                                        {rec
+                                          ? `Scored ${r.hb_score != null ? Number(r.hb_score).toFixed(2) : '—'}`
+                                          : 'No score recorded'}
+                                        {isCurrent ? ` · current cycle, closes ${fmtDay(r.period_end)}` : ''}
+                                      </span>
+                                      <span className={`badge ${locked ? 'badge-success' : isCurrent ? 'badge-info' : 'badge-warning'}`}>
+                                        {locked ? 'Locked' : isCurrent ? 'Current' : 'Open'}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </section>
+
+                          <section className="card hb-ov-card" aria-label="Details">
+                            <div className="hb-ov-head">
+                              <div><h3>Details</h3></div>
+                              <button className="hb-btn" onClick={() => switchCoachDetailTab('details')}>Open details</button>
+                            </div>
+                            <dl className="hb-dl">
+                              <div><dt>Joined</dt><dd>{formatDate(coach.date_of_joining)}</dd></div>
+                              <div><dt>First certification</dt><dd>{formatDate(coach.date_of_first_relevant_certification)}</dd></div>
+                              <div><dt>Pay policy</dt><dd>{vConfig.placeholder ? <span className="hb-missing">Not set</span> : vConfig.name}</dd></div>
+                              <div><dt>Elevate+ meetings</dt><dd>{shownRun?.meetings_scheduled ? `${shownRun.meetings_attended ?? 0} of ${shownRun.meetings_scheduled} (${shownMonth})` : '—'}</dd></div>
+                              <div><dt>Phone</dt><dd>{coach.phone || '—'}</dd></div>
+                              <div><dt>Email</dt><dd>{coach.email || '—'}</dd></div>
+                              <div><dt>Gender</dt><dd>{coach.gender || <span className="hb-missing">Not set</span>}</dd></div>
+                              <div><dt>Incidents on record</dt><dd>{activeVio.length}</dd></div>
+                            </dl>
+                            <p className="hb-foot">Bank details and education are on the Details tab — visible to HR and Finance only.</p>
+                          </section>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {coachDetailTab === 'leave' && (() => {
+                    const apps = leaveApplications
+                      .filter(a => a.coach_id === coach.id)
+                      .sort((a, b) => new Date(b.from_date) - new Date(a.from_date));
+                    const bals = leaveBalances.filter(b => b.coach_id === coach.id);
+                    return (
+                      <div className="card grid-span-12">
+                        <div className="card-header-row">
+                          <h3>Leave &amp; attendance</h3>
+                          <button className="hb-btn" onClick={() => setActiveView('attendance')}>
+                            Open the register
+                          </button>
+                        </div>
+                        {bals.length > 0 && (
+                          <div className="hb-bal">
+                            {bals.map(b => (
+                              <div key={`${b.leave_year}-${b.type_id}`}>
+                                <strong>{(Number(b.opening || 0) + Number(b.accrued || 0) + Number(b.adjusted || 0) - Number(b.used || 0)).toFixed(1)}</strong>
+                                <span>{b.type_id} left · {b.leave_year}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="table-container" style={{ marginTop: '1rem' }}>
+                          <table>
+                            <thead>
+                              <tr><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Reason</th></tr>
+                            </thead>
+                            <tbody>
+                              {apps.length === 0 ? (
+                                <tr><td colSpan={6} className="text-secondary">No leave has been applied for.</td></tr>
+                              ) : apps.map(a => (
+                                <tr key={a.id}>
+                                  <td>{a.type_id}</td>
+                                  <td>{formatDate(a.from_date)}</td>
+                                  <td>{formatDate(a.to_date)}</td>
+                                  <td>{Number(a.approved_days ?? a.days ?? 0).toFixed(1)}</td>
+                                  <td>
+                                    <span className={`badge ${a.status === 'Approved' ? 'badge-success'
+                                      : a.status === 'Rejected' ? 'badge-danger'
+                                      : a.status === 'Pending' ? 'badge-warning' : 'badge-info'}`}>
+                                      {a.status}
+                                    </span>
+                                  </td>
+                                  <td className="text-secondary">{a.reason || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {coachDetailTab === 'details' && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Profile</h3>
@@ -7811,7 +8263,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                   {/* Payment details are their own card: they are the one part of
                       the profile that goes to a bank rather than to scoring. */}
-                  {coachDetailTab === 'bank' && !HIDES_PAY(currentRole) && (
+                  {coachDetailTab === 'details' && !HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Bank Details</h3>
@@ -7851,7 +8303,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   )}
 
-                  {coachDetailTab === 'experience' && (
+                  {coachDetailTab === 'details' && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Experience &amp; Education</h3>
@@ -8162,6 +8614,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   )}
 
+                  {coachDetailTab === 'scorecard' && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Score Management</h3>
@@ -8291,9 +8744,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       A new period opens automatically once the calendar passes the 15th — its dynamic cells fill in at once, its manual cells wait to be recorded.
                     </p>
                   </div>
+                  )}
 
                   {/* Pay lives in these two cards, so they are the gate. */}
-                  {!HIDES_PAY(currentRole) && (
+                  {coachDetailTab === 'pay' && !HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Payroll Calculator</h3>
@@ -8384,7 +8838,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   )}
 
-                  {!HIDES_PAY(currentRole) && (
+                  {coachDetailTab === 'pay' && !HIDES_PAY(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row"><h3>Payroll History</h3></div>
                     <div className="table-container">
@@ -8438,6 +8892,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   )}
 
+                  {coachDetailTab === 'incidents' && (
                   <div className="card grid-span-12">
                     <div className="card-header-row"><h3>Disciplinary History</h3></div>
                     <div className="table-container">
@@ -8472,6 +8927,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </table>
                     </div>
                   </div>
+                  )}
                 </div>
               </section>
             );
@@ -8669,9 +9125,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <section id="view-score-tracker" className="content-view active-view">
                 <div className="tracker-toolbar">
                   <div className="tracker-toolbar-title">
-                    <h2>Coach Remuneration / Score Tracker</h2>
-                    <p>Track coach experience, technical knowledge and calculate remuneration fairly.</p>
+                    <h2>Record {currentPeriodMonth} scores</h2>
+                    <p>One coach at a time. Only the things that change each month are asked for — the rest comes from the profile.</p>
+                    <div className="hb-rec-tools">
+                      <button className="hb-btn" onClick={() => openBulkDialog('template', 'performance')}>
+                        Download sheet template
+                      </button>
+                      <button className="hb-btn" onClick={() => openBulkDialog('upload', 'performance')}>
+                        Upload a filled sheet
+                      </button>
+                      <div className="hb-seg" role="group" aria-label="How to show the tracker">
+                        <button type="button" aria-pressed={trackerMode === 'record'}
+                                className={trackerMode === 'record' ? 'is-on' : ''}
+                                onClick={() => setTrackerMode('record')}>Record</button>
+                        <button type="button" aria-pressed={trackerMode === 'table'}
+                                className={trackerMode === 'table' ? 'is-on' : ''}
+                                onClick={() => setTrackerMode('table')}>Full table</button>
+                      </div>
+                    </div>
                   </div>
+                  {trackerMode === 'table' && (
                   <div className="tracker-toolbar-controls">
                     <div className="tracker-search">
                       <i className="bx bx-search"></i>
@@ -8701,8 +9174,321 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <i className="bx bx-download"></i> Export CSV
                     </button>
                   </div>
+                  )}
                 </div>
 
+                {trackerMode === 'record' && (() => {
+                  // One coach at a time, asking exactly what the wide table
+                  // asks. Every group of SCORE_TRACKER_GROUPS becomes a
+                  // section; a column the bulk tabs call manual becomes a
+                  // field, and every other column is read back through the
+                  // same formatScoreCell the table uses, off a row built by
+                  // the same trackerRowFor. Nothing here computes on its own.
+                  const roster = coaches
+                    .filter(c => c.status === 'Active')
+                    .filter(c => currentRole !== 'Reporting Manager'
+                      || c.reporting_manager_id === currentRmContext);
+
+                  const runFor = (c) => currentMonth.find(r => r.coach_id === c.id) || null;
+                  const stateOf = (c) => {
+                    const r = runFor(c);
+                    if (findVariant(variants, c.variant_id).placeholder) return 'blocked';
+                    if (!r) return 'none';
+                    if (r.status === 'FINANCE_LOCKED') return 'locked';
+                    if (pendingDrafts[draftKey(c.id, r.period_month)]) return 'draft';
+                    return isRecorded(r) ? 'done' : 'none';
+                  };
+                  const STATE_LABEL = {
+                    done: ['Recorded', 'badge-success'], draft: ['Draft', 'badge-info'],
+                    none: ['Not started', 'badge-muted'], blocked: ['Blocked', 'badge-danger'],
+                    locked: ['Locked', 'badge-success']
+                  };
+
+                  const q = trackerFind.trim().toLowerCase();
+                  const listed = q
+                    ? roster.filter(c => c.name.toLowerCase().includes(q) || String(c.id).toLowerCase().includes(q))
+                    : roster;
+                  const doneCount = roster.filter(c => ['done', 'locked'].includes(stateOf(c))).length;
+
+                  const picked = roster.find(c => c.id === trackerPick) || roster[0] || null;
+                  const run = picked ? runFor(picked) : null;
+                  const vCfg = picked ? findVariant(variants, picked.variant_id) : null;
+                  const open = picked && run && editingRef.current === draftKey(picked.id, run.period_month);
+                  const locked = run?.status === 'FINANCE_LOCKED';
+                  const mayEdit = SCORE_EDIT_ROLES.includes(currentRole) && !locked && !vCfg?.placeholder;
+
+                  const d = open ? scoreDraft : {};
+                  const num = (k) => { const v = Number(d[k]); return Number.isNaN(v) ? 0 : v; };
+                  const setD = (k) => (e) => setScoreDraft(prev => ({ ...prev, [k]: e.target.value }));
+
+                  // The draft merged exactly as saveScoreRowEdit merges it, so
+                  // the figures read back are the ones that will be stored.
+                  const scheduled = num('meetings_scheduled');
+                  const attended = Math.min(num('meetings_attended'), scheduled);
+                  const liveRecord = run ? (open ? {
+                    ...run,
+                    prof_appearance: num('prof_appearance'), client_engagement: num('client_engagement'),
+                    safety: num('safety'), punctuality: num('punctuality'),
+                    team_conduct: num('team_conduct'), communication: num('communication'),
+                    meetings_scheduled: scheduled, meetings_attended: attended,
+                    attendance_pct: scheduled > 0 ? (attended / scheduled) * 100 : 0,
+                    sessions_completed: num('sessions'), night_sessions: num('night_sessions'),
+                    five_star_streak: num('streak'), missed_sessions: num('missed_sessions'),
+                    lop_days: num('lop_days'),
+                    hb_score: null, band: null
+                  } : run) : null;
+                  const liveCoach = picked ? (open ? {
+                    ...picked,
+                    freelance_past_exp_with_document: num('exp_doc'),
+                    freelance_past_exp_without_document: num('exp_nodoc'),
+                    non_coaching_exp_years: num('exp_non_coach_years'),
+                    education_score_override: num('edu_raw')
+                  } : picked) : null;
+                  const row = trackerRowFor(liveCoach, liveRecord);
+
+                  const liveScore = row ? row.hb_score : null;
+                  const liveBand = row ? row.band : '—';
+
+                  // Which columns a person types. Everything else is read-only
+                  // because the table treats it as calculated.
+                  const MANUAL = TRACKER_MANUAL_FIELDS;
+                  // Loss of Pay follows the same rule as the score card: only
+                  // the roles that own pay may correct what attendance wrote.
+                  const editableHere = (key) =>
+                    Boolean(MANUAL[key]) && (key !== 'lop_days' || PROFILE_PAY_ROLES.includes(currentRole));
+
+                  const SECTIONS = SCORE_TRACKER_GROUPS.filter(g => g.key !== 'info');
+                  const weightPct = (g) => {
+                    if (!g.weightKeys || !vCfg) return null;
+                    const t = g.weightKeys.reduce((s, k) => s + (vCfg.weights[k] || 0), 0);
+                    return t ? `${t}% of the score` : null;
+                  };
+
+                  const savedChip = autoSaveAt === 'saving'
+                    ? ['saving', '⟳', 'Saving…']
+                    : autoSaveAt ? ['saved', '✓', `All saved · ${autoSaveAt}`]
+                    : open ? ['idle', '', 'Not saved yet'] : null;
+
+                  const pick = (c) => {
+                    setTrackerPick(c.id);
+                    const r = runFor(c);
+                    if (r && SCORE_EDIT_ROLES.includes(currentRole) && r.status !== 'FINANCE_LOCKED') {
+                      beginScoreRowEdit(c, r);
+                    }
+                  };
+
+                  return (
+                    <div className="hb-rec">
+                      <section className="card hb-rec-queue" aria-label="Coaches to score">
+                        <div className="hb-rec-qhead">
+                          <h3>Coaches</h3>
+                          <span>{doneCount} of {roster.length} done</span>
+                        </div>
+                        <div className="hb-bar">
+                          <div style={{ width: `${roster.length ? doneCount / roster.length * 100 : 0}%` }} />
+                        </div>
+                        <label className="sr-only" htmlFor="tracker-find">Find a coach</label>
+                        <input
+                          id="tracker-find" type="search" placeholder="Find a coach"
+                          value={trackerFind} onChange={(e) => setTrackerFind(e.target.value)}
+                        />
+                        <div className="hb-rec-list">
+                          {listed.length === 0 && <p className="hb-empty">No coach matches that.</p>}
+                          {listed.map(c => {
+                            const [label, cls] = STATE_LABEL[stateOf(c)];
+                            return (
+                              <button
+                                key={c.id} type="button"
+                                aria-pressed={picked?.id === c.id}
+                                className={picked?.id === c.id ? 'is-on' : ''}
+                                onClick={() => pick(c)}
+                              >
+                                <span>
+                                  <strong>{c.name}</strong>
+                                  <small>{c.id} · {c.coach_type || findVariant(variants, c.variant_id).discipline}</small>
+                                </span>
+                                <span className={`badge ${cls}`}>{label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </section>
+
+                      <div className="hb-rec-form">
+                        {!picked ? (
+                          <div className="card"><p className="hb-empty">No active coach to score.</p></div>
+                        ) : !run ? (
+                          <div className="card">
+                            <p className="hb-empty">
+                              {picked.name} has no open period for {currentPeriodMonth}. Open the cycle before scoring.
+                            </p>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="card hb-rec-head">
+                              <div>
+                                <h3>{picked.name}</h3>
+                                <span>
+                                  {run.period_month} · {fmtTrackerDay(run.period_start)} – {fmtTrackerDay(run.period_end)}
+                                  {vCfg?.placeholder ? ' · no pay policy' : ` · ${vCfg.name} weights`}
+                                </span>
+                                {savedChip && (
+                                  <div className={`hb-saved hb-saved-${savedChip[0]}`} role="status">
+                                    <span aria-hidden="true">{savedChip[1]}</span>{savedChip[2]}
+                                  </div>
+                                )}
+                                {locked && <div className="hb-saved hb-saved-idle">This month is locked</div>}
+                              </div>
+                              <div className="hb-rec-score">
+                                <span>Score as you type</span>
+                                <strong>{liveScore != null ? Number(liveScore).toFixed(2) : '—'}</strong>
+                              </div>
+                              {liveScore != null && <span className="badge badge-warning">{liveBand}</span>}
+                            </div>
+
+                            {!open && (
+                              <div className="hb-notice">
+                                <div>
+                                  <strong>Not open for editing</strong>
+                                  <p>
+                                    {!mayEdit
+                                      ? (vCfg?.placeholder
+                                          ? 'This coach has no pay policy, so there is nothing to score against.'
+                                          : locked ? 'The month is locked. Ask HR or Finance to reopen it.'
+                                          : 'Your role cannot record scores.')
+                                      : 'Select the coach again to start entering.'}
+                                  </p>
+                                </div>
+                                {mayEdit && (
+                                  <button className="hb-btn hb-btn-primary" onClick={() => beginScoreRowEdit(picked, run)}>
+                                    Start recording
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {SECTIONS.map((group, gi) => {
+                              const typed = group.columns.filter(c => editableHere(c.key));
+                              const shown = group.columns.filter(c => !editableHere(c.key));
+                              const pct = weightPct(group);
+                              const emph = group.columns.find(c => c.emphasis);
+                              return (
+                                <fieldset
+                                  className={`card hb-rec-sec hb-sec-${group.tone}`}
+                                  key={group.key}
+                                  disabled={typed.length > 0 && (!open || !mayEdit)}
+                                >
+                                  <div className="hb-rec-sechead">
+                                    <h4>
+                                      {gi + 1} · {group.label}
+                                      {pct && <em>{pct}</em>}
+                                      {!pct && typed.length === 0 && <em>all worked out</em>}
+                                    </h4>
+                                    {emph && row && (
+                                      <span>{formatScoreCell(emph, row)}</span>
+                                    )}
+                                  </div>
+
+                                  {typed.length > 0 && (
+                                    <div className="hb-rec-fields">
+                                      {typed.map(col => (
+                                        <div className="hb-f" key={col.key}>
+                                          <label htmlFor={`rec-${col.key}`}>{col.label}</label>
+                                          <input
+                                            id={`rec-${col.key}`} type="number" min="0"
+                                            max={MANUAL[col.key].max ?? undefined}
+                                            step={col.decimals ? '0.1' : '1'}
+                                            value={d[col.key] ?? ''}
+                                            onChange={setD(col.key)}
+                                          />
+                                          <small>{MANUAL[col.key].hint}</small>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {shown.length > 0 && (
+                                    <div className="hb-readout">
+                                      {shown.map(col => (
+                                        <div key={col.key} className={col.emphasis ? 'is-emph' : ''}>
+                                          <dt>{col.label}</dt>
+                                          <dd>{row ? formatScoreCell(col, row) : '—'}</dd>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* Incidents are counted here but logged on
+                                      the Incidents screen, which made the count
+                                      a dead end. Both ways in, from the figure
+                                      that depends on them. */}
+                                  {group.key === 'violations' && (() => {
+                                    const mine = violations
+                                      .filter(v => v.coach_id === picked.id)
+                                      .filter(v => new Date(v.incident_date) >= new Date(run.period_start)
+                                        && new Date(v.incident_date) <= new Date(run.period_end));
+                                    const charged = mine.filter(isPenaltyChargeable)
+                                      .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                                    const waiting = mine.filter(v => v.status === 'Pending_Acknowledge').length;
+                                    return (
+                                      <div className="hb-rec-link">
+                                        <span>
+                                          {mine.length === 0
+                                            ? `No incident this cycle — that is what earns the ₹500 consistency bonus.`
+                                            : `${mine.length} incident${mine.length === 1 ? '' : 's'} this cycle, ${rupees(charged)} charged${waiting ? ` · ${waiting} not acknowledged` : ''}.`}
+                                        </span>
+                                        <div>
+                                          <button type="button" className="hb-btn"
+                                            onClick={() => { setPenaltyFilter('All'); setActiveView('penalties'); }}>
+                                            See all incidents
+                                          </button>
+                                          {verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (
+                                            <button type="button" className="hb-btn hb-btn-danger"
+                                              onClick={() => handleOpenViolationModal(picked.id)}>
+                                              Log an incident for {picked.name.split(' ')[0]}
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                </fieldset>
+                              );
+                            })}
+
+                            <div className="card hb-rec-foot">
+                              <span>
+                                Everything not shown as a box is worked out from the boxes and the
+                                profile — the same values the full table prints. Each box saves on
+                                its own, a couple of seconds after you stop typing.
+                              </span>
+                              <div>
+                                <button className="hb-btn" onClick={() => {
+                                  const i = roster.findIndex(c => c.id === picked.id);
+                                  const next = roster[i + 1];
+                                  if (next) pick(next);
+                                }}>Skip for now</button>
+                                <button
+                                  className="hb-btn hb-btn-primary"
+                                  disabled={!open || !mayEdit}
+                                  onClick={() => {
+                                    if (saveScoreRowEdit(picked, run)) {
+                                      const i = roster.findIndex(c => c.id === picked.id);
+                                      const next = roster.slice(i + 1).find(c => stateOf(c) === 'none');
+                                      if (next) pick(next);
+                                    }
+                                  }}
+                                >Mark recorded &amp; next coach</button>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {trackerMode === 'table' && (<>
                 <div className="stats-row">
                   <div className="stat-card stat-blue">
                     <div className="stat-icon"><i className="bx bxs-group"></i></div>
@@ -8784,6 +9570,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </th>
                             );
                           })}
+                          <th className="group-head tracker-actions" aria-hidden="true"></th>
                         </tr>
                         <tr className="column-header-row">
                           {trackerGroups.flatMap(group => group.columns.map(col => {
@@ -8830,41 +9617,112 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </th>
                             );
                           }))}
+                          <th className="tracker-actions" aria-label="Edit"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {pageRows.length === 0 && (
                           <tr>
-                            <td colSpan={trackerColumns.length} className="text-muted">
+                            <td colSpan={trackerColumns.length + 1} className="text-muted">
                               No score records match the current filters.
                             </td>
                           </tr>
                         )}
-                        {pageRows.map(row => (
-                          <tr key={row.id} className="row-clickable" title="Open coach page" onClick={() => { setCoachDetailId(row.coach_id); setActiveView('coaches'); }}>
-                            {trackerGroups.flatMap(group => group.columns.map(col => (
-                              <td
-                                key={col.key}
-                                className={[
-                                  col.sticky ? `sticky-col sticky-${col.key}` : '',
-                                  col.decimals !== undefined || col.money ? 'num-col' : '',
-                                  col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
-                                  col.key === 'band' && bandMoveFor(row.coach_id, row.month)
-                                    ? `band-moved band-moved-${bandMoveFor(row.coach_id, row.month).up ? 'up' : 'down'}`
-                                    : ''
-                                ].join(' ')}
-                                title={col.key === 'band' && bandMoveFor(row.coach_id, row.month)
-                                  ? `Moved ${bandMoveFor(row.coach_id, row.month).up ? 'up' : 'down'} from ${bandMoveFor(row.coach_id, row.month).from} (${bandMoveFor(row.coach_id, row.month).fromMonth})`
-                                  : undefined}
-                              >
-                                {formatScoreCell(col, row)}
-                                {col.key === 'band' && bandMoveFor(row.coach_id, row.month) && (
-                                  <i className={`bx ${bandMoveFor(row.coach_id, row.month).up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
+                        {pageRows.map(row => {
+                          // A row is editable in place, through the same draft
+                          // and the same save as Record mode. Only the columns
+                          // the bulk tabs call manual become inputs; a locked
+                          // month stays read-only.
+                          const rKey = draftKey(row.coach_id, row.month);
+                          const editing = editingRef.current === rKey;
+                          const rCoach = coaches.find(c => c.id === row.coach_id);
+                          const rRun = [...currentMonth, ...historicMonths]
+                            .find(r => r.coach_id === row.coach_id && r.period_month === row.month);
+                          const rLocked = row.status === 'FINANCE_LOCKED';
+                          const rMayEdit = SCORE_EDIT_ROLES.includes(currentRole) && !rLocked
+                            && rCoach && rRun && !findVariant(variants, rCoach.variant_id).placeholder;
+                          const hasTypable = trackerGroups.some(g =>
+                            g.columns.some(c => TRACKER_MANUAL_FIELDS[c.key]));
+                          return (
+                            <tr key={row.id} className={editing ? 'row-editing' : undefined}>
+                              {trackerGroups.flatMap(group => group.columns.map(col => {
+                                const man = TRACKER_MANUAL_FIELDS[col.key];
+                                // Loss of Pay follows the score card's rule:
+                                // only the roles that own pay may correct it.
+                                const typableHere = man && rMayEdit
+                                  && (col.key !== 'lop_days' || PROFILE_PAY_ROLES.includes(currentRole));
+                                const move = col.key === 'band' && bandMoveFor(row.coach_id, row.month);
+                                return (
+                                  <td
+                                    key={col.key}
+                                    className={[
+                                      col.sticky ? `sticky-col sticky-${col.key}` : '',
+                                      col.decimals !== undefined || col.money ? 'num-col' : '',
+                                      col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
+                                      editing && typableHere ? 'cell-editing' : '',
+                                      move ? `band-moved band-moved-${move.up ? 'up' : 'down'}` : ''
+                                    ].join(' ')}
+                                    title={move
+                                      ? `Moved ${move.up ? 'up' : 'down'} from ${move.from} (${move.fromMonth})`
+                                      : undefined}
+                                  >
+                                    {editing && typableHere ? (
+                                      <input
+                                        className="cell-input"
+                                        type="number" min="0"
+                                        max={man.max ?? undefined}
+                                        step={col.decimals ? '0.1' : '1'}
+                                        aria-label={`${col.label} for ${row.coach_name}, ${row.month}`}
+                                        value={scoreDraft[man.draft] ?? ''}
+                                        onChange={(e) => setScoreDraft(prev => ({
+                                          ...prev, [man.draft]: e.target.value
+                                        }))}
+                                      />
+                                    ) : col.key === 'coach_name' ? (
+                                      <button
+                                        type="button" className="linklike"
+                                        title="Open coach page"
+                                        onClick={() => { setCoachDetailId(row.coach_id); setActiveView('coaches'); }}
+                                      >{row.coach_name}</button>
+                                    ) : (
+                                      formatScoreCell(col, row)
+                                    )}
+                                    {move && !editing && (
+                                      <i className={`bx ${move.up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
+                                    )}
+                                  </td>
+                                );
+                              }))}
+                              <td className="actions-col tracker-actions">
+                                {editing ? (
+                                  <div className="table-btn-group">
+                                    <button className="btn-row-icon icon-save" title="Save this row"
+                                      onClick={() => saveScoreRowEdit(rCoach, rRun)}>
+                                      <i className="bx bx-check"></i>
+                                    </button>
+                                    <button className="btn-row-icon icon-cancel" title="Discard these changes"
+                                      onClick={cancelScoreRowEdit}>
+                                      <i className="bx bx-x"></i>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    className="btn-row-icon icon-edit"
+                                    disabled={!rMayEdit || !hasTypable}
+                                    title={!rMayEdit
+                                      ? (rLocked ? `${row.month} is locked` : 'You cannot edit this row')
+                                      : !hasTypable
+                                        ? `${trackerActive?.label} is worked out — nothing to type here`
+                                        : `Edit ${row.coach_name}, ${row.month}`}
+                                    onClick={() => beginScoreRowEdit(rCoach, rRun, 'tracker')}
+                                  >
+                                    <i className="bx bx-edit"></i>
+                                  </button>
                                 )}
                               </td>
-                            )))}
-                          </tr>
-                        ))}
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -8890,6 +9748,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </div>
                   </div>
                 </div>
+                </>)}
 
                 <p className="text-muted score-tracker-footnote">
                   Threshold is 156 sessions for Fixed S&amp;C coaches, 117 for Fixed Yoga, and 96 for Flexi / Flexi-Fixed.
@@ -8930,62 +9789,303 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
             return (
               <section id="view-pay-calculator" className="content-view active-view">
-                <div className="page-header-row">
-                  <div>
-                    <h2>Payroll Run — {period}</h2>
-                    <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                      Every line is computed from that coach's recorded HB+ Score. Nothing here is keyed in by hand.
-                    </p>
-                  </div>
-                  <div className="tracker-toolbar-controls">
-                    <select className="header-select" value={period} onChange={(e) => setPayrollRunPeriod(e.target.value)}>
-                      {periods.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <select
-                      className="header-select"
-                      value={payrollCategoryFilter}
-                      onChange={(e) => setPayrollCategoryFilter(e.target.value)}
-                    >
-                      <option value="All">All Categories</option>
-                      {COACH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
-                      <i className="bx bx-download"></i> Export CSV
-                    </button>
-                  </div>
-                </div>
+                {(() => {
+                  // Closing a month, told as the state it is actually in. The
+                  // lock itself is the same single handleLockCycle toggle it
+                  // has always been — this only says what it will do, and what
+                  // is still outstanding when it is pressed.
+                  const active = coaches.filter(c => c.status === 'Active');
+                  const recordedN = run.filter(r => r.recorded).length;
+                  const waitingLeave = leaveApplications.filter(a => a.status === 'Pending');
+                  const inCycleFor = (rec, d) => {
+                    const t = new Date(d);
+                    return t >= new Date(rec.period_start) && t <= new Date(rec.period_end);
+                  };
+                  const anyRec = run[0]?.record;
+                  const settled = anyRec
+                    ? attendanceDays.filter(d => inCycleFor(anyRec, d.working_day)).length : 0;
+                  const loggedKeys = anyRec
+                    ? new Set(attendanceLogs.filter(l => inCycleFor(anyRec, l.working_day))
+                        .map(l => `${l.coach_id}|${l.working_day}`)) : new Set();
+                  const unsettled = Math.max(loggedKeys.size - settled, 0);
 
-                <div className="stats-row">
-                  <div className="stat-card stat-blue">
-                    <div className="stat-icon"><i className="bx bxs-group"></i></div>
-                    <div className="stat-info">
-                      <h3>Coaches In Run</h3><h2>{run.length}</h2>
-                      <p>{run.filter(r => !r.recorded).length} awaiting score entry</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-violet">
-                    <div className="stat-icon"><i className="bx bx-wallet"></i></div>
-                    <div className="stat-info">
-                      <h3>Base + Session Pay</h3><h2>{rupees(totals.base + totals.sessions)}</h2>
-                      <p>Fixed and per-session</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-amber">
-                    <div className="stat-icon"><i className="bx bxs-gift"></i></div>
-                    <div className="stat-info">
-                      <h3>Incentives</h3><h2>{rupees(totals.incentives)}</h2>
-                      <p>Milestone, consistency, streak, org work</p>
-                    </div>
-                  </div>
-                  <div className="stat-card stat-teal">
-                    <div className="stat-icon"><i className="bx bx-rupee"></i></div>
-                    <div className="stat-info">
-                      <h3>Gross Payroll</h3><h2>{rupees(totals.gross)}</h2>
-                      <p>after {rupees(totals.deductions)} deductions</p>
-                    </div>
-                  </div>
-                </div>
+                  const blockers = [
+                    recordedN < run.length && {
+                      k: 'scores', title: 'Scores',
+                      line: `${recordedN} of ${run.length} recorded`,
+                      cta: 'record', go: () => setActiveView('score-tracker')
+                    },
+                    waitingLeave.length > 0 && {
+                      k: 'leave', title: 'Leave',
+                      line: `${waitingLeave.length} undecided`,
+                      cta: 'decide', go: () => setActiveView('attendance')
+                    },
+                    unsettled > 0 && {
+                      k: 'att', title: 'Attendance',
+                      line: `${unsettled} day-records unsettled`,
+                      cta: 'settle', go: () => setActiveView('attendance')
+                    }
+                  ].filter(Boolean);
 
+                  const isCurrent = period === currentPeriodMonth;
+                  const monthLocked = run.length > 0 && run.every(r => r.record.status === 'FINANCE_LOCKED');
+                  const partLocked = !monthLocked && run.some(r => r.record.status === 'FINANCE_LOCKED');
+
+                  // Every month, with the state its own records are in.
+                  const ladder = periods.map(m => {
+                    const recs = [...historicMonths, ...currentMonth].filter(r => r.period_month === m);
+                    const all = recs.length > 0 && recs.every(r => r.status === 'FINANCE_LOCKED');
+                    const some = !all && recs.some(r => r.status === 'FINANCE_LOCKED');
+                    const gross = buildPayrollRun(m).reduce((a, r) => a + r.pay.grossPay, 0);
+                    return { m, recs, all, some, gross, current: m === currentPeriodMonth };
+                  }).reverse();
+
+                  const tds = totals.gross * TDS_194J_RATE;
+                  const lop = sum(r => r.pay.lossOfPay);
+
+                  return (
+                    <>
+                      <div className="hb-pay-head">
+                        <div>
+                          <h2>Close &amp; pay — {period}</h2>
+                          <p>Every line is worked out from the coach's recorded score card. Nothing here is typed in by hand.</p>
+                        </div>
+                        <div className="tracker-toolbar-controls">
+                          <select className="header-select" value={period} onChange={(e) => setPayrollRunPeriod(e.target.value)}>
+                            {periods.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          <select
+                            className="header-select"
+                            value={payrollCategoryFilter}
+                            onChange={(e) => setPayrollCategoryFilter(e.target.value)}
+                          >
+                            <option value="All">All Categories</option>
+                            {COACH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                          <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
+                            <i className="bx bx-download"></i> Export CSV
+                          </button>
+                        </div>
+                      </div>
+
+                      <section className="card hb-ready" aria-label="Ready to lock?">
+                        <div>
+                          <h3>
+                            {monthLocked ? `${period} is locked`
+                              : blockers.length === 0 ? `${period} is ready to lock`
+                              : `Not ready to lock yet — ${blockers.length} thing${blockers.length > 1 ? 's' : ''} left`}
+                          </h3>
+                          {blockers.length > 0 && !monthLocked && (
+                            <ul>
+                              {blockers.map(b => (
+                                <li key={b.k}>
+                                  <span aria-hidden="true" className="hb-ring" />
+                                  <span>
+                                    <strong>{b.title}</strong><br />
+                                    <span>{b.line} · </span>
+                                    <button type="button" className="hb-inline" onClick={b.go}>{b.cta}</button>
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {partLocked && (
+                            <p className="hb-part">Some records in {period} are already locked and some are not.</p>
+                          )}
+                        </div>
+                        <div className="hb-ready-act">
+                          <button
+                            className={`hb-btn ${monthLocked ? '' : 'hb-btn-primary'}`}
+                            disabled={!LOCK_ROLES.includes(currentRole) || !isCurrent}
+                            title={!LOCK_ROLES.includes(currentRole)
+                              ? 'Your role cannot lock a cycle'
+                              : !isCurrent ? 'Only the current cycle can be locked from here' : ''}
+                            onClick={handleLockCycle}
+                          >
+                            {monthLocked ? `Reopen ${period}` : `Lock ${period} & issue payslips`}
+                          </button>
+                          <span>
+                            {isCurrent
+                              ? 'You can lock before these are done — it just freezes them as they are.'
+                              : 'Only the current cycle is locked from here.'}
+                          </span>
+                        </div>
+                      </section>
+
+                      <div className="hb-lock-explain">
+                        <div className="card">
+                          <strong>What locking does</strong>
+                          <span>
+                            Freezes every score card in the cycle, works out final pay, and releases
+                            payslips to the coaches. Showrunners and managers stop being able to edit.
+                          </span>
+                        </div>
+                        <div className="card">
+                          <strong>And how to undo it</strong>
+                          <span>
+                            Press the same button again. Editing comes back for everyone, payslips are
+                            withdrawn until it is locked once more, and the change is written to the audit log.
+                          </span>
+                        </div>
+                      </div>
+
+                      {LOCK_ROLES.includes(currentRole) && (
+                        <section className="card hb-ladder" aria-label="Months and their locks">
+                          <div className="hb-ov-head">
+                            <div><h3>Months and their locks</h3></div>
+                            <span>Only Super Admin, HR, Finance and Reporting Managers see this.</span>
+                          </div>
+                          {ladder.map(l => (
+                            <div className="hb-ladder-row" key={l.m}>
+                              <span className={`hb-lock-chip ${l.all ? 'is-shut' : l.some ? 'is-part' : 'is-open'}`}>
+                                <i className={`bx ${l.all ? 'bx-lock-alt' : 'bx-lock-open-alt'}`}></i>
+                                {l.all ? 'Locked' : l.some ? 'Part locked' : 'Open'}
+                              </span>
+                              <div>
+                                <strong>{l.m}</strong>
+                                <span>
+                                  {l.current ? 'The current cycle. ' : ''}
+                                  {l.recs.length} record{l.recs.length === 1 ? '' : 's'}
+                                  {l.all ? ' · payslips issued' : l.some ? ' · mixed statuses' : ' · still editable'}
+                                </span>
+                              </div>
+                              <span className="hb-ladder-sum">{rupees(l.gross)}</span>
+                              <button
+                                className="hb-btn"
+                                onClick={() => setPayrollRunPeriod(l.m)}
+                                disabled={l.m === period}
+                              >
+                                {l.m === period ? 'Showing' : 'Open'}
+                              </button>
+                            </div>
+                          ))}
+                          <p className="hb-foot">
+                            A month other than the current cycle is reopened by changing its records' status
+                            on the coach's Score card, which is where that decision is recorded.
+                          </p>
+                        </section>
+                      )}
+
+                      <div className="hb-tiles">
+                        <div className="card">
+                          <span>Fixed &amp; session pay</span>
+                          <strong>{rupees(totals.base + totals.sessions)}</strong>
+                        </div>
+                        <div className="card">
+                          <span>Incentives &amp; bonuses</span>
+                          <strong>{rupees(totals.incentives)}</strong>
+                        </div>
+                        <div className="card">
+                          <span>Loss of Pay &amp; penalties</span>
+                          <strong className="hb-neg">−{rupees(lop + totals.deductions)}</strong>
+                        </div>
+                        <div className="card hb-tile-dark">
+                          <span>Reaches the coaches · {monthLocked ? 'final' : 'draft'}</span>
+                          <strong>{rupees(totals.gross - tds)}</strong>
+                          <small>after {rupees(tds)} TDS</small>
+                        </div>
+                      </div>
+
+                      <div className="hb-pay-filters">
+                        <span>Show</span>
+                        {['Everyone', 'Needs a look', 'Ready'].map(f => (
+                          <button
+                            key={f} type="button" aria-pressed={payFilter === f}
+                            className={`hb-btn ${payFilter === f ? 'hb-btn-dark' : ''}`}
+                            onClick={() => setPayFilter(f)}
+                          >{f}</button>
+                        ))}
+                        <div className="hb-seg" role="group" aria-label="How much detail">
+                          <button type="button" aria-pressed={payMode === 'summary'}
+                                  className={payMode === 'summary' ? 'is-on' : ''}
+                                  onClick={() => setPayMode('summary')}>Summary</button>
+                          <button type="button" aria-pressed={payMode === 'full'}
+                                  className={payMode === 'full' ? 'is-on' : ''}
+                                  onClick={() => setPayMode('full')}>Full breakdown</button>
+                        </div>
+                      </div>
+
+                      {payMode === 'summary' && (() => {
+                        const flagFor = (r) => {
+                          if (r.vConfig.placeholder) return ['No pay policy — paid ₹0', 'bad'];
+                          if (!r.recorded) return ['No score card — fixed points only', 'warn'];
+                          if (r.pay.grossPay <= 0) return ['Nothing reaches them — check', 'bad'];
+                          return null;
+                        };
+                        const shown = run.filter(r => {
+                          if (payFilter === 'Everyone') return true;
+                          const f = flagFor(r);
+                          return payFilter === 'Needs a look' ? Boolean(f) : !f;
+                        });
+                        return (
+                          <div className="card score-tracker-card">
+                            <div className="hb-pay-count">
+                              {shown.length} of {run.length} coach{run.length === 1 ? '' : 'es'}
+                            </div>
+                            <div className="table-container score-tracker-container">
+                              <table className="data-table score-tracker-table hb-pay-table">
+                                <thead>
+                                  <tr className="column-header-row">
+                                    <th className="sticky-col sticky-month">Coach</th>
+                                    <th className="num-col">Score</th>
+                                    <th>Band</th>
+                                    <th className="num-col">Fixed pay</th>
+                                    <th className="num-col">Incentives</th>
+                                    <th className="num-col">LOP &amp; penalties</th>
+                                    <th className="num-col">Gross</th>
+                                    <th className="num-col">TDS 10%</th>
+                                    <th className="num-col">Reaches them</th>
+                                    <th>Check</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {shown.length === 0 && (
+                                    <tr><td colSpan={10} className="text-muted">Nothing matches that filter.</td></tr>
+                                  )}
+                                  {shown.map(r => {
+                                    const flag = flagFor(r);
+                                    const inc = r.pay.milestoneIncentive + r.pay.consistencyBonus
+                                      + r.pay.streakBonusPay + r.pay.orgWorkPay + r.pay.nightSessionPay;
+                                    const ded = r.pay.lossOfPay + r.pay.penaltyDeductions;
+                                    const t = r.pay.grossPay * TDS_194J_RATE;
+                                    return (
+                                      <tr key={r.coach.id} className="row-clickable"
+                                          onClick={() => { setCoachDetailId(r.coach.id); setActiveView('coaches'); }}>
+                                        <td className="sticky-col sticky-month">
+                                          <strong>{r.coach.name}</strong>
+                                          <div className="hb-sub">{r.coach.id} · {r.vConfig.placeholder ? 'No policy' : r.vConfig.name}</div>
+                                        </td>
+                                        <td className="num-col">{Number(r.score).toFixed(2)}</td>
+                                        <td>{r.recorded
+                                          ? <span className="badge badge-warning">{r.band}</span>
+                                          : <span className="badge badge-muted">—</span>}</td>
+                                        <td className="num-col">{rupees(r.pay.basePay)}</td>
+                                        <td className="num-col hb-pos">{inc ? `+${rupees(inc)}` : rupees(0)}</td>
+                                        <td className="num-col hb-neg">{ded ? `−${rupees(ded)}` : rupees(0)}</td>
+                                        <td className="num-col">{rupees(r.pay.grossPay)}</td>
+                                        <td className="num-col text-secondary">−{rupees(t)}</td>
+                                        <td className="num-col"><strong>{rupees(r.pay.grossPay - t)}</strong></td>
+                                        <td>{flag && (
+                                          <span className={`badge ${flag[1] === 'bad' ? 'badge-danger' : 'badge-warning'}`}>{flag[0]}</span>
+                                        )}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                            <p className="hb-foot">
+                              A coach with no recorded score card is paid on their fixed points alone — their
+                              band reads as it stood the last month someone scored them.
+                            </p>
+                          </div>
+                        );
+                      })()}
+                    </>
+                  );
+                })()}
+
+                {payMode === 'full' && (
                 <div className="card score-tracker-card">
                   {/* The export also sits in the page toolbar, but the table is
                       where Finance actually works, so it is offered here too. */}
@@ -9105,16 +10205,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </table>
                   </div>
                 </div>
+                )}
 
                 <div className="page-header-row" style={{ marginTop: '0.5rem' }}>
                   <div>
                     <h2>Monthly Pay Calculator</h2>
                     <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
                       Choose a coach to load {period}'s recorded figures, or pick manual entry to
-                      model a case from scratch. Changing an input here works out what the month
-                      would come to — it does not record it. The two pay fields are the exception,
-                      and each saves on its own button.
+                      model a case from scratch.
                     </p>
+                  </div>
+                  <div className="view-purpose-side">
+                    <span className="writes-badge writes-model">Works it out</span>
+                    <small>
+                      Changing an input shows what the month would come to; it does not record it.
+                      Per-Session Rate and Base / Fixed Pay are the exception, each with its own Save.
+                    </small>
                   </div>
                   {PROFILE_PAY_ROLES.includes(currentRole) && (
                     <button
@@ -9197,6 +10303,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const seesMoney = !HIDES_PAY(currentRole);
             const open = coach ? openLogFor(coach.id) : null;
             const todays = coach ? logsFor(coach.id, todayWorkingDay) : [];
+            // The five working days the coach tab can look back over, and which
+            // of them its login table is currently showing.
+            const attDays5 = Array.from({ length: 5 }, (_, n) => {
+              const d = new Date(`${todayWorkingDay}T12:00:00`);
+              d.setDate(d.getDate() - n);
+              return d.toISOString().slice(0, 10);
+            });
+            const shownLogDay = attDays5.includes(attLogDay) ? attLogDay : todayWorkingDay;
+            const shownLogs = coach ? logsFor(coach.id, shownLogDay) : [];
             const hours = loggedHoursForDay(todays, nowTick);
             const avail = coach ? availabilityHoursFor(coach, todayWorkingDay) : { hours: 0, missing: true };
             const todayHoliday = coach ? holidayOn(coach, todayWorkingDay) : null;
@@ -9228,17 +10343,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
             return (
               <section id="view-attendance" className="content-view active-view">
-                <div className="page-header-row">
-                  <div>
-                    <h2>Attendance &amp; Leave</h2>
-                    <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                      The working day runs 4 AM to 2 AM. Log in and out as many times as the
-                      day needs — a period under {MIN_LOGIN_MINUTES} minutes does not count.
-                    </p>
-                  </div>
+                <ViewPurpose
+                  title="Attendance &amp; Leave"
+                  does={isOwn
+                    ? `Log your hours and apply for leave. The working day runs 4 AM to 2 AM — log in and out as often as it needs, and a period under ${MIN_LOGIN_MINUTES} minutes does not count.`
+                    : "Decide requests first — a day with an undecided request can't be settled, and nobody is marked Loss of Pay while they wait."}
+                  writes={{ kind: 'records', detail: 'Decisions, hours and leave are saved as you make them.' }}
+                >
                   {!isOwn && (
                     <select
                       className="header-select"
+                      aria-label="Employee"
                       value={coach?.id || ''}
                       onChange={(e) => setAttendanceCoachId(e.target.value)}
                     >
@@ -9248,13 +10363,147 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       ))}
                     </select>
                   )}
-                </div>
+                </ViewPurpose>
+
+                {!isOwn && (() => {
+                  const waiting = leaveApplications.filter(a => a.status === 'Pending'
+                    && inAttendanceScope(a.coach_id)).length;
+                  const onFloor = attendanceLogs.filter(l => !l.logged_out_at
+                    && inAttendanceScope(l.coach_id)).length;
+                  const tabs = [
+                    { key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting },
+                    { key: 'floor', label: 'On the floor now', icon: 'bx-time-five', count: onFloor },
+                    { key: 'coach', label: coach ? coach.name : 'A coach', icon: 'bx-user' },
+                    ...(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager'
+                      ? [{ key: 'admin', label: 'Setup & reports', icon: 'bx-cog' }] : [])
+                  ];
+                  return (
+                    <TaskTabs
+                      tabs={tabs}
+                      active={attendanceTab}
+                      onChange={(k) => {
+                        setAttendanceTab(k);
+                        // Opening the coach tab with nobody chosen is a dead end,
+                        // so the picker is the thing that gets focus instead.
+                        if (k === 'coach' && !coach) {
+                          showToast("Pick a coach from the list at the top right, or click a name in the register.", "info");
+                        }
+                      }}
+                    />
+                  );
+                })()}
+
+
+                {/* The decision queue. The register below is still the record
+                    of every application; this is only the ones waiting, oldest
+                    first, with the four decisions spelled out instead of hidden
+                    behind row icons. Each button calls the same handler the
+                    register's icons call. */}
+                {onTab('leave') && canApprove && (() => {
+                  const waiting = leaveApplications
+                    .filter(a => a.status === 'Pending' && inAttendanceScope(a.coach_id))
+                    .filter(a => !coach || a.coach_id === coach.id)
+                    .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
+
+                  const dayFmt = (d) =>
+                    new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                  const todayISO = new Date().toISOString().slice(0, 10);
+
+                  return (
+                    <div className="hb-leave-wrap">
+                      <section className="hb-queue" aria-label="Leave waiting on you">
+                        <div className="hb-queue-head">
+                          <h3>Waiting on you · {waiting.length}</h3>
+                          <span>Oldest first. Decisions are due within 3 working days.</span>
+                        </div>
+
+                        {waiting.length === 0 && (
+                          <div className="card hb-queue-empty">
+                            <strong>Nothing is waiting.</strong>
+                            <span>
+                              Every application {coach ? `from ${coach.name} ` : ''}has been decided.
+                              The register below has the full history.
+                            </span>
+                          </div>
+                        )}
+
+                        {waiting.map(a => {
+                          const c = coaches.find(x => x.id === a.coach_id);
+                          const waited = Math.floor((Date.now() - new Date(a.applied_at)) / 86400000);
+                          const overdue = waited >= 3;
+                          const span = a.from_date === a.to_date
+                            ? `${dayFmt(a.from_date)}${a.from_date === todayISO ? ' (today)' : ''}`
+                            : `${dayFmt(a.from_date)} – ${dayFmt(a.to_date)}`;
+                          const days = Number(a.approved_days ?? a.days ?? 0);
+                          // The cover the first day of this leave would be left
+                          // with, so a thin day is visible before it is agreed.
+                          const thin = coverCheck(a.from_date)
+                            .find(x => x.off > 0 && x.working > 0 && x.working < x.total);
+                          return (
+                            <article className="card hb-qcard" key={a.id}>
+                              <div className="hb-qmain">
+                                <div className="hb-qwho">
+                                  <strong>{c?.name || a.coach_id}</strong>
+                                  {c && <em>{c.coach_type || findVariant(variants, c.variant_id).discipline}</em>}
+                                  <span className="hb-qid">{a.coach_id}</span>
+                                  <span className={`hb-qage ${overdue ? 'is-late' : 'is-soon'}`}>
+                                    {overdue
+                                      ? `${waited} day${waited === 1 ? '' : 's'} overdue`
+                                      : waited === 0 ? 'applied today' : `applied ${waited} day${waited === 1 ? '' : 's'} ago`}
+                                  </span>
+                                </div>
+                                <p className="hb-qwhat">
+                                  <strong>{leaveType(a.type_id)?.label || a.type_id}</strong>
+                                  {' · '}{span}{' · '}{days} day{days === 1 ? '' : 's'}
+                                  {a.half_day ? ' · half day' : ''}
+                                </p>
+                                <p className="hb-qreason">{a.reason ? `“${a.reason}”` : '“No reason given”'}</p>
+                                {thin && (
+                                  <p className="hb-qcover">
+                                    {thin.discipline} is down to {thin.working} of {thin.total} on {dayFmt(a.from_date)}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="hb-qacts">
+                                <button className="hb-btn hb-btn-primary"
+                                        onClick={() => handleLeaveDecision(a, 'Approved')}>Approve</button>
+                                <button className="hb-btn"
+                                        onClick={() => handlePartialApproval(a)}>Part of it</button>
+                                <button className="hb-btn"
+                                        onClick={() => handleLeaveTypeChange(a)}>As another type</button>
+                                <button className="hb-btn hb-btn-danger"
+                                        onClick={() => handleLeaveDecision(a, 'Rejected')}>Reject</button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </section>
+
+                      <aside className="hb-leave-rail">
+                        <div className="card">
+                          <strong>How a decision works</strong>
+                          <p>
+                            Approving part of it, or as another type, needs a comment. Rejecting needs a
+                            reason, and the coach can appeal. Unused days go back to their balance.
+                          </p>
+                        </div>
+                        <div className="card">
+                          <strong>Why decide first</strong>
+                          <p>
+                            A day holding an undecided request cannot be settled, and nobody is marked
+                            Loss of Pay while they wait — so the cycle cannot close until this list is empty.
+                          </p>
+                        </div>
+                      </aside>
+                    </div>
+                  );
+                })()}
 
                 {/* Every application across every coach, which is the view the
                     per-coach history cannot give and the pending queue only half
                     gives. A Reporting Manager sees their squad; HR and Super
                     Admin see all of them. */}
-                {canApprove && (() => {
+                {onTab('leave') && canApprove && (() => {
                   const scoped = leaveApplications.filter(a => {
                     if (!inAttendanceScope(a.coach_id)) return false;
                     // The picker at the top of the screen is the coach filter:
@@ -9489,7 +10738,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 {/* Where people logged in from, across everyone. The same facts
                     are on each coach's own card, but checking a day meant opening
                     every coach in turn — which is not checking. */}
-                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
+                {onTab('floor') && (PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
                   const day = loginLog.day || todayWorkingDay;
                   const inScope = (l) => {
                     if (loginLog.coach !== 'All' && l.coach_id !== loginLog.coach) return false;
@@ -9648,7 +10897,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 {/* Who is away, and whether that leaves enough on the floor. Shown
                     before the approval queue, since it is the context a decision
                     needs rather than something to look up afterwards. */}
-                {canApprove && (() => {
+                {onTab('leave') && canApprove && (() => {
                   const days = awayDay
                     ? [awayDay]
                     : Array.from({ length: 14 }, (_, i) => {
@@ -9721,7 +10970,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
-                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
+                {onTab('admin') && (PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
                   const batch = photoBatchLogs();
                   const withPhoto = attendanceLogs.filter(l => l.photo_path).length;
                   const today = new Date().toISOString().slice(0, 10);
@@ -9801,7 +11050,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     {/* Deciding leave is not about the coach on screen — an approver should
                     see everything waiting on them the moment they arrive, which is why
                     this sits outside the per-coach block rather than inside it. */}
-                {PROFILE_PAY_ROLES.includes(currentRole) && (
+                {onTab('admin') && PROFILE_PAY_ROLES.includes(currentRole) && (
                   <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
                     <summary className="card-header-row">
                       <h3>Leave Balances — Bulk</h3>
@@ -9894,7 +11143,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </details>
                 )}
 
-                {(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
+                {onTab('admin') && (PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (
                   <details className="card card-collapsible" style={{ marginBottom: '1.25rem' }}>
                     <summary className="card-header-row">
                       <h3>Reports</h3>
@@ -9921,7 +11170,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </details>
                 )}
 
-                {PROFILE_PAY_ROLES.includes(currentRole) && (() => {
+                {onTab('admin') && PROFILE_PAY_ROLES.includes(currentRole) && (() => {
                   const { year } = leaveYearFor(new Date());
                   const list = holidays
                     .filter(h => h.leave_year === year)
@@ -10054,12 +11303,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
-                {!coach ? (
+                {!onTab('coach') ? null : !coach ? (
                   <div className="card">
                     <p className="text-muted">
-                      Open a coach to see their attendance, balances and leave history —
-                      click a name in the register above, or pick one from the list at the
-                      top right.
+                      No coach open. Pick one from the list at the top right, or click a name
+                      in the Leave tab — their attendance, balances and leave history appear here.
                     </p>
                   </div>
                 ) : (
@@ -10145,8 +11393,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         )}
                       </div>
 
-                      <details className="demographics">
-                        <summary>Who they are · {presenceOf(coach)?.detail}</summary>
+                      <div className="demographics is-open">
                         <div className="demographics-grid">
                           {demographicsFor(coach).map(d => (
                             <div key={d.label}>
@@ -10155,7 +11402,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             </div>
                           ))}
                         </div>
-                      </details>
+                      </div>
 
                       <div className="attendance-pattern">
                         <label>Weekly off</label>
@@ -10200,12 +11447,66 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </p>
                       )}
 
-                      {todays.length > 0 && (
+                      {/* The last five working days, so a question about
+                          Friday does not need a different screen. Today's
+                          figures above are unaffected by which chip is on. */}
+                      {(() => {
+                        const days = attDays5;
+                        const shown = shownLogDay;
+                        const logs = shownLogs;
+                        const h = loggedHoursForDay(logs, nowTick);
+                        const a = availabilityHoursFor(coach, shown);
+                        const diff = h - a.hours;
+                        const total = days.reduce((n, d) =>
+                          n + loggedHoursForDay(logsFor(coach.id, d), nowTick), 0);
+                        return (
+                          <div className="att-days">
+                            <div className="att-day-chips" role="group" aria-label="Which day to show">
+                              {days.map((d, n) => {
+                                const dt = new Date(`${d}T12:00:00`);
+                                return (
+                                  <button
+                                    key={d} type="button" aria-pressed={shown === d}
+                                    className={shown === d ? 'is-on' : ''}
+                                    onClick={() => setAttLogDay(d)}
+                                  >
+                                    {n === 0 ? 'Today · ' : ''}
+                                    {WEEKDAYS[dt.getDay()].slice(0, 3)} {dt.getDate()}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="att-day-tiles">
+                              <div><span>Logged in</span><strong>{asClock(h)}</strong></div>
+                              <div><span>Expected</span><strong>{asClock(a.hours)}</strong></div>
+                              <div>
+                                <span>Difference</span>
+                                <strong className={diff < 0 ? 'text-red' : 'att-ok'}>
+                                  {diff < 0 ? '−' : '+'}{asClock(Math.abs(diff))}
+                                </strong>
+                              </div>
+                              <div><span>Last 5 days, total</span><strong>{asClock(total)}</strong></div>
+                            </div>
+                            {shown !== todayWorkingDay && (
+                              <p className="calc-notes">
+                                Showing {new Date(`${shown}T12:00:00`).toLocaleDateString('en-IN',
+                                  { weekday: 'long', day: 'numeric', month: 'long' })}.
+                                The clock and the buttons above are still today's.
+                              </p>
+                            )}
+                            {logs.length === 0 && (
+                              <p className="calc-notes">Nothing was logged on this day.</p>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {shownLogs.length > 0 && (
                         <div className="table-container">
                           <table className="data-table">
                             <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th><th>Where</th><th>Photo</th></tr></thead>
                             <tbody>
-                              {todays.map(l => {
+                              {shownLogs.map(l => {
                                 const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick)) - new Date(l.logged_in_at)) / 60000;
                                 return (
                                   <tr key={l.id}>
@@ -11237,8 +12538,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
             <section id="view-penalties" className="content-view active-view">
               <div className="page-header-row">
                 <div>
-                  <h2>Violation Penalties</h2>
-                  <p>Annexure-1 — what each violation costs at every occurrence</p>
+                  <h2>Incidents</h2>
+                  <p>Everything is charged on the cycle it happened in, unless it's waived or an appeal succeeds.</p>
                 </div>
                 <div className="tracker-toolbar-controls">
                   <select className="header-select" value={penaltyVariant} onChange={(e) => setPenaltyVariant(e.target.value)}>
@@ -11256,6 +12557,223 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </div>
               </div>
+
+              {(() => {
+                // What has actually been logged, and the form to log the next
+                // one beside it. The form is the same state and the same submit
+                // handler as the modal — opening the modal from a coach page
+                // and typing here are one path, so neither can drift.
+                const STATUS_UI = {
+                  Pending_Acknowledge: ['Waiting for coach', 'warn', 'Will be charged'],
+                  Acknowledged: ['Acknowledged', 'mute', 'Will be charged'],
+                  Appealed: ['Appealed', 'info', 'Charged unless the appeal wins'],
+                  Appeal_Approved: ['Appeal upheld', 'good', 'Not charged'],
+                  Waived: ['Waived', 'good', 'Not charged · still counts']
+                };
+                const uiFor = (v) => STATUS_UI[v.status]
+                  || [v.status, 'mute', isPenaltyChargeable(v) ? 'Will be charged' : 'Not charged'];
+
+                const present = [...new Set(violations.map(v => v.status))];
+                const chips = ['All', ...present];
+                const shown = [...violations]
+                  .filter(v => penaltyFilter === 'All' || v.status === penaltyFilter)
+                  .sort((a, b) => new Date(b.incident_date) - new Date(a.incident_date));
+
+                const chargeable = violations.filter(isPenaltyChargeable)
+                  .reduce((s, v) => s + (Number(v.penalty_amount) || 0), 0);
+
+                // The same live reckoning the modal shows, for the panel.
+                const formCoach = coaches.find(c => c.id === vioCoachId);
+                const occurrence = vioCoachId
+                  ? getViolationOccurrenceNumber(vioCoachId, vioType, vioDate, violations) + 1 : null;
+                const conseq = vioCoachId
+                  ? getPenaltyConsequence(formCoach?.variant_id || "V1", vioType, occurrence, PENALTY_MATRIX) : null;
+                let amount = conseq ? conseq.amount : 0;
+                if (conseq && conseq.consequence.includes("Deduct") && conseq.consequence.includes("Session")) {
+                  const activeE = currentMonth.find(cm => cm.coach_id === vioCoachId);
+                  const band = getPerformanceBand(activeE ? (activeE.hb_score || 50) : 50).label;
+                  const vc = variants.find(v => v.id === formCoach?.variant_id);
+                  const rate = vc?.rates[formCoach?.coach_category]?.[band]?.per_session || 250;
+                  const n = conseq.consequence.includes("1") ? 1 : (conseq.consequence.includes("2") ? 2 : 4);
+                  amount = rate * n;
+                }
+                const mayLog = verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner");
+
+                return (
+                  <div className="hb-inc">
+                    <div className="hb-inc-main">
+                      <div className="hb-inc-chips" role="group" aria-label="Filter by status">
+                        {chips.map(k => (
+                          <button
+                            key={k} type="button" aria-pressed={penaltyFilter === k}
+                            className={`hb-btn ${penaltyFilter === k ? 'hb-btn-dark' : ''}`}
+                            onClick={() => setPenaltyFilter(k)}
+                          >
+                            {k === 'All' ? 'All' : (STATUS_UI[k]?.[0] || k)}
+                            <span className="hb-inc-n">
+                              {k === 'All' ? violations.length : violations.filter(v => v.status === k).length}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="card">
+                        <div className="hb-pay-count">
+                          {shown.length} of {violations.length} recorded · {rupees(chargeable)} chargeable
+                        </div>
+                        <div className="table-container">
+                          <table className="data-table hb-inc-table">
+                            <thead>
+                              <tr>
+                                <th>Date</th>
+                                <th>Coach</th>
+                                <th>What happened</th>
+                                <th>How many times</th>
+                                <th>Status</th>
+                                <th>Pay</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {shown.length === 0 && (
+                                <tr><td colSpan={6} className="text-muted">
+                                  {violations.length === 0
+                                    ? 'No incidents recorded.'
+                                    : 'Nothing with that status.'}
+                                </td></tr>
+                              )}
+                              {shown.map(v => {
+                                const c = coaches.find(x => x.id === v.coach_id);
+                                const [label, tone, payLine] = uiFor(v);
+                                const window = VIOLATION_TRACKING[v.type] || 'Lifetime';
+                                // The online matrix is keyed by violation name, not a list.
+                                const isOnline = Object.prototype.hasOwnProperty.call(
+                                  ONLINE_PENALTY_MATRIX || {}, v.type);
+                                return (
+                                  <tr key={v.id} className={isPenaltyChargeable(v) ? undefined : 'row-unrecorded'}>
+                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                      {new Date(v.incident_date).toLocaleDateString('en-IN',
+                                        { day: 'numeric', month: 'short' })}
+                                    </td>
+                                    <td>
+                                      <button type="button" className="linklike hb-inc-coach"
+                                        title={`Open ${c?.name || v.coach_id}'s score card for the cycle this falls in`}
+                                        onClick={() => {
+                                          setTrackerPick(v.coach_id);
+                                          setTrackerMode('record');
+                                          setActiveView('score-tracker');
+                                        }}>
+                                        {c?.name || v.coach_id}
+                                      </button>
+                                      <div className="hb-sub">{v.coach_id}</div>
+                                    </td>
+                                    <td>
+                                      {v.type}
+                                      <div className="hb-sub">{isOnline ? 'Annexure 1B' : 'Annexure 1'}</div>
+                                    </td>
+                                    <td>
+                                      #{v.occurrence_no}
+                                      <div className="hb-sub">counted {String(window).toLowerCase()}</div>
+                                    </td>
+                                    <td><span className={`hb-st hb-st-${tone}`}>{label}</span></td>
+                                    <td>
+                                      <div className="hb-sub">{payLine}</div>
+                                      {isPenaltyChargeable(v) && Number(v.penalty_amount) > 0 && (
+                                        <strong>{rupees(v.penalty_amount)}</strong>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-muted scorecard-legend">
+                          A penalty is deducted on the payslip for the period its incident date falls in,
+                          under Taxes &amp; Deductions. Nothing is keyed in there — it comes from here.
+                        </p>
+                      </div>
+                    </div>
+
+                    {mayLog && (
+                      <aside className="card hb-inc-form" aria-label="Log an incident">
+                        <h3>Log an incident</h3>
+                        <form onSubmit={handleLogViolationSubmit}>
+                          <div className="hb-f">
+                            <label htmlFor="inc-coach">Coach</label>
+                            <select id="inc-coach" value={vioCoachId} required
+                              onChange={(e) => { setVioCoachId(e.target.value); setVioType("Late Arrival (<5 min)"); }}>
+                              <option value="">Choose a coach…</option>
+                              {coaches.map(c => <option key={c.id} value={c.id}>{c.name} · {c.id}</option>)}
+                            </select>
+                          </div>
+                          <div className="hb-f">
+                            <label htmlFor="inc-type">What happened</label>
+                            <select id="inc-type" value={vioType} required
+                              onChange={(e) => setVioType(e.target.value)}>
+                              {violationOptions(formCoach).map(g => (
+                                <optgroup key={g.label} label={g.label}>
+                                  {g.types.map(t => <option key={t} value={t}>{t}</option>)}
+                                </optgroup>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="hb-f">
+                            <label htmlFor="inc-date">Date</label>
+                            <input id="inc-date" type="date" value={vioDate} required
+                              onChange={(e) => setVioDate(e.target.value)} />
+                          </div>
+                          <div className="hb-f">
+                            <label htmlFor="inc-time">Time</label>
+                            <input id="inc-time" type="text" value={vioTime} required
+                              placeholder="e.g. 07:05 AM" onChange={(e) => setVioTime(e.target.value)} />
+                          </div>
+
+                          <div className="hb-inc-mean">
+                            <span>WHAT THIS WILL MEAN</span>
+                            {!vioCoachId ? (
+                              <p>Choose a coach and the reckoning appears here before you log anything.</p>
+                            ) : (
+                              <>
+                                <p>
+                                  This would be occurrence <strong>#{occurrence}</strong> of “{vioType}”,
+                                  counted {String(VIOLATION_TRACKING[vioType] || 'Lifetime').toLowerCase()}.
+                                </p>
+                                <p>
+                                  <strong>{conseq?.consequence}</strong>
+                                  {amount > 0 && <> · deducts <strong>{rupees(amount)}</strong></>}
+                                  {' '}on{' '}
+                                  <strong>{vioDate ? getPeriodForDate(new Date(vioDate)).period_month : '—'}</strong>.
+                                </p>
+                                <p className="hb-inc-warn">Logging this also resets their 5-star streak to 0.</p>
+                              </>
+                            )}
+                          </div>
+
+                          <div className="hb-f">
+                            <label htmlFor="inc-note">Note for the coach</label>
+                            <textarea id="inc-note" rows="3" value={vioEvidence} required
+                              placeholder="What you saw, briefly"
+                              onChange={(e) => setVioEvidence(e.target.value)} />
+                          </div>
+                          <button type="submit" className="hb-btn hb-btn-primary hb-inc-submit">
+                            Log it — coach is asked to acknowledge
+                          </button>
+                          {formCoach && (
+                            <button type="button" className="hb-btn hb-inc-submit"
+                              onClick={() => {
+                                setTrackerPick(formCoach.id);
+                                setTrackerMode('record');
+                                setActiveView('score-tracker');
+                              }}>
+                              Open {formCoach.name.split(' ')[0]}'s score card
+                            </button>
+                          )}
+                        </form>
+                      </aside>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="card">
                 <div className="table-container">
@@ -11327,62 +12845,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
               {/* What has actually been recorded. The amount on each row is what
                   the schedule above charged for that occurrence, and it is what
                   the coach's payslip deducts for the period it falls in. */}
-              <div className="card" style={{ marginTop: '1.5rem' }}>
-                <div className="card-header-row">
-                  <h3>Recorded Incidents</h3>
-                  <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                    {violations.length} recorded · ₹{violations
-                      .filter(v => v.status !== 'Appeal_Approved')
-                      .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0)
-                      .toLocaleString('en-IN')} chargeable
-                  </span>
-                </div>
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Coach</th>
-                        <th>Violation</th>
-                        <th className="num-col">Occurrence</th>
-                        <th>Consequence</th>
-                        <th className="num-col">Penalty</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {violations.length === 0 && (
-                        <tr><td colSpan={7} className="text-muted">No incidents recorded.</td></tr>
-                      )}
-                      {[...violations]
-                        .sort((a, b) => new Date(b.incident_date) - new Date(a.incident_date))
-                        .map(v => {
-                          const c = coaches.find(x => x.id === v.coach_id);
-                          const waived = v.status === 'Appeal_Approved';
-                          return (
-                            <tr key={v.id} className={waived ? 'row-unrecorded' : undefined}>
-                              <td>{new Date(v.incident_date).toLocaleDateString('en-IN')}</td>
-                              <td><strong>{c?.name || v.coach_id}</strong></td>
-                              <td>{v.type}</td>
-                              <td className="num-col">#{v.occurrence_no}</td>
-                              <td>{v.consequence}</td>
-                              <td className="num-col">
-                                {waived
-                                  ? <span className="text-muted">waived</span>
-                                  : `₹${(Number(v.penalty_amount) || 0).toLocaleString('en-IN')}`}
-                              </td>
-                              <td><span className="badge badge-muted">{v.status}</span></td>
-                            </tr>
-                          );
-                        })}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="text-muted scorecard-legend">
-                  A penalty is deducted on the payslip for the period its incident date falls in,
-                  under Taxes &amp; Deductions. Nothing is keyed in there — it comes from here.
-                </p>
-              </div>
             </section>
           )}
 
