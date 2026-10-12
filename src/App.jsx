@@ -141,6 +141,7 @@ const ATTENDANCE_ROLES = [
 // Deciding a leave application. A Reporting Manager approves for their own
 // coaches; Super Admin and HR stand in when they are away.
 const LEAVE_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager'];
+const REGULARIZATION_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager', 'Finance'];
 
 // Settling a period: who may lock a score card, and unlock one again.
 const LOCK_ROLES = ['Super Admin', 'HR Manager', 'Finance', 'Reporting Manager'];
@@ -1672,6 +1673,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [leaveApplications, setLeaveApplications] = useState([]);
   const [holidays, setHolidays] = useState([]);
   const [attendanceCoachId, setAttendanceCoachId] = useState("");
+  // Attendance Regularization state: tracks missed punches / regularization requests
+  const [attendanceRegularizations, setAttendanceRegularizations] = useState(() => {
+    try {
+      const saved = localStorage.getItem('hb_attendance_regularizations');
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return [
+      {
+        id: 'REG_INIT_1',
+        coach_id: 'HB+_130',
+        coach_name: 'Mousumi Dutta',
+        working_day: new Date().toISOString().slice(0, 10),
+        check_in_time: '09:00',
+        check_out_time: '18:00',
+        hours: 9,
+        reason: 'Forgot to Log In & Log Out',
+        detailed_reason: 'Conducted scheduled morning and evening training sessions at centre. Phone ran out of charge during shift.',
+        status: 'Pending',
+        applied_at: new Date(Date.now() - 3600000 * 3).toISOString()
+      }
+    ];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('hb_attendance_regularizations', JSON.stringify(attendanceRegularizations));
+    } catch (_) {}
+  }, [attendanceRegularizations]);
   const [leaveForm, setLeaveForm] = useState({ type: 'PAID', from: '', to: '', halfDay: false, reason: '' });
   // The camera, open only while a login is being taken.
   const [photoCapture, setPhotoCapture] = useState(null); // { coach, resolve, attempts }
@@ -1857,6 +1886,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [partialLeaveTarget, setPartialLeaveTarget] = useState(null);
   const [partialApprovedDays, setPartialApprovedDays] = useState(0.5);
   const [partialLeaveNote, setPartialLeaveNote] = useState("");
+
+  // Attendance Regularization modal states
+  const [raiseRegModal, setRaiseRegModal] = useState(false);
+  const [raiseRegCoach, setRaiseRegCoach] = useState(null);
+  const [raiseRegDate, setRaiseRegDate] = useState("");
+  const [raiseRegInTime, setRaiseRegInTime] = useState("09:00");
+  const [raiseRegOutTime, setRaiseRegOutTime] = useState("18:00");
+  const [raiseRegReason, setRaiseRegReason] = useState("Forgot to Log In & Log Out");
+  const [raiseRegNote, setRaiseRegNote] = useState("");
+
+  const [reviewRegModal, setReviewRegModal] = useState(false);
+  const [reviewRegItem, setReviewRegItem] = useState(null);
+  const [reviewRegNote, setReviewRegNote] = useState("");
+  const [regTabFilter, setRegTabFilter] = useState("All");
 
   const [scoreSearch, setScoreSearch] = useState("");
   const [scoreMonthFilter, setScoreMonthFilter] = useState("All");
@@ -3295,6 +3338,130 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     showToast(`${workingDay} settled — ${day.outcome === 'review' ? 'flagged for review, nothing charged' : 'nothing owed'}.`, "success");
+  };
+
+  /**
+   * Attendance Regularization handlers:
+   * Allow coaches to raise regularization for missed log in / log out,
+   * and allow approvers (HR, Manager, Super Admin) to review, approve or reject.
+   */
+  const openRaiseRegularization = (coach, dayStr = todayWorkingDay) => {
+    setRaiseRegCoach(coach);
+    setRaiseRegDate(dayStr || todayWorkingDay);
+    setRaiseRegInTime("09:00");
+    setRaiseRegOutTime("18:00");
+    setRaiseRegReason("Forgot to Log In & Log Out");
+    setRaiseRegNote("");
+    setRaiseRegModal(true);
+  };
+
+  const handleRaiseRegularizationSubmit = (e) => {
+    if (e) e.preventDefault();
+    if (!raiseRegCoach) return;
+    if (!raiseRegDate) {
+      showToast("Please choose a working day.", "error");
+      return;
+    }
+    if (!raiseRegInTime || !raiseRegOutTime) {
+      showToast("Please provide both log in and log out times.", "error");
+      return;
+    }
+
+    const tIn = new Date(`${raiseRegDate}T${raiseRegInTime}:00`);
+    const tOut = new Date(`${raiseRegDate}T${raiseRegOutTime}:00`);
+    let diffHours = (tOut - tIn) / (1000 * 60 * 60);
+    if (diffHours <= 0) {
+      showToast("Log out time must be after log in time.", "error");
+      return;
+    }
+    diffHours = Math.round(diffHours * 10) / 10;
+
+    const newReg = {
+      id: `REG_${Date.now()}`,
+      coach_id: raiseRegCoach.id,
+      coach_name: raiseRegCoach.name,
+      working_day: raiseRegDate,
+      check_in_time: raiseRegInTime,
+      check_out_time: raiseRegOutTime,
+      hours: diffHours,
+      reason: raiseRegReason,
+      detailed_reason: raiseRegNote.trim(),
+      status: 'Pending',
+      applied_at: new Date().toISOString()
+    };
+
+    setAttendanceRegularizations(prev => [newReg, ...prev]);
+    logAudit("Attendance Regularization Raised",
+      `${raiseRegCoach.name} (${raiseRegCoach.id}) raised regularization for ${raiseRegDate} (${raiseRegInTime}–${raiseRegOutTime}, ${diffHours}h): ${raiseRegReason}`);
+    showToast(`Regularization request submitted for ${raiseRegDate}. Awaiting manager review.`, "success");
+    setRaiseRegModal(false);
+  };
+
+  const openReviewRegularization = (reg) => {
+    setReviewRegItem(reg);
+    setReviewRegNote("");
+    setReviewRegModal(true);
+  };
+
+  const handleDecisionRegularization = (reg, decision) => {
+    if (!reg) return;
+    if (!REGULARIZATION_APPROVER_ROLES.includes(currentRole)) {
+      showToast("Your role cannot decide attendance regularizations.", "error");
+      return;
+    }
+
+    if (decision === 'Rejected' && (!reviewRegNote || !reviewRegNote.trim())) {
+      showToast("Rejecting a regularization requires a reason.", "error");
+      return;
+    }
+
+    const note = reviewRegNote.trim();
+
+    if (decision === 'Approved') {
+      const newLog = {
+        id: `ATT_REG_${Date.now()}`,
+        coach_id: reg.coach_id,
+        working_day: reg.working_day,
+        logged_in_at: `${reg.working_day}T${reg.check_in_time}:00`,
+        logged_out_at: `${reg.working_day}T${reg.check_out_time}:00`,
+        login_lat: null,
+        login_lng: null,
+        within_centre: true,
+        photo_path: null,
+        auto_logged_out: false,
+        is_regularized: true,
+        regularization_reason: reg.reason
+      };
+      setAttendanceLogs(prev => [newLog, ...prev]);
+
+      setAttendanceRegularizations(prev => prev.map(r => r.id === reg.id ? {
+        ...r,
+        status: 'Approved',
+        decided_by: currentRole,
+        decided_at: new Date().toISOString(),
+        decision_note: note || 'Approved by ' + currentRole
+      } : r));
+
+      logAudit("Attendance Regularization Approved",
+        `${reg.coach_name} (${reg.coach_id}) regularization for ${reg.working_day} approved by ${currentRole}: ${reg.hours}h credited (${reg.check_in_time}–${reg.check_out_time}).`);
+      showToast(`Regularization approved for ${reg.coach_name} (${reg.hours} hours credited).`, "success");
+    } else {
+      setAttendanceRegularizations(prev => prev.map(r => r.id === reg.id ? {
+        ...r,
+        status: 'Rejected',
+        decided_by: currentRole,
+        decided_at: new Date().toISOString(),
+        decision_note: note
+      } : r));
+
+      logAudit("Attendance Regularization Rejected",
+        `${reg.coach_name} (${reg.coach_id}) regularization for ${reg.working_day} rejected by ${currentRole}: ${note}`);
+      showToast(`Regularization request rejected.`, "info");
+    }
+
+    setReviewRegModal(false);
+    setReviewRegItem(null);
+    setReviewRegNote("");
   };
 
   /**
@@ -10628,8 +10795,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     && inAttendanceScope(a.coach_id)).length;
                   const onFloor = attendanceLogs.filter(l => !l.logged_out_at
                     && inAttendanceScope(l.coach_id)).length;
+                  const regWaiting = attendanceRegularizations.filter(r => r.status === 'Pending'
+                    && inAttendanceScope(r.coach_id)).length;
                   const tabs = [
                     { key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting },
+                    { key: 'regularization', label: 'Regularizations', icon: 'bx-time', count: regWaiting },
                     { key: 'floor', label: 'On the floor now', icon: 'bx-time-five', count: onFloor },
                     { key: 'coach', label: coach ? coach.name : 'A coach', icon: 'bx-user' },
                     ...(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager'
@@ -10973,6 +11143,240 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </table>
                         </div>
                       )}
+                    </div>
+                  );
+                })()}
+
+                {/* Attendance Regularization Management Tab:
+                    HR, Manager, Super Admin, and Finance can view all regularization requests,
+                    see reasons why they were raised, and approve or reject them. */}
+                {onTab('regularization') && (() => {
+                  const scopedRegs = attendanceRegularizations.filter(r => {
+                    if (!inAttendanceScope(r.coach_id)) return false;
+                    if (coach && r.coach_id !== coach.id) return false;
+                    if (regTabFilter !== 'All' && r.status !== regTabFilter) return false;
+                    return true;
+                  });
+
+                  const pendingRegs = attendanceRegularizations
+                    .filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id))
+                    .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
+
+                  const counts = {
+                    all: attendanceRegularizations.filter(r => inAttendanceScope(r.coach_id)).length,
+                    pending: attendanceRegularizations.filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id)).length,
+                    approved: attendanceRegularizations.filter(r => r.status === 'Approved' && inAttendanceScope(r.coach_id)).length,
+                    rejected: attendanceRegularizations.filter(r => r.status === 'Rejected' && inAttendanceScope(r.coach_id)).length,
+                  };
+
+                  return (
+                    <div style={{ marginBottom: '1.5rem' }}>
+                      {/* Metric summary banner */}
+                      <div className="attendance-today" style={{ marginBottom: '1.25rem' }}>
+                        <div>
+                          <span>Pending Approval</span>
+                          <strong style={{ color: counts.pending > 0 ? '#d97706' : 'inherit' }}>
+                            {counts.pending}
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Approved</span>
+                          <strong style={{ color: '#16a34a' }}>{counts.approved}</strong>
+                        </div>
+                        <div>
+                          <span>Rejected</span>
+                          <strong style={{ color: '#dc2626' }}>{counts.rejected}</strong>
+                        </div>
+                        <div>
+                          <span>Total Raised</span>
+                          <strong>{counts.all}</strong>
+                        </div>
+                      </div>
+
+                      {/* Pending requests cards (actionable immediately) */}
+                      {counts.pending > 0 && regTabFilter !== 'Approved' && regTabFilter !== 'Rejected' && (
+                        <div className="card" style={{ marginBottom: '1.25rem', borderLeft: '4px solid #d97706' }}>
+                          <div className="card-header-row">
+                            <div>
+                              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <i className="bx bx-time" style={{ color: '#d97706' }}></i>
+                                Pending Regularization Requests ({pendingRegs.length})
+                              </h3>
+                              <p className="text-muted" style={{ margin: 0, fontSize: '0.85rem' }}>
+                                Coaches raised these requests for missed punches. Click "Review &amp; Decide" to inspect why it was raised and approve or reject.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+                            {pendingRegs.map(r => (
+                              <div key={r.id} style={{
+                                border: '1px solid #fed7aa',
+                                borderRadius: '8px',
+                                background: '#fffbeb',
+                                padding: '1rem',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                justifyContent: 'space-between',
+                                gap: '0.75rem'
+                              }}>
+                                <div>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                                    <div>
+                                      <strong style={{ fontSize: '1.05rem', color: '#1f2937' }}>{r.coach_name}</strong>
+                                      <div style={{ fontSize: '0.78rem', color: '#6b7280' }}>ID: {r.coach_id}</div>
+                                    </div>
+                                    <span className="badge" style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', fontWeight: 600 }}>
+                                      Pending Review
+                                    </span>
+                                  </div>
+
+                                  <div style={{ fontSize: '0.875rem', marginBottom: '0.5rem', color: '#374151' }}>
+                                    <strong>Working Day:</strong> {new Date(`${r.working_day}T12:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                                  </div>
+
+                                  <div style={{
+                                    background: '#fff',
+                                    border: '1px solid #fde68a',
+                                    borderRadius: '6px',
+                                    padding: '0.6rem 0.75rem',
+                                    marginBottom: '0.5rem'
+                                  }}>
+                                    <div style={{ fontSize: '0.78rem', color: '#92400e', fontWeight: 600, textTransform: 'uppercase' }}>
+                                      Why Regularization Was Raised:
+                                    </div>
+                                    <div style={{ fontWeight: 600, color: '#1f2937', marginTop: '2px' }}>
+                                      {r.reason}
+                                    </div>
+                                    {r.detailed_reason && (
+                                      <div style={{ fontSize: '0.825rem', color: '#4b5563', marginTop: '4px', fontStyle: 'italic' }}>
+                                        "{r.detailed_reason}"
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div style={{ fontSize: '0.85rem', color: '#4b5563', display: 'flex', gap: '1rem' }}>
+                                    <div><strong>Shift:</strong> {r.check_in_time} – {r.check_out_time}</div>
+                                    <div><strong>Hours:</strong> {r.hours} hrs</div>
+                                  </div>
+                                </div>
+
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', paddingTop: '0.5rem', borderTop: '1px dashed #fde68a' }}>
+                                  {REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? (
+                                    <button className="btn btn-primary btn-sm" onClick={() => openReviewRegularization(r)}>
+                                      <i className="bx bx-check-shield"></i> Review &amp; Decide
+                                    </button>
+                                  ) : (
+                                    <span className="text-muted" style={{ fontSize: '0.8rem' }}>Waiting on approver</span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Full Regularization Register Table */}
+                      <div className="card">
+                        <div className="card-header-row">
+                          <div>
+                            <h3>Attendance Regularization Register</h3>
+                            <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                              All regularization records and decisions across coaches
+                            </span>
+                          </div>
+                          <div className="table-btn-group">
+                            <select
+                              className="header-select"
+                              value={regTabFilter}
+                              onChange={(e) => setRegTabFilter(e.target.value)}
+                            >
+                              <option value="All">All Statuses ({counts.all})</option>
+                              <option value="Pending">Pending Only ({counts.pending})</option>
+                              <option value="Approved">Approved Only ({counts.approved})</option>
+                              <option value="Rejected">Rejected Only ({counts.rejected})</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Working Day</th>
+                                <th>Coach</th>
+                                <th>Requested Timings</th>
+                                <th>Hours</th>
+                                <th>Why Raised (Reason)</th>
+                                <th>Status</th>
+                                <th>Decision &amp; Notes</th>
+                                <th>Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {scopedRegs.length === 0 ? (
+                                <tr>
+                                  <td colSpan={8} className="text-muted" style={{ textAlign: 'center', padding: '2rem' }}>
+                                    No attendance regularizations found for this filter.
+                                  </td>
+                                </tr>
+                              ) : (
+                                scopedRegs.map(r => (
+                                  <tr key={r.id}>
+                                    <td>
+                                      <strong>{r.working_day}</strong>
+                                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                        {WEEKDAYS[new Date(`${r.working_day}T12:00:00`).getDay()]}
+                                      </div>
+                                    </td>
+                                    <td>
+                                      <strong>{r.coach_name}</strong>
+                                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{r.coach_id}</div>
+                                    </td>
+                                    <td>{r.check_in_time} – {r.check_out_time}</td>
+                                    <td><strong>{r.hours} h</strong></td>
+                                    <td>
+                                      <div style={{ fontWeight: 600 }}>{r.reason}</div>
+                                      {r.detailed_reason && (
+                                        <div style={{ fontSize: '0.78rem', color: '#6b7280', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.detailed_reason}>
+                                          {r.detailed_reason}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td>
+                                      <span className={`badge ${r.status === 'Approved' ? 'badge-success' : r.status === 'Rejected' ? 'badge-danger' : 'badge-warning'}`}
+                                        style={{
+                                          background: r.status === 'Approved' ? '#dcfce7' : r.status === 'Rejected' ? '#fee2e2' : '#fef3c7',
+                                          color: r.status === 'Approved' ? '#15803d' : r.status === 'Rejected' ? '#b91c1c' : '#b45309',
+                                          fontWeight: 600
+                                        }}>
+                                        {r.status}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      {r.decided_by ? (
+                                        <div>
+                                          <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>Decided by: {r.decided_by}</div>
+                                          {r.decision_note && (
+                                            <div style={{ fontSize: '0.78rem', color: '#4b5563' }}>"{r.decision_note}"</div>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="text-muted" style={{ fontSize: '0.8rem' }}>Awaiting decision</span>
+                                      )}
+                                    </td>
+                                    <td>
+                                      <button className="btn btn-secondary btn-sm" onClick={() => openReviewRegularization(r)}>
+                                        {r.status === 'Pending' && REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? 'Review' : 'View'}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
                   );
                 })()}
@@ -11576,33 +11980,126 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </h3>
                         <div className="table-btn-group">
-                          <button className="btn btn-primary" disabled={!!open}
-                            onClick={() => handleAttendanceLogin(coach)}>
-                            <i className="bx bx-log-in"></i> Log in
-                          </button>
-                          <button className="btn btn-secondary" disabled={!open}
-                            onClick={() => handleAttendanceLogout(coach)}>
-                            <i className="bx bx-log-out"></i> Log out
-                          </button>
-                          {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
-                            const settled = attendanceDays.some(d =>
-                              d.coach_id === coach.id && d.working_day === todayWorkingDay);
-                            // A disabled button with no reason is a dead end, and
-                            // there are four different reasons this one is.
-                            const why = settled ? 'Already settled'
-                              : open ? 'Still logged in — log out first'
-                              : todays.length === 0 ? 'Nothing logged today'
-                              : null;
-                            return (
-                              <button className="btn btn-secondary" disabled={!!why}
-                                title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
-                                onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
-                                <i className="bx bx-check-double"></i> {why || 'Settle day'}
+                          {isOwn ? (
+                            <>
+                              <button className="btn btn-primary" disabled={!!open}
+                                onClick={() => handleAttendanceLogin(coach)}>
+                                <i className="bx bx-log-in"></i> Log in
                               </button>
-                            );
-                          })()}
+                              <button className="btn btn-secondary" disabled={!open}
+                                onClick={() => handleAttendanceLogout(coach)}>
+                                <i className="bx bx-log-out"></i> Log out
+                              </button>
+                              <button className="btn btn-secondary"
+                                onClick={() => openRaiseRegularization(coach, todayWorkingDay)}
+                                title="Raise regularization if you missed logging in or logging out">
+                                <i className="bx bx-time-five"></i> Raise Regularization
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {(() => {
+                                const coachRegs = attendanceRegularizations.filter(r => r.coach_id === coach.id);
+                                const coachPending = coachRegs.filter(r => r.status === 'Pending');
+                                return (
+                                  <button
+                                    className={`btn ${coachPending.length > 0 ? 'btn-primary' : 'btn-secondary'}`}
+                                    title={coachPending.length > 0
+                                      ? `${coachPending.length} pending regularization request(s) for ${coach.name}`
+                                      : `View or manage attendance regularization for ${coach.name}`}
+                                    onClick={() => {
+                                      if (coachPending.length > 0) {
+                                        openReviewRegularization(coachPending[0]);
+                                      } else if (coachRegs.length > 0) {
+                                        openReviewRegularization(coachRegs[0]);
+                                      } else {
+                                        openRaiseRegularization(coach, todayWorkingDay);
+                                      }
+                                    }}
+                                  >
+                                    <i className="bx bx-time-five"></i> Regularization
+                                    {coachPending.length > 0 && (
+                                      <span style={{
+                                        marginLeft: '6px',
+                                        background: '#dc2626',
+                                        color: '#fff',
+                                        borderRadius: '10px',
+                                        padding: '1px 7px',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 700
+                                      }}>
+                                        {coachPending.length} Pending
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })()}
+                              {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                                const settled = attendanceDays.some(d =>
+                                  d.coach_id === coach.id && d.working_day === todayWorkingDay);
+                                const why = settled ? 'Already settled'
+                                  : open ? 'Still logged in — log out first'
+                                  : todays.length === 0 ? 'Nothing logged today'
+                                  : null;
+                                return (
+                                  <button className="btn btn-secondary" disabled={!!why}
+                                    title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
+                                    onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
+                                    <i className="bx bx-check-double"></i> {why || 'Settle day'}
+                                  </button>
+                                );
+                              })()}
+                            </>
+                          )}
                         </div>
                       </div>
+
+                      {/* Pending Regularization notice & review banner */}
+                      {(() => {
+                        const coachPending = attendanceRegularizations.filter(r => r.coach_id === coach.id && r.status === 'Pending');
+                        if (coachPending.length === 0) return null;
+                        return coachPending.map(reg => (
+                          <div key={reg.id} style={{
+                            margin: '0.75rem 0 1rem 0',
+                            padding: '0.85rem 1.15rem',
+                            background: '#fffbeb',
+                            border: '1px solid #fde68a',
+                            borderRadius: '8px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '1rem',
+                            flexWrap: 'wrap'
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <i className="bx bx-time-five" style={{ fontSize: '1.6rem', color: '#d97706' }}></i>
+                              <div>
+                                <strong style={{ color: '#92400e', fontSize: '0.95rem' }}>
+                                  Regularization Request Pending ({reg.working_day})
+                                </strong>
+                                <div style={{ fontSize: '0.85rem', color: '#78350f', marginTop: '2px' }}>
+                                  <strong>Why raised:</strong> <span style={{ fontWeight: 600 }}>{reg.reason}</span>
+                                  {reg.detailed_reason ? ` — "${reg.detailed_reason}"` : ''}
+                                  <span style={{ marginLeft: '8px', opacity: 0.9 }}>
+                                    (Requested shift: {reg.check_in_time} – {reg.check_out_time}, <strong>{reg.hours}h</strong>)
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              {REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? (
+                                <button className="btn btn-primary btn-sm" onClick={() => openReviewRegularization(reg)}>
+                                  <i className="bx bx-check-shield"></i> Review &amp; Decide
+                                </button>
+                              ) : (
+                                <span className="badge" style={{ background: '#fef3c7', color: '#92400e', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem' }}>
+                                  Pending Review
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ));
+                      })()}
 
                       <div className="attendance-today">
                         <div>
@@ -14721,6 +15218,287 @@ HB+_030,185,0,96`} />
                   * This is computer generated statement, does not require signature.
                 </p>
               </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Attendance Regularization Review & Decision Modal (for HR, Reporting Manager, Super Admin, Finance) */}
+      {reviewRegModal && reviewRegItem && (() => {
+        const isApprover = REGULARIZATION_APPROVER_ROLES.includes(currentRole);
+        const isPending = reviewRegItem.status === 'Pending';
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card" style={{ maxWidth: '620px' }}>
+              <div className="modal-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <i className="bx bx-time-five" style={{ fontSize: '1.5rem', color: '#2563eb' }}></i>
+                  <div>
+                    <h3 style={{ margin: 0 }}>Attendance Regularization Details</h3>
+                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                      Request ID: {reviewRegItem.id}
+                    </div>
+                  </div>
+                </div>
+                <i className="bx bx-x modal-close-btn" onClick={() => { setReviewRegModal(false); setReviewRegItem(null); }}></i>
+              </div>
+
+              <div className="modal-body" style={{ padding: '1.25rem 0' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
+                  <div style={{ background: '#f9fafb', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#6b7280', fontWeight: 600 }}>Coach</div>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#111827' }}>{reviewRegItem.coach_name}</div>
+                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>ID: {reviewRegItem.coach_id}</div>
+                  </div>
+                  <div style={{ background: '#f9fafb', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#6b7280', fontWeight: 600 }}>Working Day</div>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#111827' }}>
+                      {new Date(`${reviewRegItem.working_day}T12:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>{reviewRegItem.working_day}</div>
+                  </div>
+                </div>
+
+                <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '0.85rem 1rem', marginBottom: '1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#1d4ed8', fontWeight: 600 }}>Requested Working Hours</div>
+                      <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#1e3a8a', marginTop: '2px' }}>
+                        {reviewRegItem.check_in_time} – {reviewRegItem.check_out_time}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: '#1d4ed8', fontWeight: 600 }}>Total Hours</div>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#1e40af', marginTop: '2px' }}>
+                        {reviewRegItem.hours} hrs
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Primary Box: Why Regularization Was Raised */}
+                <div style={{
+                  background: '#fffbeb',
+                  border: '1px solid #fde68a',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  marginBottom: '1.25rem'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#92400e', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase' }}>
+                    <i className="bx bx-help-circle" style={{ fontSize: '1.1rem' }}></i>
+                    Why Regularization Was Raised:
+                  </div>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#78350f', marginTop: '4px' }}>
+                    {reviewRegItem.reason}
+                  </div>
+                  {reviewRegItem.detailed_reason && (
+                    <div style={{ marginTop: '8px', padding: '0.5rem 0.75rem', background: '#fff', borderRadius: '6px', border: '1px solid #fef3c7', color: '#451a03', fontSize: '0.9rem', lineHeight: '1.4' }}>
+                      {reviewRegItem.detailed_reason}
+                    </div>
+                  )}
+                  {reviewRegItem.applied_at && (
+                    <div style={{ fontSize: '0.75rem', color: '#b45309', marginTop: '6px' }}>
+                      Applied on: {new Date(reviewRegItem.applied_at).toLocaleString('en-IN')}
+                    </div>
+                  )}
+                </div>
+
+                {/* Decision section */}
+                {isPending ? (
+                  isApprover ? (
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontWeight: 600 }}>
+                        Reviewer Decision Note {reviewRegItem.status === 'Pending' ? '(Required if rejecting)' : ''}
+                      </label>
+                      <textarea
+                        className="form-control"
+                        rows="3"
+                        placeholder="Add reason or remarks for approving or rejecting this attendance regularization..."
+                        value={reviewRegNote}
+                        onChange={(e) => setReviewRegNote(e.target.value)}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ background: '#f3f4f6', padding: '0.75rem 1rem', borderRadius: '6px', color: '#4b5563', fontSize: '0.875rem' }}>
+                      <i className="bx bx-info-circle"></i> This regularization request is pending review by HR, Manager, Super Admin, or Finance.
+                    </div>
+                  )
+                ) : (
+                  <div style={{
+                    background: reviewRegItem.status === 'Approved' ? '#f0fdf4' : '#fef2f2',
+                    border: `1px solid ${reviewRegItem.status === 'Approved' ? '#bbf7d0' : '#fecaca'}`,
+                    padding: '0.85rem 1rem',
+                    borderRadius: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ color: reviewRegItem.status === 'Approved' ? '#15803d' : '#b91c1c' }}>
+                        {reviewRegItem.status} by {reviewRegItem.decided_by}
+                      </strong>
+                      <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                        {reviewRegItem.decided_at ? new Date(reviewRegItem.decided_at).toLocaleString('en-IN') : ''}
+                      </span>
+                    </div>
+                    {reviewRegItem.decision_note && (
+                      <div style={{ fontSize: '0.85rem', marginTop: '6px', color: '#374151' }}>
+                        "{reviewRegItem.decision_note}"
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid #e5e7eb', paddingTop: '1rem' }}>
+                <button className="btn btn-secondary" onClick={() => { setReviewRegModal(false); setReviewRegItem(null); }}>
+                  Close
+                </button>
+                {isPending && isApprover && (
+                  <>
+                    <button
+                      className="btn btn-danger"
+                      onClick={() => handleDecisionRegularization(reviewRegItem, 'Rejected')}
+                    >
+                      <i className="bx bx-x-circle"></i> Reject Request
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => handleDecisionRegularization(reviewRegItem, 'Approved')}
+                    >
+                      <i className="bx bx-check-circle"></i> Approve &amp; Credit Hours
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Raise Attendance Regularization Modal (for coaches when they missed log in / log out) */}
+      {raiseRegModal && raiseRegCoach && (() => {
+        const tIn = raiseRegDate && raiseRegInTime ? new Date(`${raiseRegDate}T${raiseRegInTime}:00`) : null;
+        const tOut = raiseRegDate && raiseRegOutTime ? new Date(`${raiseRegDate}T${raiseRegOutTime}:00`) : null;
+        let previewDiff = (tIn && tOut && tOut > tIn) ? Math.round(((tOut - tIn) / 3600000) * 10) / 10 : 0;
+
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card" style={{ maxWidth: '580px' }}>
+              <div className="modal-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <i className="bx bx-calendar-edit" style={{ fontSize: '1.5rem', color: '#16a34a' }}></i>
+                  <div>
+                    <h3 style={{ margin: 0 }}>Raise Attendance Regularization</h3>
+                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
+                      Forgot to log in or log out? Request attendance regularization for your shift hours.
+                    </div>
+                  </div>
+                </div>
+                <i className="bx bx-x modal-close-btn" onClick={() => setRaiseRegModal(false)}></i>
+              </div>
+
+              <form onSubmit={handleRaiseRegularizationSubmit}>
+                <div className="modal-body" style={{ padding: '1.25rem 0' }}>
+                  <div className="form-group" style={{ marginBottom: '1rem' }}>
+                    <label className="form-label">Coach</label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      value={`${raiseRegCoach.name} (${raiseRegCoach.id})`}
+                      disabled
+                      style={{ background: '#f3f4f6', fontWeight: 600 }}
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '1rem' }}>
+                    <label className="form-label">Working Day *</label>
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={raiseRegDate}
+                      onChange={(e) => setRaiseRegDate(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+                    <div className="form-group">
+                      <label className="form-label">Log In Time *</label>
+                      <input
+                        type="time"
+                        className="form-control"
+                        value={raiseRegInTime}
+                        onChange={(e) => setRaiseRegInTime(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Log Out Time *</label>
+                      <input
+                        type="time"
+                        className="form-control"
+                        value={raiseRegOutTime}
+                        onChange={(e) => setRaiseRegOutTime(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: '6px',
+                    padding: '0.65rem 0.85rem',
+                    marginBottom: '1rem',
+                    fontSize: '0.875rem',
+                    color: '#166534',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}>
+                    <span>Calculated Working Hours:</span>
+                    <strong style={{ fontSize: '1rem' }}>{previewDiff > 0 ? `${previewDiff} hrs` : 'Invalid timings'}</strong>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: '1rem' }}>
+                    <label className="form-label">Reason Why Regularization Is Raised *</label>
+                    <select
+                      className="form-control"
+                      value={raiseRegReason}
+                      onChange={(e) => setRaiseRegReason(e.target.value)}
+                      required
+                    >
+                      <option value="Forgot to Log In & Log Out">Forgot to Log In &amp; Log Out</option>
+                      <option value="Forgot to Log In only">Forgot to Log In only</option>
+                      <option value="Forgot to Log Out only">Forgot to Log Out only</option>
+                      <option value="Mobile App / Biometric Glitch">Mobile App / Biometric Glitch</option>
+                      <option value="Device Battery / Network Issue">Device Battery / Network Issue</option>
+                      <option value="On Duty (Official Training / Outdoor Shift)">On Duty (Official Training / Outdoor Shift)</option>
+                      <option value="Emergency Duty Coverage">Emergency Duty Coverage</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Detailed Explanation *</label>
+                    <textarea
+                      className="form-control"
+                      rows="3"
+                      placeholder="Please explain why you were unable to log in/out (e.g. conducted sessions at centre, phone uncharged)..."
+                      value={raiseRegNote}
+                      onChange={(e) => setRaiseRegNote(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid #e5e7eb', paddingTop: '1rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setRaiseRegModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={previewDiff <= 0}>
+                    <i className="bx bx-send"></i> Submit Regularization Request
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         );
