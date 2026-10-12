@@ -4648,3 +4648,92 @@ form {
 .hb-reg-approved { background: rgba(111,142,124,0.18); border-color: rgba(111,142,124,0.45); color: #3b5a49; }
 .hb-reg-rejected { background: rgba(159,64,34,0.14); border-color: rgba(159,64,34,0.4); color: var(--brand-rust); }
 .hb-qok { margin: 5px 0 0; font-size: 0.82rem; font-weight: 700; color: #3b5a49; }
+
+/* ===========================================================================
+   Who Is Away — the month at a glance
+
+   Stepping through dates answered "is Ankush off on the 15th". It never
+   answered "when is everyone off", which is the question an approver actually
+   has. The grid shows the whole month, approved and waiting together, and
+   marks the days where cover gets thin.
+   =========================================================================== */
+
+.away-cal {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px;
+  margin-top: 0.5rem;
+}
+.away-cal-dow {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-secondary);
+  padding: 0 0 4px 2px;
+}
+.away-cal-pad { min-height: 84px; }
+.away-cal-day {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  min-height: 84px; padding: 7px 8px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border-color); background: var(--bg-surface);
+  font: inherit; text-align: left; overflow: hidden;
+}
+.away-cal-day:hover { border-color: var(--border-strong); background: var(--wash); }
+.away-cal-day.is-weekend { background: var(--wash); }
+.away-cal-day.has-away { background: rgba(201, 157, 93, 0.16); border-color: rgba(201, 157, 93, 0.45); }
+.away-cal-day.is-thin { background: rgba(159, 64, 34, 0.12); border-color: rgba(159, 64, 34, 0.42); }
+.away-cal-day.is-today { box-shadow: inset 0 0 0 2px var(--brand-brown); }
+.away-cal-n {
+  font-weight: 700; font-size: 0.86rem; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.away-cal-count { font-size: 0.7rem; font-weight: 700; color: #6b4a14; }
+.is-thin .away-cal-count { color: var(--brand-rust); }
+.away-cal-who { display: flex; flex-wrap: wrap; gap: 3px; }
+.away-cal-who em {
+  font-style: normal; font-size: 0.68rem; font-weight: 600;
+  padding: 1px 5px; border-radius: 4px;
+  background: rgba(26, 26, 26, 0.07); color: var(--text-primary);
+}
+.away-cal-who em.is-pending {
+  background: transparent; border: 1px dashed var(--border-strong); color: var(--text-secondary);
+}
+.away-cal-cover {
+  margin-top: auto; font-size: 0.66rem; font-weight: 700; color: var(--brand-rust);
+}
+
+@media (max-width: 760px) {
+  .away-cal { gap: 4px; }
+  .away-cal-day, .away-cal-pad { min-height: 64px; }
+  .away-cal-who { display: none; }
+}
+
+/* The chosen preset, explained. The chip is the name; this says what it means
+   and what its count counts — including when the filters have been set by hand
+   and no preset describes them. */
+.filter-chip-blurb {
+  flex-basis: 100%; margin: 0.35rem 0 0; padding: 0.7rem 0.9rem;
+  border-radius: 10px; background: var(--wash);
+  border-left: 3px solid var(--brand-olive);
+  font-size: 0.84rem; line-height: 1.5; color: var(--text-secondary);
+}
+.filter-chip-blurb strong { color: var(--text-primary); }
+
+/* The two regularisation limits, said before anyone runs into them: four per
+   cycle, and nothing after the 20th of the month the cycle ends in. */
+.hb-reg-rules {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 1rem; margin-bottom: 1.25rem; padding: 1rem 1.25rem; border-radius: 14px;
+  background: var(--brand-cream); border: 1px solid var(--border-strong);
+}
+.hb-reg-rules.is-locked {
+  background: rgba(159, 64, 34, 0.1); border-color: rgba(159, 64, 34, 0.4);
+}
+.hb-reg-rules > div:first-child { flex: 1 1 360px; min-width: 0; }
+.hb-reg-rules strong { display: block; font-size: 0.95rem; }
+.hb-reg-rules span { font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5; }
+.hb-reg-rules span strong { display: inline; }
+.hb-reg-rules-count { text-align: right; flex: none; }
+.hb-reg-rules-count strong {
+  font-family: var(--font-title); font-size: 1.6rem; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.hb-reg-rules-shut {
+  flex-basis: 100%; margin: 0; font-size: 0.84rem; font-weight: 700; color: var(--brand-rust);
+}

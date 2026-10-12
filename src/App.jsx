@@ -21,6 +21,10 @@ import {
   standardDailyHours, halfDayHours, lopPerDay, MIN_LOGIN_MINUTES, SHORTFALL_VIOLATION,
   PHOTO_RETENTION_DAYS, CENTRE_RADIUS_METRES
 } from './leave.js';
+
+// The incident a day nobody turned up for is filed as. Present in every
+// variant of the penalty matrix and in `default`, so it always resolves.
+const NO_SHOW_VIOLATION = 'Coach No-Show';
 import {
   supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
   listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES,
@@ -141,7 +145,10 @@ const ATTENDANCE_ROLES = [
 // Deciding a leave application. A Reporting Manager approves for their own
 // coaches; Super Admin and HR stand in when they are away.
 const LEAVE_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager'];
-const REGULARIZATION_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager', 'Finance'];
+// Who decides a regularisation. Not Finance: a Reporting Manager handles
+// nearly all of them, and Finance reads what the month cost rather than
+// deciding what a coach's day was.
+const REGULARIZATION_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager'];
 
 // Settling a period: who may lock a score card, and unlock one again.
 const LOCK_ROLES = ['Super Admin', 'HR Manager', 'Finance', 'Reporting Manager'];
@@ -1726,6 +1733,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   });
   const [loginLog, setLoginLog] = useState({ coach: 'All', day: '', show: 'all' });
   const [awayDay, setAwayDay] = useState('');
+  // Who Is Away reads a month at a time by default: an admin asking "when is
+  // everyone off" wants the shape of the month, not to step through dates.
+  const [awayView, setAwayView] = useState('month');
+  const [awayMonth, setAwayMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [attendanceTab, setAttendanceTab] = useState('leave');
   const onTab = (key) => currentRole === 'Coach' || attendanceTab === key;
   // A photograph opened full size, fetched on demand — the list holds paths,
@@ -1745,6 +1756,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // View & Context Navigation. The role comes from the signed-in app_users row;
   // only a Super Admin may impersonate another role from the header switcher.
   const [currentRole, setCurrentRole] = useState(profile?.role ?? "Super Admin");
+
+  // Who is doing this, by name.
+  //
+  // Every decision was stored as the role that made it, so a register could
+  // read "HR Manager" four times over and never say which of them approved
+  // what — and when two people share a role, that is the whole question. The
+  // name comes from app_users, which Google fills on first sign-in; email is
+  // the fallback, and the bare role the last resort for a seeded or offline
+  // session. The role is kept alongside the name because the authority the
+  // decision was made under matters as much as the person.
+  const actorName = useMemo(() => {
+    const who = profile?.full_name || profile?.email || null;
+    return who ? `${who} (${currentRole})` : currentRole;
+  }, [profile?.full_name, profile?.email, currentRole]);
+
+  // Attendance & Leave opens on the leave queue, which is right for the roles
+  // that decide leave and wrong for the ones that do not: Finance would land
+  // on a tab that is no longer offered and see an entirely blank view. Move
+  // anyone parked on a tab their role cannot see onto one that exists.
+  // A Coach is exempt — their view ignores the tab bar and shows their own day.
+  useEffect(() => {
+    if (currentRole === 'Coach') return;
+    const gated = {
+      leave: LEAVE_APPROVER_ROLES,
+      regularization: REGULARIZATION_APPROVER_ROLES
+    }[attendanceTab];
+    if (gated && !gated.includes(currentRole)) setAttendanceTab('floor');
+  }, [currentRole, attendanceTab]);
   const [currentCoachContext, setCurrentCoachContext] = useState(profile?.coach_id ?? "");
   const [currentRmContext, setCurrentRmContext] = useState(profile?.rm_id ?? "RM_01");
   const canSwitchRole = (profile?.role ?? "Super Admin") === "Super Admin";
@@ -2537,15 +2576,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Audit Logger
   const logAudit = (action, details, nextAuditLog = null) => {
+    // The signed-in person, by name. A Coach also carries the record they are
+    // acting on, since an admin previewing as a coach is not that coach.
     const activeCoach = coaches.find(c => c.id === currentCoachContext);
-    const actorName = currentRole === "Coach" 
-      ? `Coach (${activeCoach ? activeCoach.name : currentCoachContext})` 
-      : currentRole;
+    const who = profile?.full_name || profile?.email || null;
+    const actor = currentRole === "Coach"
+      ? `${who || 'Coach'} (Coach${activeCoach ? ` — ${activeCoach.name}` : currentCoachContext ? ` — ${currentCoachContext}` : ''})`
+      : (who ? `${who} (${currentRole})` : currentRole);
 
     const logEntry = {
       id: 'AUD_' + Date.now() + Math.floor(Math.random() * 100),
       timestamp: new Date().toLocaleString('en-IN'),
-      actor: actorName,
+      actor,
       action,
       details,
       ip: "192.168.1.105",
@@ -3318,25 +3360,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
       disputed: false
     }]);
 
-    if (day.outcome === 'violation') {
-      const occurrence = getViolationOccurrenceNumber(
-        coach.id, SHORTFALL_VIOLATION, workingDay, violations) + 1;
-      const consequence = getPenaltyConsequence(
-        coach.variant_id, SHORTFALL_VIOLATION, occurrence, PENALTY_MATRIX);
-
+    // One way of filing an attendance incident, used by both the short day and
+    // the day nobody turned up for.
+    const recordAttendanceViolation = (type, evidence) => {
+      const occurrence = getViolationOccurrenceNumber(coach.id, type, workingDay, violations) + 1;
+      const consequence = getPenaltyConsequence(coach.variant_id, type, occurrence, PENALTY_MATRIX);
       setViolations(prev => [...prev, {
-        id: `VIO_${Date.now().toString().substring(7)}`,
+        id: `VIO_${Date.now().toString().substring(7)}${Math.floor(Math.random() * 90 + 10)}`,
         coach_id: coach.id,
-        type: SHORTFALL_VIOLATION,
+        type,
         occurrence_no: occurrence,
         consequence: consequence.consequence,
         penalty_amount: consequence.amount,
         incident_date: workingDay,
         incident_time: null,
         reported_by: 'System — attendance',
-        evidence: `Logged ${logged} h against ${day.expected} h available; short by ${day.shortfallHours} h.`,
+        evidence,
         status: 'Pending_Acknowledge'
       }]);
+      return { occurrence, consequence };
+    };
+
+    if (day.outcome === 'violation') {
+      const { occurrence, consequence } = recordAttendanceViolation(
+        SHORTFALL_VIOLATION,
+        `Logged ${logged} h against ${day.expected} h available; short by ${day.shortfallHours} h.`);
 
       logAudit("Attendance Shortfall Recorded",
         `${coach.name} (${coach.id}) short ${day.shortfallHours} h on ${workingDay} — ` +
@@ -3362,6 +3410,30 @@ export default function App({ session = null, profile = null, onSignOut = null }
       logAudit("Loss of Pay Recorded",
         `${coach.name} (${coach.id}) — ${day.lopDays} day Loss of Pay on ${workingDay} ` +
         `(logged ${logged} h of ${day.expected} h)${onLeave ? ', approved leave' : ', unplanned'}.`);
+
+      // Nobody logged in at all, and no leave covers the day. That is two
+      // separate consequences: Loss of Pay for the day's pay, and a No-Show
+      // against conduct, which carries its own escalating ladder. Only the pay
+      // half was ever recorded, so a coach could miss day after day and the
+      // matrix would show nothing — while the reports counted a No-Show column
+      // that nothing ever wrote to.
+      //
+      // A half-worked day is not a no-show: they turned up. That still settles
+      // as Loss of Pay alone.
+      if (!onLeave && logged === 0) {
+        const { occurrence, consequence } = recordAttendanceViolation(
+          NO_SHOW_VIOLATION,
+          `No login recorded for ${workingDay}, and no leave covers the day. ` +
+          `${day.expected} h were expected.`);
+        logAudit("No-Show Recorded",
+          `${coach.name} (${coach.id}) did not log in on ${workingDay} — ` +
+          `occurrence #${occurrence}, ${consequence.consequence}.`);
+        showToast(
+          `No login on ${workingDay}: ${day.lopDays} day Loss of Pay, and No-Show ` +
+          `occurrence #${occurrence} — ${consequence.consequence}.`, "danger");
+        return;
+      }
+
       showToast(`${day.lopDays} day of Loss of Pay recorded for ${workingDay}.`, "danger");
       return;
     }
@@ -3404,6 +3476,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return;
     }
     diffHours = Math.round(diffHours * 10) / 10;
+
+    // Four per cycle, nothing after the 20th of the month it ends in.
+    const allow = regularisationAllowance(raiseRegCoach.id, raiseRegDate);
+    if (allow?.blocked) {
+      showToast(allow.why, "error");
+      return;
+    }
 
     const newReg = {
       id: `REG_${Date.now()}`,
@@ -3466,7 +3545,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setAttendanceRegularizations(prev => prev.map(r => r.id === reg.id ? {
         ...r,
         status: 'Approved',
-        decided_by: currentRole,
+        decided_by: actorName,
         decided_at: new Date().toISOString(),
         decision_note: note || 'Approved by ' + currentRole
       } : r));
@@ -3478,7 +3557,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setAttendanceRegularizations(prev => prev.map(r => r.id === reg.id ? {
         ...r,
         status: 'Rejected',
-        decided_by: currentRole,
+        decided_by: actorName,
         decided_at: new Date().toISOString(),
         decision_note: note
       } : r));
@@ -4101,6 +4180,75 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // against the balance as it stands at that moment, and written down.
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // How much regularisation a cycle allows
+  //
+  // Four per cycle, and nothing after the 20th of the month the cycle ends in.
+  // A cycle runs the 16th to the 15th, so 16 Aug – 15 Sep closes on 20 Sep:
+  // five days for a coach to account for anything they missed, and after that
+  // the month is Finance's.
+  //
+  // Both limits are read from the day being regularised, not from today, so
+  // asking about an old day is refused for the right reason rather than
+  // silently counted against the wrong cycle.
+  // -------------------------------------------------------------------------
+  const REGULARISATIONS_PER_CYCLE = 4;
+  const REGULARISATION_LOCK_DAY = 20;
+
+  const regularisationWindow = (workingDay) => {
+    if (!workingDay) return null;
+    const period = getPeriodForDate(new Date(`${workingDay}T12:00:00`));
+    const end = new Date(`${period.period_end}T12:00:00`);
+    // The 20th of the month the cycle ends in.
+    const lockIn = new Date(end.getFullYear(), end.getMonth(), REGULARISATION_LOCK_DAY, 23, 59, 59);
+    const fmt = (d) => d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    return {
+      period,
+      lockIn,
+      lockInLabel: fmt(lockIn),
+      locked: new Date() > lockIn,
+      label: `${new Date(`${period.period_start}T12:00:00`)
+        .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ` +
+        `${fmt(end)}`
+    };
+  };
+
+  /**
+   * How many of the four a coach has spent on the cycle a day falls in.
+   *
+   * A refused request does not spend one — a coach should not lose an
+   * allowance because an approver said no. Counted across both registers while
+   * two of them exist, so the limit cannot be dodged by raising one in each.
+   */
+  const regularisationsUsed = (coachId, workingDay) => {
+    const w = regularisationWindow(workingDay);
+    if (!w) return 0;
+    const inCycle = (d) => d >= w.period.period_start && d <= w.period.period_end;
+    const counts = (r) => r.coach_id === coachId && inCycle(r.working_day)
+      && r.status !== 'Rejected' && r.status !== 'Cancelled';
+    return regularisations.filter(counts).length
+      + attendanceRegularizations.filter(counts).length;
+  };
+
+  /** The allowance and the deadline, said in one place for every caller. */
+  const regularisationAllowance = (coachId, workingDay) => {
+    const w = regularisationWindow(workingDay);
+    if (!w) return null;
+    const used = regularisationsUsed(coachId, workingDay);
+    const left = Math.max(REGULARISATIONS_PER_CYCLE - used, 0);
+    return {
+      ...w, used, left,
+      max: REGULARISATIONS_PER_CYCLE,
+      exhausted: left === 0,
+      blocked: w.locked || left === 0,
+      why: w.locked
+        ? `${w.label} closed for regularisation on ${w.lockInLabel}.`
+        : left === 0
+          ? `All ${REGULARISATIONS_PER_CYCLE} regularisations for ${w.label} have been used.`
+          : null
+    };
+  };
+
   const regularisationFor = (coachId, workingDay) =>
     regularisations.find(r => r.coach_id === coachId && r.working_day === workingDay) || null;
 
@@ -4134,6 +4282,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     const can = regularisableDay(coach, workingDay);
     if (!can.ok) { showToast(can.why, "warning"); return false; }
+    const allow = regularisationAllowance(coach.id, workingDay);
+    if (allow?.blocked) { showToast(allow.why, "error"); return false; }
     if (!reason || !reason.trim()) {
       showToast("Say what happened — the approver sees only this.", "error");
       return false;
@@ -4222,7 +4372,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     setRegularisations(prev => prev.map(r => r.id === reg.id
       ? { ...r, status: decision, outcome,
-          decided_by: currentRole, decided_at: new Date().toISOString(),
+          decided_by: actorName, decided_at: new Date().toISOString(),
           decision_note: note }
       : r));
 
@@ -4359,7 +4509,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
       from_date: from, to_date: to, days, half_day: halfDay,
       reason: reason || null, status: 'Pending',
       applied_at: new Date().toISOString(),
-      applied_by: currentRole === 'Coach' ? null : currentRole
+      // Null when the coach applied for themselves; otherwise who filed it for them.
+      applied_by: currentRole === 'Coach' ? null : actorName
     }, ...prev]);
 
     logAudit("Leave Applied",
@@ -4423,7 +4574,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     setLeaveApplications(prev => prev.map(a => a.id === application.id
       ? { ...a, status: 'Partially_Approved', approved_days: approved,
-          decided_by: currentRole, decided_at: new Date().toISOString(), decision_note: note }
+          decided_by: actorName, decided_at: new Date().toISOString(), decision_note: note }
       : a));
     setLeaveBalances(prev => prev.map(b =>
       (b.coach_id === application.coach_id && b.type_id === application.type_id)
@@ -4501,7 +4652,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     setLeaveApplications(prev => prev.map(a => a.id === application.id
       ? { ...a, type_id: picked.id, status: 'Approved', approved_days: days,
-          decided_by: currentRole, decided_at: new Date().toISOString(),
+          decided_by: actorName, decided_at: new Date().toISOString(),
           decision_note: `Changed from ${leaveType(application.type_id)?.label} — ${note}` }
       : a));
 
@@ -4533,7 +4684,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     const coach = coaches.find(c => c.id === application.coach_id);
     setLeaveApplications(prev => prev.map(a => a.id === application.id
-      ? { ...a, status: decision, decided_by: currentRole, decided_at: new Date().toISOString(),
+      ? { ...a, status: decision, decided_by: actorName, decided_at: new Date().toISOString(),
           decision_note: note, approved_days: decision === 'Approved' ? a.days : 0 }
       : a));
 
@@ -5631,7 +5782,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       penalty_amount: finalAmount,
       incident_date: vioDate,
       incident_time: vioTime,
-      reported_by: currentRole,
+      reported_by: actorName,
       evidence: vioEvidence,
       status: "Pending_Acknowledge"
     };
@@ -5729,7 +5880,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       period_month: currentPeriodMonth,
       work_type: owWorkType,
       amount: owAmount,
-      approved_by: currentRole,
+      approved_by: actorName,
       status: "Approved"
     };
 
@@ -10980,8 +11131,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const regWaiting = attendanceRegularizations.filter(r => r.status === 'Pending'
                     && inAttendanceScope(r.coach_id)).length;
                   const tabs = [
-                    { key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting },
-                    { key: 'regularization', label: 'Regularizations', icon: 'bx-time', count: regWaiting },
+                    ...(LEAVE_APPROVER_ROLES.includes(currentRole)
+                      ? [{ key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting }] : []),
+                    ...(REGULARIZATION_APPROVER_ROLES.includes(currentRole)
+                      ? [{ key: 'regularization', label: 'Regularizations', icon: 'bx-time', count: regWaiting }] : []),
                     { key: 'floor', label: 'On the floor now', icon: 'bx-time-five', count: onFloor },
                     { key: 'coach', label: coach ? coach.name : 'A coach', icon: 'bx-user' },
                     ...(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager'
@@ -11148,15 +11301,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           each. The filters below still do anything these do not. */}
                       {(() => {
                         const today = new Date().toISOString().slice(0, 10);
+                        // Each preset says what it is actually showing. The
+                        // wording follows the filter beneath it rather than the
+                        // name on the chip: "upcoming" is anything not yet
+                        // finished, not anything not yet started, because the
+                        // date test is on to_date.
                         const views = [
-                          { id: 'all',      label: 'Everything',            f: { status: 'All', from: '', to: '' } },
-                          { id: 'waiting',  label: 'Waiting on a decision', f: { status: 'Pending', from: '', to: '' } },
-                          { id: 'upcoming', label: 'Upcoming — undecided',  f: { status: 'Pending', from: today, to: '' } },
-                          { id: 'future',   label: 'All future leave',      f: { status: 'All', from: today, to: '' } },
-                          { id: 'approved', label: 'Approved',              f: { status: 'Approved', from: '', to: '' } },
-                          { id: 'rejected', label: 'Rejected',              f: { status: 'Rejected', from: '', to: '' } },
+                          { id: 'all',      label: 'Everything',            f: { status: 'All', from: '', to: '' },
+                            blurb: 'Every application from every coach you can see — any status, any date, decided or not.' },
+                          { id: 'waiting',  label: 'Waiting on a decision', f: { status: 'Pending', from: '', to: '' },
+                            blurb: 'Everything with no decision yet, whatever date it falls on — including leave that has already been and gone.' },
+                          { id: 'upcoming', label: 'Upcoming — undecided',  f: { status: 'Pending', from: today, to: '' },
+                            blurb: 'Undecided leave that has not finished yet, so there is still time to answer before it matters.' },
+                          { id: 'future',   label: 'All future leave',      f: { status: 'All', from: today, to: '' },
+                            blurb: 'Every application running today or later, whatever its status — what the floor looks like from here on.' },
+                          { id: 'approved', label: 'Approved',              f: { status: 'Approved', from: '', to: '' },
+                            blurb: 'Granted in full. These are the days counted in the approved total above, and taken off the balance.' },
+                          { id: 'rejected', label: 'Rejected',              f: { status: 'Rejected', from: '', to: '' },
+                            blurb: 'Refused, with the reason the coach was given. Refused days go back to their balance, and they may appeal.' },
                           { id: 'overdue',  label: 'Past the 3-day deadline', f: { status: 'Pending', from: '', to: '' },
-                            extra: (a) => Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3 }
+                            extra: (a) => Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3,
+                            blurb: 'Undecided more than 3 days after it was applied for. Nobody is charged Loss of Pay while they wait — but those days cannot be settled, so the cycle cannot close until these are answered.' }
                         ];
                         const active = views.find(v =>
                           v.f.status === leaveRegister.status &&
@@ -11188,6 +11353,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 </button>
                               );
                             })}
+                            {/* What the chosen one is actually showing. The chip
+                                names it; this says what it means, and what the
+                                count is a count of. */}
+                            {active && (
+                              <p className="filter-chip-blurb" role="status">
+                                <strong>{active.label}:</strong> {active.blurb}
+                              </p>
+                            )}
+                            {!active && (
+                              <p className="filter-chip-blurb" role="status">
+                                <strong>Your own filter:</strong> the status, dates and deadline below are set
+                                by hand, so none of the presets above describes it. Pick one to go back to a
+                                named view.
+                              </p>
+                            )}
                           </div>
                         );
                       })()}
@@ -11451,6 +11631,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               A day waiting on a regularisation or a leave decision cannot be settled —
                               nothing is charged while the coach waits on an answer.
                             </p>
+                          </div>
+                        );
+                      })()}
+
+                      {/* The two limits, said before anyone runs into them. Read
+                          against today's cycle, and against the open coach when
+                          there is one, so the allowance shown is theirs. */}
+                      {(() => {
+                        const a = regularisationAllowance(coach?.id || '', todayWorkingDay);
+                        if (!a) return null;
+                        return (
+                          <div className={`hb-reg-rules${a.locked ? ' is-locked' : ''}`}>
+                            <div>
+                              <strong>This cycle · {a.label}</strong>
+                              <span>
+                                Four regularisations per cycle, and none accepted after{' '}
+                                <strong>{a.lockInLabel}</strong> — the 20th of the month the cycle ends in.
+                                A cycle runs the 16th to the 15th, so 16 Aug – 15 Sep closes on 20 Sep.
+                              </span>
+                            </div>
+                            <div className="hb-reg-rules-count">
+                              {coach ? (
+                                <>
+                                  <strong>{a.left} of {a.max}</strong>
+                                  <span>left for {coach.name.split(' ')[0]}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <strong>{a.max}</strong>
+                                  <span>per coach · open one to see theirs</span>
+                                </>
+                              )}
+                            </div>
+                            {a.locked && (
+                              <p className="hb-reg-rules-shut">
+                                Closed on {a.lockInLabel}. Nothing more can be raised against this cycle.
+                              </p>
+                            )}
                           </div>
                         );
                       })()}
@@ -11828,31 +12046,142 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     before the approval queue, since it is the context a decision
                     needs rather than something to look up afterwards. */}
                 {onTab('leave') && canApprove && (() => {
+                  const iso = (d) =>
+                    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  const monthMode = !awayDay && awayView === 'month';
+
+                  // Every day of the chosen month, so the grid can show the empty
+                  // ones too — an empty week is the answer to "can anyone go?".
+                  const [my, mm] = awayMonth.split('-').map(Number);
+                  const monthDays = monthMode
+                    ? Array.from({ length: new Date(my, mm, 0).getDate() },
+                        (_, i) => iso(new Date(my, mm - 1, i + 1)))
+                    : [];
+
                   const days = awayDay
                     ? [awayDay]
-                    : Array.from({ length: 14 }, (_, i) => {
-                        const d = new Date();
-                        d.setDate(d.getDate() + i);
-                        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-                      });
+                    : monthMode
+                      ? monthDays
+                      : Array.from({ length: 14 }, (_, i) => {
+                          const d = new Date();
+                          d.setDate(d.getDate() + i);
+                          return iso(d);
+                        });
                   const busy = days.map(d => ({ day: d, away: awayOn(d) })).filter(x => x.away.length > 0);
+                  const monthLabel = new Date(my, mm - 1, 1)
+                    .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+                  const shiftMonth = (by) => {
+                    const d = new Date(my, mm - 1 + by, 1);
+                    setAwayMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                  };
+                  const todayIso = iso(new Date());
                   return (
                     <div className="card" style={{ marginBottom: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Who Is Away{awayDay ? ` — ${awayDay}` : ' — Next 14 Days'}</h3>
+                        <h3>
+                          Who Is Away{awayDay ? ` — ${awayDay}`
+                            : monthMode ? ` — ${monthLabel}` : ' — Next 14 Days'}
+                        </h3>
                         <div className="table-btn-group">
                           <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
                             approved and pending
                           </span>
+                          {monthMode && (
+                            <>
+                              <button className="btn btn-secondary btn-sm" aria-label="Previous month"
+                                onClick={() => shiftMonth(-1)}>←</button>
+                              <input type="month" className="header-select" value={awayMonth}
+                                aria-label="Month" onChange={(e) => setAwayMonth(e.target.value)} />
+                              <button className="btn btn-secondary btn-sm" aria-label="Next month"
+                                onClick={() => shiftMonth(1)}>→</button>
+                            </>
+                          )}
+                          <div className="hb-seg" role="group" aria-label="How much to show">
+                            <button type="button" aria-pressed={monthMode}
+                              className={monthMode ? 'is-on' : ''}
+                              onClick={() => { setAwayDay(''); setAwayView('month'); }}>Month</button>
+                            <button type="button" aria-pressed={!awayDay && awayView === 'next14'}
+                              className={!awayDay && awayView === 'next14' ? 'is-on' : ''}
+                              onClick={() => { setAwayDay(''); setAwayView('next14'); }}>Next 14 days</button>
+                          </div>
                           <input type="date" className="header-select" value={awayDay}
-                            onChange={(e) => setAwayDay(e.target.value)} />
+                            aria-label="One day" onChange={(e) => setAwayDay(e.target.value)} />
                           {awayDay && (
                             <button className="btn btn-secondary btn-sm" onClick={() => setAwayDay('')}>
-                              Next 14 days
+                              Clear
                             </button>
                           )}
                         </div>
                       </div>
+                      {monthMode ? (
+                        <>
+                          <div className="away-cal" role="grid" aria-label={`Leave in ${monthLabel}`}>
+                            {WEEKDAYS.map(w => (
+                              <div className="away-cal-dow" key={w} role="columnheader">{w.slice(0, 3)}</div>
+                            ))}
+                            {/* Blanks before the 1st, so the month starts on its
+                                real weekday rather than on Sunday. */}
+                            {Array.from({ length: new Date(my, mm - 1, 1).getDay() }, (_, i) => (
+                              <div className="away-cal-pad" key={`pad-${i}`} aria-hidden="true" />
+                            ))}
+                            {monthDays.map(d => {
+                              const away = awayOn(d);
+                              const thin = away.length
+                                ? coverCheck(d).find(c => c.off > 0 && c.working < c.total) : null;
+                              const short = thin && thin.working <= Math.ceil(thin.total / 2);
+                              const pending = away.filter(a => a.app.status === 'Pending').length;
+                              const dow = new Date(`${d}T12:00:00`).getDay();
+                              return (
+                                <button
+                                  type="button"
+                                  key={d}
+                                  className={[
+                                    'away-cal-day',
+                                    away.length ? 'has-away' : '',
+                                    short ? 'is-thin' : '',
+                                    d === todayIso ? 'is-today' : '',
+                                    (dow === 0 || dow === 6) ? 'is-weekend' : ''
+                                  ].join(' ')}
+                                  title={away.length
+                                    ? `${away.length} away on ${d}${thin ? ` · ${thin.discipline} down to ${thin.working} of ${thin.total}` : ''}`
+                                    : `Nobody away on ${d}`}
+                                  onClick={() => setAwayDay(d)}
+                                >
+                                  <span className="away-cal-n">{Number(d.slice(8))}</span>
+                                  {away.length > 0 && (
+                                    <>
+                                      <span className="away-cal-count">
+                                        {away.length}{pending ? ` · ${pending} waiting` : ''}
+                                      </span>
+                                      <span className="away-cal-who">
+                                        {away.slice(0, 3).map(a => (
+                                          <em key={a.app.id} className={a.app.status === 'Pending' ? 'is-pending' : ''}>
+                                            {a.coach.name.split(' ')[0]}
+                                          </em>
+                                        ))}
+                                        {away.length > 3 && <em>+{away.length - 3}</em>}
+                                      </span>
+                                      {thin && (
+                                        <span className="away-cal-cover">
+                                          {thin.discipline} {thin.working}/{thin.total}
+                                        </span>
+                                      )}
+                                    </>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <p className="text-muted scorecard-legend">
+                            Every day of {monthLabel}, approved and waiting together. A day is marked
+                            when half the discipline or fewer are left working. Click one to open it on
+                            its own.{' '}
+                            {busy.length === 0
+                              ? 'Nobody is away this month.'
+                              : `${busy.length} day${busy.length === 1 ? ' has' : 's have'} somebody off.`}
+                          </p>
+                        </>
+                      ) : (
                       <div className="table-container">
                         <table className="data-table">
                           <thead><tr><th>Day</th><th>Away</th><th>Cover left</th></tr></thead>
@@ -11896,6 +12225,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </tbody>
                         </table>
                       </div>
+                      )}
                     </div>
                   );
                 })()}
