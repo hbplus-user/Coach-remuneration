@@ -11590,14 +11590,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           )}
                         </div>
                       </div>
-                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                        Every application, every coach. Decide from the row; click a name to
-                        open that coach below. A decision is due within 3 working days, and a
-                        coach is not marked Loss of Pay while theirs is still waiting.
-                      </p>
-
                       {/* The questions actually asked of this table, as one click
-                          each. The filters below still do anything these do not. */}
+                          each, and a line saying what the chosen one shows. The
+                          filters below still do anything these do not. */}
                       {(() => {
                         const today = new Date().toISOString().slice(0, 10);
                         // Each preset says what it is actually showing. The
@@ -11629,6 +11624,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           Boolean(v.extra) === Boolean(leaveRegister.overdueOnly));
 
                         return (
+                          <>
+                          <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                            {active
+                              ? <><strong>{active.label}:</strong> {active.blurb}</>
+                              : <><strong>Your own filter:</strong> the status, dates and deadline below are
+                                  set by hand, so none of the presets describes it. Pick one to go back to a
+                                  named view.</>}
+                          </p>
                           <div className="filter-chips">
                             {views.map(v => {
                               const n = leaveApplications.filter(a => {
@@ -11652,22 +11655,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 </button>
                               );
                             })}
-                            {/* What the chosen one is actually showing. The chip
-                                names it; this says what it means, and what the
-                                count is a count of. */}
-                            {active && (
-                              <p className="filter-chip-blurb" role="status">
-                                <strong>{active.label}:</strong> {active.blurb}
-                              </p>
-                            )}
-                            {!active && (
-                              <p className="filter-chip-blurb" role="status">
-                                <strong>Your own filter:</strong> the status, dates and deadline below are set
-                                by hand, so none of the presets above describes it. Pick one to go back to a
-                                named view.
-                              </p>
-                            )}
                           </div>
+                          </>
                         );
                       })()}
                       <div className="form-grid">
