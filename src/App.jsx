@@ -25,6 +25,16 @@ import {
 // The incident a day nobody turned up for is filed as. Present in every
 // variant of the penalty matrix and in `default`, so it always resolves.
 const NO_SHOW_VIOLATION = 'Coach No-Show';
+
+// What an appeal's state means, said once for the coach watching it and the
+// approver deciding it. RESOLVED is the coach's win; RM_DECIDED is the
+// manager refusing it, which is the end of the road unless it was escalated.
+const APPEAL_UI = {
+  PENDING_RM:   ['With the Reporting Manager', 'badge-warning'],
+  ESCALATED_HR: ['Escalated to HR',            'badge-info'],
+  RM_DECIDED:   ['Refused',                    'badge-danger'],
+  RESOLVED:     ['Upheld',                     'badge-success']
+};
 import {
   supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
   listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES,
@@ -1857,6 +1867,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [owAmount, setOwAmount] = useState(3000);
 
   // 5. File Appeal Form
+  // The leave decision being appealed, and the coach's grounds for it.
+  const [leaveAppealTarget, setLeaveAppealTarget] = useState(null);
+  const [leaveAppealGrounds, setLeaveAppealGrounds] = useState("");
   const [appealTargetId, setAppealTargetId] = useState("");
   const [appealTargetType, setAppealTargetType] = useState("");
   const [appealReason, setAppealReason] = useState("");
@@ -2929,15 +2942,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * every list, picker and count on the screen reads from here, so the limit
    * cannot be true of one section and not another.
    */
+  // Declared before the roster, which now reads selfCoachId to scope a coach
+  // to themselves. Neither of these depends on the roster.
+  const isPreviewingCoach = currentRole === 'Coach' && canSwitchRole && !profile?.coach_id;
+  const selfCoachId = profile?.coach_id
+    ?? (isPreviewingCoach ? (currentCoachContext || coaches[0]?.id || null) : null);
+
+  /**
+   * Whose attendance this account may see at all.
+   *
+   * A Coach sees one person: themselves. Their own application, their own
+   * regularisation, their own hours — and nobody else's reason for being off,
+   * which is not theirs to read. This is the only gate that matters: the
+   * coach view renders every tab's contents rather than one, so a register
+   * filtered only by `inAttendanceScope` was showing a coach the whole floor.
+   *
+   * A Reporting Manager sees their own squad. Everyone else sees everyone.
+   */
   const attendanceRoster = coaches.filter(c => {
+    if (currentRole === 'Coach') return c.id === selfCoachId;
     if (currentRole !== 'Reporting Manager' || !currentRmContext) return true;
     return c.reporting_manager_id === currentRmContext;
   });
   const inAttendanceScope = (coachId) => attendanceRoster.some(c => c.id === coachId);
-
-  const isPreviewingCoach = currentRole === 'Coach' && canSwitchRole && !profile?.coach_id;
-  const selfCoachId = profile?.coach_id
-    ?? (isPreviewingCoach ? (currentCoachContext || coaches[0]?.id || null) : null);
 
   /**
    * The coach whose attendance is on screen.
@@ -3279,6 +3306,183 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * not the coach's failure, and charging for it would make the system's own
    * unreliability expensive for them.
    */
+  // -------------------------------------------------------------------------
+  // Settling the days nobody got to
+  //
+  // Loss of Pay and the No-Show that goes with it only existed when somebody
+  // pressed Settle day, one coach and one day at a time, for today only. So an
+  // absence on the 9th stayed uncharged unless a person happened to open that
+  // coach and press a button — which is to say it usually stayed uncharged.
+  //
+  // This settles every finished day of the open cycle in one pass. It is the
+  // same assessment and the same consequences as the button; what changes is
+  // that nobody has to remember.
+  //
+  // It is deliberately narrow:
+  //   · the open cycle only, never a backfill of history
+  //   · finished days only — today is still being worked
+  //   · never a day already settled, on leave, on a weekly off, on a holiday,
+  //     or waiting on a leave or regularisation decision
+  //   · run from the browsers of the roles that could already settle, so a
+  //     coach's own session never charges anybody
+  //
+  // Everything is computed first and written in one state update, so two days
+  // for the same coach cannot both read "no violations yet" and claim the same
+  // occurrence number.
+  // -------------------------------------------------------------------------
+  const settleOutstandingDays = ({ quiet = false } = {}) => {
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return 0;
+    const period = currentMonth[0];
+    if (!period) return 0;
+
+    const dayMs = 86400000;
+    const from = new Date(`${period.period_start}T12:00:00`);
+    const until = new Date(`${todayWorkingDay}T12:00:00`);
+    if (until <= from) return 0;
+
+    const settledKeys = new Set(attendanceDays.map(d => `${d.coach_id}|${d.working_day}`));
+    const openLeaveOn = (coachId, day) => leaveApplications.some(a =>
+      a.coach_id === coachId && a.status === 'Pending'
+      && a.from_date <= day && a.to_date >= day);
+    const approvedLeaveOn = (coachId, day) => leaveApplications.some(a =>
+      a.coach_id === coachId && a.status === 'Approved'
+      && a.from_date <= day && a.to_date >= day);
+    const openRegOn = (coachId, day) =>
+      regularisations.some(r => r.coach_id === coachId && r.working_day === day && r.status === 'Pending')
+      || attendanceRegularizations.some(r => r.coach_id === coachId && r.working_day === day && r.status === 'Pending');
+    const decidedRegOn = (coachId, day) =>
+      regularisations.some(r => r.coach_id === coachId && r.working_day === day && r.status === 'Approved');
+
+    const newDays = [];
+    const newVios = [];
+    const lopByCoach = new Map();
+    // Occurrences are counted against what exists plus what this run is about
+    // to add, or two absences in one sweep would both be "#1".
+    const runningVios = [...violations];
+
+    for (const coach of coaches.filter(c => c.status === 'Active')) {
+      // A coach cannot be absent before they joined.
+      const joined = coach.date_of_joining ? new Date(`${coach.date_of_joining}T12:00:00`) : null;
+
+      for (let t = new Date(from); t < until; t = new Date(t.getTime() + dayMs)) {
+        const day = t.toISOString().slice(0, 10);
+        if (joined && t < joined) continue;
+        if (settledKeys.has(`${coach.id}|${day}`)) continue;
+        if (openLeaveOn(coach.id, day) || openRegOn(coach.id, day)) continue;
+        if (decidedRegOn(coach.id, day)) continue;
+
+        const logs = logsFor(coach.id, day);
+        // A shift still open is not a finished day.
+        if (logs.some(l => !l.logged_out_at)) continue;
+
+        const avail = availabilityHoursFor(coach, day);
+        const logged = loggedHoursForDay(logs);
+        const onLeave = approvedLeaveOn(coach.id, day);
+        const assessed = assessAttendanceDay({
+          category: coach.coach_category,
+          availabilityHours: avail.hours,
+          loggedHours: logged,
+          onApprovedLeave: onLeave,
+          isWeeklyOff: isWeeklyOffFor(coach, day),
+          isHoliday: !!holidayOn(coach, day),
+          availabilityMissing: avail.missing
+        });
+
+        newDays.push({
+          coach_id: coach.id, working_day: day,
+          expected_hours: assessed.expected ?? avail.hours,
+          logged_hours: logged,
+          shortfall_hours: assessed.shortfallHours,
+          outcome: assessed.outcome,
+          lop_days: assessed.lopDays,
+          planned: onLeave,
+          disputed: false
+        });
+
+        const fileVio = (type, evidence) => {
+          const occurrence = getViolationOccurrenceNumber(coach.id, type, day, runningVios) + 1;
+          const consequence = getPenaltyConsequence(coach.variant_id, type, occurrence, PENALTY_MATRIX);
+          const row = {
+            id: `VIO_${Date.now().toString().substring(7)}${Math.floor(Math.random() * 9000 + 1000)}`,
+            coach_id: coach.id, type, occurrence_no: occurrence,
+            consequence: consequence.consequence,
+            penalty_amount: consequence.amount,
+            incident_date: day, incident_time: null,
+            reported_by: 'System — attendance',
+            evidence, status: 'Pending_Acknowledge'
+          };
+          newVios.push(row);
+          runningVios.push(row);
+        };
+
+        if (assessed.outcome === 'violation') {
+          fileVio(SHORTFALL_VIOLATION,
+            `Logged ${logged} h against ${assessed.expected} h available; short by ${assessed.shortfallHours} h.`);
+        } else if (assessed.lopDays > 0) {
+          lopByCoach.set(coach.id, {
+            lop: (lopByCoach.get(coach.id)?.lop || 0) + assessed.lopDays,
+            unplanned: (lopByCoach.get(coach.id)?.unplanned || 0) + (onLeave ? 0 : assessed.lopDays)
+          });
+          if (!onLeave && logged === 0) {
+            fileVio(NO_SHOW_VIOLATION,
+              `No login recorded for ${day}, and no leave covers the day. ${assessed.expected} h were expected.`);
+          }
+        }
+      }
+    }
+
+    if (newDays.length === 0) return 0;
+
+    setAttendanceDays(prev => [...prev, ...newDays]);
+    if (newVios.length) setViolations(prev => [...prev, ...newVios]);
+    if (lopByCoach.size) {
+      const patch = (list) => list.map(r => {
+        const add = lopByCoach.get(r.coach_id);
+        if (!add) return r;
+        if (r.period_month !== period.period_month) return r;
+        return {
+          ...r,
+          lop_days: (Number(r.lop_days) || 0) + add.lop,
+          unplanned_lop_days: (Number(r.unplanned_lop_days) || 0) + add.unplanned
+        };
+      });
+      setCurrentMonth(patch);
+      setHistoricMonths(patch);
+    }
+
+    const absences = newVios.filter(v => v.type === NO_SHOW_VIOLATION).length;
+    logAudit("Days Settled Automatically",
+      `${newDays.length} day-record${newDays.length === 1 ? '' : 's'} settled for ${period.period_month} — ` +
+      `${[...lopByCoach.values()].reduce((n, x) => n + x.lop, 0)} day(s) Loss of Pay, ` +
+      `${absences} no-show and ${newVios.length - absences} shortfall incident(s).`);
+
+    if (!quiet) {
+      showToast(
+        `${newDays.length} day${newDays.length === 1 ? '' : 's'} settled` +
+        (newVios.length ? ` — ${newVios.length} incident${newVios.length === 1 ? '' : 's'} recorded.` : '.'),
+        newVios.length ? "warning" : "success");
+    }
+    return newDays.length;
+  };
+
+  // Run it once a session, shortly after the data has settled. Not on every
+  // render, and not before the first sync has finished, or it would judge days
+  // against a half-loaded roster.
+  //
+  // This is the honest limit of a browser-side job: it runs when somebody who
+  // can settle days opens the app. If nobody opens it for a week, nothing is
+  // charged for a week — the figures are right whenever someone looks, which
+  // is enough for a cycle that closes on the 15th, but it is not a scheduler.
+  // A Supabase scheduled function is the durable version of this.
+  const sweptRef = useRef(false);
+  useEffect(() => {
+    if (!isStateLoaded || sweptRef.current) return;
+    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return;
+    sweptRef.current = true;
+    const t = setTimeout(() => settleOutstandingDays({ quiet: false }), 2500);
+    return () => clearTimeout(t);
+  }, [isStateLoaded, currentRole]);
+
   const settleAttendanceDay = (coach, workingDay) => {
     if (!coach) return;
     const already = attendanceDays.find(d => d.coach_id === coach.id && d.working_day === workingDay);
@@ -4794,19 +4998,52 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`${leaveType(typeId)?.label} adjusted by ${delta > 0 ? '+' : ''}${delta}.`, "success");
   };
 
-  /** Raise a rejected leave decision as an appeal, through the existing route. */
+  /** Find the appeal raised against one leave decision, if there is one. */
+  const appealForLeave = (application) => appeals.find(x =>
+    x.coach_id === application.coach_id
+    && x.target_type === 'Leave' && x.target_id === application.id);
+
+  /**
+   * Raise a rejected leave decision as an appeal.
+   *
+   * The coach's own objection to a decision about them, so only they may make
+   * it. An approver appealing on their behalf would be the same person on both
+   * sides of it, and the coach would have a case on record they never argued.
+   */
   const appealLeaveDecision = (application) => {
+    if (currentRole !== 'Coach' || application.coach_id !== selfCoachId) {
+      showToast("Only the coach can appeal a decision about their own leave.", "error");
+      return;
+    }
+    if (appealForLeave(application)) {
+      showToast("That decision has already been appealed.", "info");
+      return;
+    }
+    // A browser prompt could not show the decision being argued with, which is
+    // the thing the coach needs in front of them while they write.
+    setLeaveAppealTarget(application);
+    setLeaveAppealGrounds("");
+  };
+
+  const submitLeaveAppeal = (e) => {
+    if (e) e.preventDefault();
+    const application = leaveAppealTarget;
+    if (!application) return;
+    const grounds = leaveAppealGrounds;
+    if (!grounds || !grounds.trim()) {
+      showToast("Say why it should be looked at again — this is what your manager reads.", "error");
+      return;
+    }
     const coach = coaches.find(c => c.id === application.coach_id);
-    const grounds = window.prompt(
-      `Appeal the decision on ${leaveType(application.type_id)?.label}, ` +
-      `${application.from_date} to ${application.to_date}.\n\n` +
-      `Reason given: ${application.decision_note || '—'}\n\nWhy should it be looked at again?`);
-    if (!grounds || !grounds.trim()) return;
 
     setAppeals(prev => [{
       id: `APL_${Date.now().toString().substring(7)}`,
       coach_id: application.coach_id,
       violation_id: null,
+      // Keyed to the decision it argues with, so both sides can show its state
+      // against the row rather than in a list nobody opens.
+      target_type: 'Leave',
+      target_id: application.id,
       reason: `Leave decision — ${leaveType(application.type_id)?.label} ` +
         `${application.from_date} to ${application.to_date}: ${grounds.trim()}`,
       status: 'PENDING_RM',
@@ -4816,7 +5053,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
     logAudit("Leave Decision Appealed",
       `${coach?.name || application.coach_id} appealed the ${leaveType(application.type_id)?.label} ` +
       `decision of ${application.from_date} — ${grounds.trim()}`);
-    showToast("Appeal raised. It goes to the Reporting Manager.", "info");
+    showToast("Appeal raised. It goes to your Reporting Manager.", "success");
+    setLeaveAppealTarget(null);
+    setLeaveAppealGrounds("");
   };
 
   const handleLeaveCancel = (application) => {
@@ -7074,7 +7313,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <strong>Previewing as a coach</strong>
                           <small>
                             This account is not a coach, so {me.name}'s record stands in.
-                            Logging in or applying for leave here would be recorded against them.
+                            Logging in, applying for leave or appealing a decision here would be
+                            recorded against them.
                           </small>
                         </span>
                       </div>
@@ -7178,9 +7418,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       ) : (
                         <div className="table-container">
                           <table className="data-table">
-                            <thead><tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th></tr></thead>
+                            <thead><tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th>Appeal</th></tr></thead>
                             <tbody>
-                              {myLeave.slice(0, 8).map(a => (
+                              {myLeave.slice(0, 8).map(a => {
+                                const appeal = appealForLeave(a);
+                                return (
                                 <tr key={a.id}>
                                   <td>{leaveType(a.type_id)?.label}</td>
                                   <td>{a.from_date} → {a.to_date}</td>
@@ -7194,8 +7436,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     </span>
                                   </td>
                                   <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
+                                  {/* A refusal the coach disagrees with is argued
+                                      here, by them. Once raised, this is where
+                                      they watch it rather than having to ask. */}
+                                  <td>
+                                    {appeal ? (
+                                      <span className={`badge ${APPEAL_UI[appeal.status]?.[1] || 'badge-info'}`}
+                                        title={appeal.rm_decision_notes || appeal.hr_decision_notes || appeal.reason}>
+                                        {APPEAL_UI[appeal.status]?.[0] || appeal.status}
+                                      </span>
+                                    ) : a.status === 'Rejected' ? (
+                                      <button className="btn btn-secondary btn-sm"
+                                        onClick={() => appealLeaveDecision(a)}>
+                                        <i className="bx bx-undo"></i> Appeal
+                                      </button>
+                                    ) : <small className="text-muted">—</small>}
+                                  </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -11601,11 +11860,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                             </button>
                                           </>
                                         )}
-                                        {a.status === 'Rejected' && (
-                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
-                                            onClick={() => appealLeaveDecision(a)}>
-                                            <i className="bx bx-undo"></i>
-                                          </button>
+                                        {/* Appealing is the coach's to do, not
+                                            yours. What you see is whether they
+                                            have. */}
+                                        {a.status === 'Rejected' && appealForLeave(a) && (
+                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
+                                            Appealed
+                                          </span>
                                         )}
                                       </div>
                                     </td>
@@ -11755,8 +12016,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         );
                       })()}
 
-                      {/* Pending requests cards (actionable immediately) */}
-                      {counts.pending > 0 && regTabFilter !== 'Approved' && regTabFilter !== 'Rejected' && (
+                      {/* Pending requests cards — for the people who decide them.
+                          A coach cannot act on one, and their own is already in
+                          the register below, so this is not shown to them. */}
+                      {REGULARIZATION_APPROVER_ROLES.includes(currentRole)
+                        && counts.pending > 0 && regTabFilter !== 'Approved' && regTabFilter !== 'Rejected' && (
                         <div className="card" style={{ marginBottom: '1.25rem', borderLeft: '4px solid #d97706' }}>
                           <div className="card-header-row">
                             <div>
@@ -11844,7 +12108,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <div>
                             <h3>Attendance Regularization Register</h3>
                             <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                              All regularization records and decisions across coaches
+                              {currentRole === 'Coach' ? 'Every day you have raised, and what was decided' : 'All regularization records and decisions across coaches'}
                             </span>
                           </div>
                           <div className="table-btn-group">
@@ -13320,10 +13584,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         </>
                                       )}
                                       {a.status === 'Rejected' && (
-                                        <button className="btn-row-icon icon-edit" title="Appeal this decision"
-                                          onClick={() => appealLeaveDecision(a)}>
-                                          <i className="bx bx-undo"></i>
-                                        </button>
+                                        appealForLeave(a) ? (
+                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
+                                            Appealed
+                                          </span>
+                                        ) : currentRole === 'Coach' && a.coach_id === selfCoachId ? (
+                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
+                                            onClick={() => appealLeaveDecision(a)}>
+                                            <i className="bx bx-undo"></i>
+                                          </button>
+                                        ) : null
                                       )}
                                       {(a.status === 'Pending' || a.status === 'Approved') && (
                                         <button className="btn-row-icon icon-reset" title="Cancel this leave"
@@ -14025,6 +14295,99 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </div>
               </div>
+
+              {(() => {
+                // Appeals. A coach's objection to a decision — a penalty or a
+                // refused leave. The handlers for deciding them have always
+                // existed; the screen that reaches them was never enabled, so
+                // an appeal went in and was never seen again. This is that
+                // screen, on the view where the incidents themselves live.
+                const mine = appeals.filter(a => {
+                  const c = coaches.find(x => x.id === a.coach_id);
+                  if (currentRole === 'Reporting Manager') return c?.reporting_manager_id === currentRmContext;
+                  return true;
+                }).sort((a, b) => new Date(b.raised_at) - new Date(a.raised_at));
+                if (mine.length === 0 || currentRole === 'Coach') return null;
+
+                const isRM = currentRole === 'Reporting Manager' || currentRole === 'Super Admin';
+                const isHR = currentRole === 'HR Manager' || currentRole === 'Super Admin';
+
+                return (
+                  <div className="card" style={{ marginBottom: '1.5rem' }}>
+                    <div className="card-header-row">
+                      <h3>Appeals · {mine.filter(a => a.status === 'PENDING_RM' || a.status === 'ESCALATED_HR').length} open</h3>
+                      <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                        Raised by the coach against a penalty or a refused leave
+                      </span>
+                    </div>
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead>
+                          <tr><th>Raised</th><th>Coach</th><th>Against</th><th>Status</th><th>Notes</th><th className="actions-col">Decide</th></tr>
+                        </thead>
+                        <tbody>
+                          {mine.map(a => {
+                            const c = coaches.find(x => x.id === a.coach_id);
+                            const ui = APPEAL_UI[a.status] || [a.status, 'badge-muted'];
+                            const open = a.status === 'PENDING_RM' || a.status === 'ESCALATED_HR';
+                            return (
+                              <tr key={a.id}>
+                                <td style={{ whiteSpace: 'nowrap' }}>
+                                  {a.raised_at ? new Date(a.raised_at).toLocaleDateString('en-IN') : '—'}
+                                </td>
+                                <td><strong>{c?.name || a.coach_id}</strong></td>
+                                <td><small>{a.reason}</small></td>
+                                <td><span className={`badge ${ui[1]}`}>{ui[0]}</span></td>
+                                <td><small className="text-muted">
+                                  {a.hr_decision_notes || a.rm_decision_notes || '—'}
+                                </small></td>
+                                <td className="actions-col">
+                                  {open ? (
+                                    <div className="table-btn-group">
+                                      {a.status === 'PENDING_RM' && isRM && (
+                                        <>
+                                          <button className="btn-row-icon icon-save" title="Uphold the appeal"
+                                            onClick={() => handleRMAppealDecision(a.id, 'Approve')}>
+                                            <i className="bx bx-check"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-cancel" title="Refuse the appeal"
+                                            onClick={() => handleRMAppealDecision(a.id, 'Reject')}>
+                                            <i className="bx bx-x"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-edit" title="Send it up to HR"
+                                            onClick={() => handleRMEscalateAppeal(a.id)}>
+                                            <i className="bx bx-up-arrow-alt"></i>
+                                          </button>
+                                        </>
+                                      )}
+                                      {a.status === 'ESCALATED_HR' && isHR && (
+                                        <>
+                                          <button className="btn-row-icon icon-save" title="Uphold — final"
+                                            onClick={() => handleHRAppealDecision(a.id, 'Approve')}>
+                                            <i className="bx bx-check"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-cancel" title="Refuse — final"
+                                            onClick={() => handleHRAppealDecision(a.id, 'Reject')}>
+                                            <i className="bx bx-x"></i>
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  ) : <small className="text-muted">closed</small>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-muted scorecard-legend">
+                      An upheld appeal marks the penalty Appeal_Approved, which stops it being charged.
+                      Only the coach may raise one.
+                    </p>
+                  </div>
+                );
+              })()}
 
               {(() => {
                 // What has actually been logged, and the form to log the next
@@ -16103,6 +16466,77 @@ HB+_030,185,0,96`} />
       })()}
 
       {/* Raise Attendance Regularization Modal (for coaches when they missed log in / log out) */}
+      {/* Appealing a leave decision. The refusal being argued with sits above
+          the box, because a coach writing their case should not have to
+          remember what was said to them. */}
+      {leaveAppealTarget && (() => {
+        const a = leaveAppealTarget;
+        const t = leaveType(a.type_id);
+        const span = a.from_date === a.to_date
+          ? a.from_date
+          : `${a.from_date} → ${a.to_date}`;
+        return (
+          <div className="modal-backdrop active-modal">
+            <div className="modal-card hb-appeal-card">
+              <div className="modal-header">
+                <div>
+                  <h3 style={{ margin: 0 }}>Appeal this decision</h3>
+                  <div className="hb-appeal-sub">
+                    It goes to your Reporting Manager, who can uphold it, refuse it, or send it to HR.
+                  </div>
+                </div>
+                <i className="bx bx-x modal-close-btn" onClick={() => setLeaveAppealTarget(null)}></i>
+              </div>
+
+              <form onSubmit={submitLeaveAppeal}>
+                <div className="modal-body" style={{ padding: '1.25rem 0' }}>
+                  <div className="hb-appeal-what">
+                    <div>
+                      <span>Leave</span>
+                      <strong>{t?.label || a.type_id}</strong>
+                    </div>
+                    <div>
+                      <span>Dates</span>
+                      <strong className="num">{span}</strong>
+                    </div>
+                    <div>
+                      <span>Days</span>
+                      <strong className="num">{a.days}</strong>
+                    </div>
+                  </div>
+
+                  <div className="hb-appeal-reason">
+                    <span>WHY IT WAS REFUSED</span>
+                    <p>{a.decision_note || 'No reason was recorded.'}</p>
+                    {a.decided_by && <small>Decided by {a.decided_by}</small>}
+                  </div>
+
+                  <div className="hb-f" style={{ marginTop: '1rem' }}>
+                    <label htmlFor="appeal-grounds">Why should it be looked at again?</label>
+                    <textarea
+                      id="appeal-grounds"
+                      rows="4"
+                      autoFocus
+                      value={leaveAppealGrounds}
+                      onChange={(e) => setLeaveAppealGrounds(e.target.value)}
+                      placeholder="What the decision missed — anything you can point to helps."
+                    />
+                    <small>Your manager sees this exactly as you write it.</small>
+                  </div>
+                </div>
+
+                <div className="modal-footer hb-appeal-foot">
+                  <button type="button" className="hb-btn"
+                    onClick={() => setLeaveAppealTarget(null)}>Cancel</button>
+                  <button type="submit" className="hb-btn hb-btn-primary"
+                    disabled={!leaveAppealGrounds.trim()}>Send the appeal</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
       {raiseRegModal && raiseRegCoach && (() => {
         const tIn = raiseRegDate && raiseRegInTime ? new Date(`${raiseRegDate}T${raiseRegInTime}:00`) : null;
         const tOut = raiseRegDate && raiseRegOutTime ? new Date(`${raiseRegDate}T${raiseRegOutTime}:00`) : null;

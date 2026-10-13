@@ -4749,3 +4749,38 @@ form {
   background: rgba(159, 64, 34, 0.12); border-color: rgba(159, 64, 34, 0.4);
   color: var(--brand-rust); font-weight: 600;
 }
+
+/* Appealing a leave decision. The refusal being argued with is shown above the
+   box: a coach writing their case should not have to remember what was said. */
+.hb-appeal-card { max-width: 540px; }
+.hb-appeal-sub { font-size: 0.82rem; color: var(--text-secondary); margin-top: 3px; }
+.hb-appeal-what {
+  display: grid; gap: 0.75rem; margin-bottom: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+}
+.hb-appeal-what > div {
+  padding: 0.7rem 0.85rem; border-radius: 10px; background: var(--wash);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.hb-appeal-what span { font-size: 0.72rem; color: var(--text-secondary); }
+.hb-appeal-what strong { font-size: 0.95rem; }
+.hb-appeal-what .num { font-variant-numeric: tabular-nums; }
+.hb-appeal-reason {
+  padding: 0.9rem 1rem; border-radius: 10px;
+  background: rgba(159, 64, 34, 0.08); border-left: 3px solid var(--brand-rust);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.hb-appeal-reason > span {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; color: var(--brand-rust);
+}
+.hb-appeal-reason p { margin: 0; font-size: 0.9rem; line-height: 1.5; }
+.hb-appeal-reason small { font-size: 0.76rem; color: var(--text-secondary); }
+.hb-appeal-card .hb-f textarea {
+  min-height: 92px; resize: vertical; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  padding: 10px 12px; width: 100%; box-sizing: border-box;
+  font: 400 0.92rem var(--font-body); color: var(--text-primary);
+}
+.hb-appeal-card .hb-f textarea:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.hb-appeal-foot { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.hb-appeal-foot .hb-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
