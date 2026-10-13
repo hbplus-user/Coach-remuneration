@@ -4737,3 +4737,15 @@ form {
 .hb-reg-rules-shut {
   flex-basis: 100%; margin: 0; font-size: 0.84rem; font-weight: 700; color: var(--brand-rust);
 }
+
+/* The allowance, in the modal where the date is chosen — it follows the day
+   being regularised, not today, so changing the date changes what it says. */
+.hb-reg-allow {
+  margin-bottom: 1rem; padding: 0.7rem 0.9rem; border-radius: 10px;
+  background: var(--brand-cream); border: 1px solid var(--border-strong);
+  font-size: 0.84rem; color: var(--text-secondary);
+}
+.hb-reg-allow.is-blocked {
+  background: rgba(159, 64, 34, 0.12); border-color: rgba(159, 64, 34, 0.4);
+  color: var(--brand-rust); font-weight: 600;
+}

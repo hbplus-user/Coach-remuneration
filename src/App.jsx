@@ -3484,6 +3484,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return;
     }
 
+    // Who is entering this. A coach asking about their own day is a request
+    // and waits for a decision. A Super Admin, HR or Reporting Manager filling
+    // in a day for a coach is the decision — asking them to approve their own
+    // entry afterwards would record a second signature that means nothing. It
+    // is marked decided, with their name on both halves so the register still
+    // says who did it.
+    const byApprover = currentRole !== 'Coach'
+      && REGULARIZATION_APPROVER_ROLES.includes(currentRole);
+    const now = new Date().toISOString();
+
     const newReg = {
       id: `REG_${Date.now()}`,
       coach_id: raiseRegCoach.id,
@@ -3494,14 +3504,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
       hours: diffHours,
       reason: raiseRegReason,
       detailed_reason: raiseRegNote.trim(),
-      status: 'Pending',
-      applied_at: new Date().toISOString()
+      raised_by: actorName,
+      status: byApprover ? 'Approved' : 'Pending',
+      applied_at: now,
+      ...(byApprover ? {
+        decided_by: actorName,
+        decided_at: now,
+        decision_note: `Entered and approved by ${actorName} on the coach's behalf.`
+      } : {})
     };
 
     setAttendanceRegularizations(prev => [newReg, ...prev]);
-    logAudit("Attendance Regularization Raised",
-      `${raiseRegCoach.name} (${raiseRegCoach.id}) raised regularization for ${raiseRegDate} (${raiseRegInTime}–${raiseRegOutTime}, ${diffHours}h): ${raiseRegReason}`);
-    showToast(`Regularization request submitted for ${raiseRegDate}. Awaiting manager review.`, "success");
+
+    // An approved regularisation is the attendance: write the login it stands
+    // for, the same record the approval path writes, or the day still reads as
+    // nobody having turned up.
+    if (byApprover) {
+      setAttendanceLogs(prev => [{
+        id: `ATT_REG_${Date.now()}`,
+        coach_id: raiseRegCoach.id,
+        working_day: raiseRegDate,
+        logged_in_at: `${raiseRegDate}T${raiseRegInTime}:00`,
+        logged_out_at: `${raiseRegDate}T${raiseRegOutTime}:00`,
+        login_lat: null, login_lng: null,
+        within_centre: true,
+        photo_path: null,
+        auto_logged_out: false,
+        is_regularized: true,
+        regularization_reason: raiseRegReason
+      }, ...prev]);
+    }
+
+    logAudit(byApprover ? "Attendance Regularization Entered" : "Attendance Regularization Raised",
+      `${raiseRegCoach.name} (${raiseRegCoach.id}) — ${raiseRegDate} ` +
+      `(${raiseRegInTime}–${raiseRegOutTime}, ${diffHours}h): ${raiseRegReason}` +
+      (byApprover ? ` — entered and approved by ${actorName}.` : ' — awaiting a decision.'));
+    showToast(byApprover
+      ? `${raiseRegCoach.name}'s ${raiseRegDate} recorded — ${diffHours}h credited.`
+      : `Regularization request submitted for ${raiseRegDate}. Awaiting manager review.`, "success");
     setRaiseRegModal(false);
   };
 
@@ -11620,55 +11660,33 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         return (
                           <div className="card" style={{ marginBottom: '1.25rem' }}>
                             <div className="card-header-row">
-                              <h3>Settle today — {coach.name}</h3>
-                              <button className="btn btn-secondary" disabled={!!why}
-                                title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
-                                onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
-                                <i className="bx bx-check-double"></i> {why || 'Settle day'}
-                              </button>
+                              <h3>{coach.name}</h3>
+                              <div className="table-btn-group">
+                                {/* Entering a day the coach never logged is the
+                                    point of this: it is offered whether or not
+                                    anything was logged, and for any date. */}
+                                {REGULARIZATION_APPROVER_ROLES.includes(currentRole) && (
+                                  <button className="btn btn-primary"
+                                    title={`Enter the hours ${coach.name.split(' ')[0]} worked on a day they did not log`}
+                                    onClick={() => openRaiseRegularization(coach, todayWorkingDay)}>
+                                    <i className="bx bx-calendar-edit"></i> Regularise a day
+                                  </button>
+                                )}
+                                <button className="btn btn-secondary" disabled={!!why}
+                                  title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
+                                  onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
+                                  <i className="bx bx-check-double"></i> {why || 'Settle today'}
+                                </button>
+                              </div>
                             </div>
                             <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                              A day waiting on a regularisation or a leave decision cannot be settled —
-                              nothing is charged while the coach waits on an answer.
+                              <strong>Regularise a day</strong> records the hours a coach actually worked on a
+                              day they did not log — any date, whether or not anything was logged. You are an
+                              approver, so what you enter is recorded as decided, under your name.
+                              {' '}<strong>Settle today</strong> writes today down as it stands. A day waiting on
+                              a regularisation or a leave decision cannot be settled — nothing is charged while
+                              the coach waits on an answer.
                             </p>
-                          </div>
-                        );
-                      })()}
-
-                      {/* The two limits, said before anyone runs into them. Read
-                          against today's cycle, and against the open coach when
-                          there is one, so the allowance shown is theirs. */}
-                      {(() => {
-                        const a = regularisationAllowance(coach?.id || '', todayWorkingDay);
-                        if (!a) return null;
-                        return (
-                          <div className={`hb-reg-rules${a.locked ? ' is-locked' : ''}`}>
-                            <div>
-                              <strong>This cycle · {a.label}</strong>
-                              <span>
-                                Four regularisations per cycle, and none accepted after{' '}
-                                <strong>{a.lockInLabel}</strong> — the 20th of the month the cycle ends in.
-                                A cycle runs the 16th to the 15th, so 16 Aug – 15 Sep closes on 20 Sep.
-                              </span>
-                            </div>
-                            <div className="hb-reg-rules-count">
-                              {coach ? (
-                                <>
-                                  <strong>{a.left} of {a.max}</strong>
-                                  <span>left for {coach.name.split(' ')[0]}</span>
-                                </>
-                              ) : (
-                                <>
-                                  <strong>{a.max}</strong>
-                                  <span>per coach · open one to see theirs</span>
-                                </>
-                              )}
-                            </div>
-                            {a.locked && (
-                              <p className="hb-reg-rules-shut">
-                                Closed on {a.lockInLabel}. Nothing more can be raised against this cycle.
-                              </p>
-                            )}
                           </div>
                         );
                       })()}
@@ -11694,6 +11712,48 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <strong>{counts.all}</strong>
                         </div>
                       </div>
+
+                      {/* The two limits, said before anyone runs into them. Read
+                          against today's cycle, and against the open coach when
+                          there is one, so the allowance shown is theirs. */}
+                      {(() => {
+                        const a = regularisationAllowance(coach?.id || '', todayWorkingDay);
+                        if (!a) return null;
+                        return (
+                          <div className={`hb-reg-rules${a.locked ? ' is-locked' : ''}`}>
+                            <div>
+                              <strong>This cycle · {a.label}</strong>
+                              {/* The live cycle and its live closing date say the
+                                  rule already. A worked example underneath them
+                                  would carry frozen dates that disagree with the
+                                  ones above it, which is what causes the doubt
+                                  rather than settling it. */}
+                              <span>
+                                Four regularisations per cycle, and none accepted after{' '}
+                                <strong>{a.lockInLabel}</strong> — the 20th of the month the cycle ends in.
+                              </span>
+                            </div>
+                            <div className="hb-reg-rules-count">
+                              {coach ? (
+                                <>
+                                  <strong>{a.left} of {a.max}</strong>
+                                  <span>left for {coach.name.split(' ')[0]}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <strong>{a.max}</strong>
+                                  <span>per coach · open one to see theirs</span>
+                                </>
+                              )}
+                            </div>
+                            {a.locked && (
+                              <p className="hb-reg-rules-shut">
+                                Closed on {a.lockInLabel}. Nothing more can be raised against this cycle.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Pending requests cards (actionable immediately) */}
                       {counts.pending > 0 && regTabFilter !== 'Approved' && regTabFilter !== 'Rejected' && (
@@ -16047,6 +16107,11 @@ HB+_030,185,0,96`} />
         const tIn = raiseRegDate && raiseRegInTime ? new Date(`${raiseRegDate}T${raiseRegInTime}:00`) : null;
         const tOut = raiseRegDate && raiseRegOutTime ? new Date(`${raiseRegDate}T${raiseRegOutTime}:00`) : null;
         let previewDiff = (tIn && tOut && tOut > tIn) ? Math.round(((tOut - tIn) / 3600000) * 10) / 10 : 0;
+        const byApprover = currentRole !== 'Coach'
+          && REGULARIZATION_APPROVER_ROLES.includes(currentRole);
+        // The allowance for the cycle the chosen day falls in, not today's, so
+        // changing the date changes what it says.
+        const allow = regularisationAllowance(raiseRegCoach.id, raiseRegDate);
 
         return (
           <div className="modal-backdrop active-modal">
@@ -16055,9 +16120,13 @@ HB+_030,185,0,96`} />
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <i className="bx bx-calendar-edit" style={{ fontSize: '1.5rem', color: '#16a34a' }}></i>
                   <div>
-                    <h3 style={{ margin: 0 }}>Raise Attendance Regularization</h3>
+                    <h3 style={{ margin: 0 }}>
+                      {byApprover ? 'Regularise a day' : 'Raise Attendance Regularization'}
+                    </h3>
                     <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
-                      Forgot to log in or log out? Request attendance regularization for your shift hours.
+                      {byApprover
+                        ? `Record the hours ${raiseRegCoach.name.split(' ')[0]} worked on a day they did not log. Saved as decided, under your name.`
+                        : 'Forgot to log in or log out? Request attendance regularization for your shift hours.'}
                     </div>
                   </div>
                 </div>
@@ -16066,6 +16135,13 @@ HB+_030,185,0,96`} />
 
               <form onSubmit={handleRaiseRegularizationSubmit}>
                 <div className="modal-body" style={{ padding: '1.25rem 0' }}>
+                  {allow && (
+                    <div className={`hb-reg-allow${allow.blocked ? ' is-blocked' : ''}`}>
+                      {allow.blocked
+                        ? allow.why
+                        : `${allow.left} of ${allow.max} left for ${allow.label}. This cycle closes on ${allow.lockInLabel}.`}
+                    </div>
+                  )}
                   <div className="form-group" style={{ marginBottom: '1rem' }}>
                     <label className="form-label">Coach</label>
                     <input
