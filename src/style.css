@@ -4784,3 +4784,40 @@ form {
 .hb-appeal-card .hb-f textarea:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
 .hb-appeal-foot { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .hb-appeal-foot .hb-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* What a settled day cost: the Loss of Pay and the incident behind it, said on
+   the day itself rather than left for the coach to find on a payslip. */
+.hb-day-cost {
+  margin-top: 0.9rem; padding: 0.9rem 1.1rem; border-radius: 12px;
+  background: rgba(159, 64, 34, 0.09); border-left: 3px solid var(--brand-rust);
+}
+.hb-day-cost > strong { font-size: 0.92rem; color: var(--brand-rust); }
+.hb-day-cost ul { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.hb-day-cost li {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem;
+  font-size: 0.86rem; line-height: 1.45;
+}
+.hb-day-cost li em {
+  font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--brand-rust); white-space: nowrap;
+}
+.hb-day-cost li em.hb-waived { color: #3b5a49; font-weight: 600; }
+.hb-day-cost-total {
+  margin: 0.7rem 0 0; padding-top: 0.6rem; font-size: 0.86rem;
+  border-top: 1px solid rgba(159, 64, 34, 0.25);
+}
+.hb-day-cost-total strong { font-variant-numeric: tabular-nums; }
+
+/* The same panel before the day is settled: what it is going to cost, rather
+   than silence until an approver happens to run the sweep. */
+.hb-day-cost.is-forecast {
+  background: rgba(201, 157, 93, 0.18); border-left-color: var(--brand-tan);
+}
+.hb-day-cost.is-forecast > strong { color: #6b4a14; }
+.hb-day-cost.is-forecast li em { color: #6b4a14; }
+.hb-day-cost.is-forecast .hb-day-cost-total { border-top-color: rgba(201, 157, 93, 0.45); }
+.hb-day-cost.is-waiting {
+  background: rgba(52, 65, 97, 0.1); border-left-color: var(--brand-navy);
+}
+.hb-day-cost.is-waiting > strong { color: var(--brand-navy); }
+.hb-day-cost.is-waiting .hb-day-cost-total { border-top: 0; padding-top: 0.35rem; }

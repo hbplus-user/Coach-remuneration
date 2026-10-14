@@ -185,7 +185,8 @@ const MAPPERS = {
     onConflict: 'coach_id,working_day',
     toRow: d => blanksToNull(pick(d, [
       'coach_id', 'working_day', 'expected_hours', 'logged_hours', 'shortfall_hours',
-      'outcome', 'lop_days', 'planned', 'disputed', 'dispute_note', 'resolved_by'
+      'outcome', 'lop_days', 'planned', 'disputed', 'dispute_note', 'resolved_by',
+      'cover_type_id'
     ]), DATE_ISH),
     fromRow: r => r,
     deleteBy: 'compound',

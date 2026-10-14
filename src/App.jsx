@@ -3356,6 +3356,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const newDays = [];
     const newVios = [];
     const lopByCoach = new Map();
+    // What this run has already taken from each balance, so two absences for
+    // one coach draw it down one after the other rather than both reading the
+    // opening figure and both being covered.
+    const spent = new Map();
     // Occurrences are counted against what exists plus what this run is about
     // to add, or two absences in one sweep would both be "#1".
     const runningVios = [...violations];
@@ -3388,13 +3392,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
           availabilityMissing: avail.missing
         });
 
+        // A full absence is paid out of the balance before it is paid out of
+        // pay: Holiday first, then Paid.
+        const absence = !onLeave && logged === 0 && assessed.lopDays > 0;
+        const cover = absence ? coverAbsenceWith(coach, spent) : null;
+
         newDays.push({
           coach_id: coach.id, working_day: day,
           expected_hours: assessed.expected ?? avail.hours,
           logged_hours: logged,
           shortfall_hours: assessed.shortfallHours,
-          outcome: assessed.outcome,
-          lop_days: assessed.lopDays,
+          outcome: cover ? 'leave' : assessed.outcome,
+          lop_days: cover ? 0 : assessed.lopDays,
+          cover_type_id: cover || null,
           planned: onLeave,
           disputed: false
         });
@@ -3418,20 +3428,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
         if (assessed.outcome === 'violation') {
           fileVio(SHORTFALL_VIOLATION,
             `Logged ${logged} h against ${assessed.expected} h available; short by ${assessed.shortfallHours} h.`);
+        } else if (cover) {
+          const k = `${coach.id}|${cover}`;
+          spent.set(k, (spent.get(k) || 0) + assessed.lopDays);
+          fileVio(NO_SHOW_VIOLATION,
+            `No login recorded for ${day}. Covered by ${leaveType(cover)?.label || cover}; ` +
+            `${assessed.expected} h were expected.`);
         } else if (assessed.lopDays > 0) {
           lopByCoach.set(coach.id, {
             lop: (lopByCoach.get(coach.id)?.lop || 0) + assessed.lopDays,
             unplanned: (lopByCoach.get(coach.id)?.unplanned || 0) + (onLeave ? 0 : assessed.lopDays)
           });
-          if (!onLeave && logged === 0) {
+          if (absence) {
             fileVio(NO_SHOW_VIOLATION,
-              `No login recorded for ${day}, and no leave covers the day. ${assessed.expected} h were expected.`);
+              `No login recorded for ${day}, and no Holiday or Paid balance was left to cover it. ` +
+              `${assessed.expected} h were expected.`);
           }
         }
       }
     }
 
     if (newDays.length === 0) return 0;
+
+    // Everything the run spent, applied in one update per type.
+    for (const [key, days] of spent) {
+      const [coachId, typeId] = key.split('|');
+      const c = coaches.find(x => x.id === coachId);
+      if (c && days > 0) spendLeaveDay(c, typeId, days);
+    }
 
     setAttendanceDays(prev => [...prev, ...newDays]);
     if (newVios.length) setViolations(prev => [...prev, ...newVios]);
@@ -3451,8 +3475,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     const absences = newVios.filter(v => v.type === NO_SHOW_VIOLATION).length;
+    const covered = [...spent.values()].reduce((n, d) => n + d, 0);
     logAudit("Days Settled Automatically",
       `${newDays.length} day-record${newDays.length === 1 ? '' : 's'} settled for ${period.period_month} — ` +
+      `${covered} absence(s) covered from Holiday or Paid balance, ` +
       `${[...lopByCoach.values()].reduce((n, x) => n + x.lop, 0)} day(s) Loss of Pay, ` +
       `${absences} no-show and ${newVios.length - absences} shortfall incident(s).`);
 
@@ -3598,6 +3624,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
 
     if (day.lopDays > 0) {
+      // A full absence is paid out of the balance before it is paid out of
+      // pay: Holiday first, then Paid. The incident is filed either way.
+      const absence = !onLeave && logged === 0;
+      const cover = absence ? coverAbsenceWith(coach) : null;
+
+      if (cover) {
+        spendLeaveDay(coach, cover, day.lopDays);
+        setAttendanceDays(prev => prev.map(d =>
+          (d.coach_id === coach.id && d.working_day === workingDay)
+            ? { ...d, outcome: 'leave', lop_days: 0, planned: false, cover_type_id: cover } : d));
+
+        const { occurrence, consequence } = recordAttendanceViolation(
+          NO_SHOW_VIOLATION,
+          `No login recorded for ${workingDay}. Covered by ${leaveType(cover)?.label || cover}; ` +
+          `${day.expected} h were expected.`);
+
+        logAudit("Absence Covered From Balance",
+          `${coach.name} (${coach.id}) — ${workingDay} taken from ${leaveType(cover)?.label || cover} ` +
+          `instead of Loss of Pay. No-Show occurrence #${occurrence}.`);
+        showToast(
+          `No login on ${workingDay} — taken from their ${leaveType(cover)?.label || cover}. ` +
+          `Still recorded as No-Show #${occurrence}: ${consequence.consequence}.`, "warning");
+        return;
+      }
+
       // Onto the cycle the day falls in, which payroll already reads from.
       const patch = (list) => list.map(r => {
         if (r.coach_id !== coach.id) return r;
@@ -3624,11 +3675,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
       //
       // A half-worked day is not a no-show: they turned up. That still settles
       // as Loss of Pay alone.
-      if (!onLeave && logged === 0) {
+      if (absence) {
         const { occurrence, consequence } = recordAttendanceViolation(
           NO_SHOW_VIOLATION,
-          `No login recorded for ${workingDay}, and no leave covers the day. ` +
-          `${day.expected} h were expected.`);
+          `No login recorded for ${workingDay}, and no Holiday or Paid balance was left ` +
+          `to cover it. ${day.expected} h were expected.`);
         logAudit("No-Show Recorded",
           `${coach.name} (${coach.id}) did not log in on ${workingDay} — ` +
           `occurrence #${occurrence}, ${consequence.consequence}.`);
@@ -3770,6 +3821,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const note = reviewRegNote.trim();
 
     if (decision === 'Approved') {
+      // Same reversal as the other register: a day already settled as an
+      // absence must give back its Loss of Pay before these hours are credited,
+      // or it is charged and paid for at once.
+      reverseSettledDay(reg.coach_id, reg.working_day,
+        `Regularization approved by ${actorName}.`);
+
       const newLog = {
         id: `ATT_REG_${Date.now()}`,
         coach_id: reg.coach_id,
@@ -4382,6 +4439,57 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Covering a missed day from the balance
+  //
+  // A day with no login is not charged to pay while the coach still has leave
+  // to spend on it. Holiday Leave goes first, then Paid Leave, and only when
+  // both are empty does the day cost pay.
+  //
+  // This is an automatic deduction against an absence, which is a different
+  // thing from a coach applying for Holiday Leave: that is still only allowed
+  // on a published holiday date, and a published holiday costs nothing anyway.
+  // Here the balance is simply what the absence is paid out of.
+  //
+  // The incident is filed either way. Not logging in is a conduct matter on
+  // its own, so the ladder does not care who paid for the day.
+  // -------------------------------------------------------------------------
+  const ABSENCE_COVER_ORDER = ['HOLIDAY', 'PAID'];
+
+  /**
+   * Which balance covers one absence, or null when none can.
+   *
+   * `spent` carries what a batch has already taken in this same run, so two
+   * absences settled together draw the balance down one after the other
+   * instead of both reading the opening figure.
+   */
+  const coverAbsenceWith = (coach, spent = new Map()) => {
+    for (const typeId of ABSENCE_COVER_ORDER) {
+      const already = spent.get(`${coach.id}|${typeId}`) || 0;
+      if (leaveBalanceFor(coach, typeId).available - already >= 1) return typeId;
+    }
+    return null;
+  };
+
+  /** Spend one day of a balance, writing a row when the coach has none yet. */
+  const spendLeaveDay = (coach, typeId, days = 1) => {
+    const { year } = leaveYearFor(new Date());
+    const bal = leaveBalanceFor(coach, typeId);
+    setLeaveBalances(prev => {
+      const has = prev.some(b => b.coach_id === coach.id
+        && b.leave_year === year && b.type_id === typeId);
+      if (has) {
+        return prev.map(b => (b.coach_id === coach.id
+          && b.leave_year === year && b.type_id === typeId)
+          ? { ...b, used: (Number(b.used) || 0) + days } : b);
+      }
+      return [...prev, {
+        coach_id: coach.id, leave_year: year, type_id: typeId,
+        opening: bal.opening, accrued: bal.accrued, adjusted: bal.adjusted, used: days
+      }];
+    });
+  };
+
   /** Balance for one leave type: opening, plus accrued, less what is spent. */
   const leaveBalanceFor = (coach, typeId) => {
     const { year } = leaveYearFor(new Date());
@@ -4509,8 +4617,71 @@ export default function App({ session = null, profile = null, onSignOut = null }
       && a.from_date <= workingDay && a.to_date >= workingDay);
     if (covered) return { ok: false, why: 'Leave already covers this day.' };
     const settled = attendanceDays.find(d => d.coach_id === coach.id && d.working_day === workingDay);
-    if (settled) return { ok: false, why: 'The day is settled — ask HR to reopen it.' };
+    // Deliberately not refused once settled: being charged is how a coach
+    // learns the day went against them, so that is the moment they most need
+    // to explain it. Approving one undoes the charge. The four-per-cycle cap
+    // and the 20th still apply, so this cannot be used without limit.
+    void settled;
     return { ok: true, why: null };
+  };
+
+  /**
+   * Undo what settling a day charged.
+   *
+   * A regularisation accepted after the day was settled has to take back the
+   * Loss of Pay and the incident that went with it, or the coach is charged
+   * for a day somebody has just agreed they should not be. The settled row is
+   * removed so the day can be settled again on its new facts.
+   *
+   * The incident is waived rather than deleted: it happened, the occurrence
+   * still counts towards the ladder, and `isPenaltyChargeable` already
+   * excludes a waived one from pay. Deleting it would quietly reset the
+   * ladder for everything after it.
+   */
+  const reverseSettledDay = (coachId, workingDay, why) => {
+    const row = attendanceDays.find(d => d.coach_id === coachId && d.working_day === workingDay);
+    if (!row) return false;
+
+    // A day covered from a balance cost a leave day, not a day of pay, so that
+    // is what has to go back. Without this a coach loses a leave day to a day
+    // somebody has just agreed they worked.
+    if (row.cover_type_id) {
+      const { year } = leaveYearFor(new Date());
+      setLeaveBalances(prev => prev.map(b =>
+        (b.coach_id === coachId && b.leave_year === year && b.type_id === row.cover_type_id)
+          ? { ...b, used: Math.max(0, (Number(b.used) || 0) - 1) } : b));
+    }
+
+    if (Number(row.lop_days) > 0) {
+      const back = Number(row.lop_days);
+      const patch = (list) => list.map(r => {
+        if (r.coach_id !== coachId) return r;
+        if (workingDay < r.period_start || workingDay > r.period_end) return r;
+        return {
+          ...r,
+          lop_days: Math.max(0, (Number(r.lop_days) || 0) - back),
+          unplanned_lop_days: Math.max(0, (Number(r.unplanned_lop_days) || 0) - back)
+        };
+      });
+      setCurrentMonth(patch);
+      setHistoricMonths(patch);
+    }
+
+    setViolations(prev => prev.map(v =>
+      (v.coach_id === coachId && v.incident_date === workingDay
+        && v.reported_by === 'System — attendance' && isPenaltyChargeable(v))
+        ? { ...v, status: 'Waived', decision_note: why } : v));
+
+    setAttendanceDays(prev => prev.filter(d =>
+      !(d.coach_id === coachId && d.working_day === workingDay)));
+
+    logAudit("Settled Day Reversed",
+      `${workingDay} for ${coachId} — ` +
+      (row.cover_type_id
+        ? `1 day of ${leaveType(row.cover_type_id)?.label || row.cover_type_id} returned`
+        : `${row.lop_days} day(s) Loss of Pay returned`) +
+      ` and any attendance incident waived. ${why}`);
+    return true;
   };
 
   const raiseRegularisation = (coach, workingDay, typeId, reason) => {
@@ -4580,6 +4751,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const bal = leaveBalanceFor(coach, reg.type_id);
       const days = Number(reg.days) || 1;
       outcome = bal.available >= days ? 'Leave' : 'LOP';
+
+      // If the day was already settled, take back what it charged before
+      // applying what this decision says instead.
+      reverseSettledDay(coach.id, reg.working_day,
+        `Regularisation approved by ${actorName}.`);
 
       if (outcome === 'Leave') {
         const { year } = leaveYearFor(new Date());
@@ -13100,8 +13276,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {avail.missing && (
                         <p className="calc-notes">
                           Availability has not come from the scheduling system, so the standard
-                          {' '}{standardDailyHours(coach.coach_category)} hours stand in. The day is flagged
-                          for review and nothing is charged for it.
+                          {' '}{standardDailyHours(coach.coach_category)} hours stand in. A part-worked day is
+                          flagged for review and nothing is charged for it — judging a shortfall against a
+                          stand-in figure would be unfair. A day with no login at all is still Loss of Pay:
+                          whatever the roster said, none of it was worked.
                         </p>
                       )}
 
@@ -13156,6 +13334,117 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <p className="calc-notes">Nothing was logged on this day.</p>
                             )}
 
+                            {/* What the day actually cost, once it is settled.
+                                The figure and the incident behind it, rather
+                                than a bare "settled" the coach has to chase. */}
+                            {(() => {
+                              const row = attendanceDays.find(d =>
+                                d.coach_id === coach.id && d.working_day === shown);
+
+                              // Before anyone settles it, say what the day is
+                              // going to cost. Waiting for an approver to run
+                              // the sweep meant a coach saw nothing at all on a
+                              // day they had already lost — and the admin saw
+                              // nothing either until they happened to settle.
+                              if (!row) {
+                                if (shown >= todayWorkingDay) return null;
+                                if (logs.length > 0) return null;
+                                if (isWeeklyOffFor(coach, shown) || holidayOn(coach, shown)) return null;
+                                const covered = leaveApplications.some(x => x.coach_id === coach.id
+                                  && x.status === 'Approved' && x.from_date <= shown && x.to_date >= shown);
+                                if (covered) return null;
+                                const waiting = leaveApplications.some(x => x.coach_id === coach.id
+                                  && x.status === 'Pending' && x.from_date <= shown && x.to_date >= shown)
+                                  || regularisationFor(coach.id, shown)?.status === 'Pending';
+                                if (waiting) {
+                                  return (
+                                    <div className="hb-day-cost is-waiting">
+                                      <strong>Nothing is charged while this waits</strong>
+                                      <p className="hb-day-cost-total">
+                                        There is a request on this day with no decision yet. It cannot be
+                                        settled, and nothing comes off pay, until somebody answers it.
+                                      </p>
+                                    </div>
+                                  );
+                                }
+
+                                const willCover = coverAbsenceWith(coach);
+                                const occurrence = getViolationOccurrenceNumber(
+                                  coach.id, NO_SHOW_VIOLATION, shown, violations) + 1;
+                                const consequence = getPenaltyConsequence(
+                                  coach.variant_id, NO_SHOW_VIOLATION, occurrence, PENALTY_MATRIX);
+                                const lopCost = seesMoney ? lopPerDay(coach.coach_category,
+                                  computeMonthlyPay(coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
+                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []).basePay) : 0;
+                                return (
+                                  <div className="hb-day-cost is-forecast">
+                                    <strong>No login — what this day will cost</strong>
+                                    <ul>
+                                      <li>
+                                        <span>
+                                          {willCover
+                                            ? `1 day of ${leaveType(willCover)?.label || willCover} — there is balance left to cover it`
+                                            : 'No Holiday or Paid balance left, so 1 day of Loss of Pay'}
+                                        </span>
+                                        {!willCover && seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
+                                      </li>
+                                      <li>
+                                        <span>
+                                          {NO_SHOW_VIOLATION} · would be occurrence #{occurrence} — {consequence.consequence}
+                                        </span>
+                                        {seesMoney && consequence.amount > 0 && <em>−{rupees(consequence.amount)}</em>}
+                                      </li>
+                                    </ul>
+                                    <p className="hb-day-cost-total">
+                                      Not charged yet — it is applied when the day is settled. Raise a
+                                      regularisation below if you worked and did not log it.
+                                    </p>
+                                  </div>
+                                );
+                              }
+                              const dayVios = violations.filter(v =>
+                                v.coach_id === coach.id && v.incident_date === shown
+                                && v.reported_by === 'System — attendance');
+                              const charged = dayVios.filter(isPenaltyChargeable)
+                                .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                              const lopCost = Number(row.lop_days) > 0 && seesMoney
+                                ? lopPerDay(coach.coach_category, computeMonthlyPay(
+                                    coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
+                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []
+                                  ).basePay) * Number(row.lop_days)
+                                : 0;
+                              if (Number(row.lop_days) === 0 && dayVios.length === 0) return null;
+                              return (
+                                <div className="hb-day-cost">
+                                  <strong>What this day cost</strong>
+                                  <ul>
+                                    {Number(row.lop_days) > 0 && (
+                                      <li>
+                                        <span>{row.lop_days} day of Loss of Pay</span>
+                                        {seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
+                                      </li>
+                                    )}
+                                    {dayVios.map(v => (
+                                      <li key={v.id}>
+                                        <span>
+                                          {v.type} · occurrence #{v.occurrence_no} — {v.consequence}
+                                        </span>
+                                        {seesMoney && isPenaltyChargeable(v) && Number(v.penalty_amount) > 0 && (
+                                          <em>−{rupees(v.penalty_amount)}</em>
+                                        )}
+                                        {!isPenaltyChargeable(v) && <em className="hb-waived">not charged</em>}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {seesMoney && (charged > 0 || lopCost > 0) && (
+                                    <p className="hb-day-cost-total">
+                                      Comes off this cycle's pay: <strong>−{rupees(charged + lopCost)}</strong>
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
                             {/* A day with no login costs a day's pay once it is
                                 settled. This is the coach's chance to say what
                                 actually happened, before anyone settles it. */}
@@ -13193,12 +13482,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <div className="hb-reg-form">
                                   <strong>No login on this day — say what happened</strong>
                                   <span>
-                                    If it is approved it comes off the balance you name. If you have none
-                                    left, the day becomes Loss of Pay.
+                                    A day with no login is paid out of your Holiday balance first, then your
+                                    Paid balance, and only costs you pay when both are empty. Raise this if
+                                    you actually worked — approving it gives back whatever the day took,
+                                    the leave day or the pay.
+                                    {(() => {
+                                      const al = regularisationAllowance(coach.id, shown);
+                                      return al ? ` You have ${al.left} of ${al.max} regularisations left for ${al.label}, and this cycle closes on ${al.lockInLabel}.` : '';
+                                    })()}
                                   </span>
                                   <div className="hb-reg-fields">
                                     <label className="hb-f">
-                                      <span>Cover it with</span>
+                                      <span>If it has to be leave, use</span>
                                       <select
                                         value={regDraft.type || types[0]?.id || ''}
                                         onChange={(e) => setRegDraft(d => ({ ...d, type: e.target.value }))}
