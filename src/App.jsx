@@ -11903,9 +11903,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           d.coach_id === coach.id && d.working_day === todayWorkingDay);
                         const openNow = openLogFor(coach.id);
                         const logged = logsFor(coach.id, todayWorkingDay);
+                        // A day with nothing logged is the one that most needs
+                        // settling — it is how an absence becomes Loss of Pay.
+                        // Disabling the button on it, as this used to, left the
+                        // only case that matters unreachable.
                         const why = settled ? 'Today is already settled'
                           : openNow ? 'Still logged in — they must log out first'
-                          : logged.length === 0 ? 'Nothing logged today'
                           : null;
                         return (
                           <div className="card" style={{ marginBottom: '1.25rem' }}>
@@ -11926,6 +11929,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   title={why || 'Write the day down: a short day becomes a violation, a very short one becomes Loss of Pay'}
                                   onClick={() => settleAttendanceDay(coach, todayWorkingDay)}>
                                   <i className="bx bx-check-double"></i> {why || 'Settle today'}
+                                </button>
+                                {/* The same sweep that runs on load, on demand —
+                                    so an outstanding day can be dealt with now
+                                    rather than at whatever time somebody next
+                                    opens the app. */}
+                                <button className="btn btn-secondary"
+                                  title="Settle every finished day of this cycle that nobody has settled yet, for every coach"
+                                  onClick={() => {
+                                    const n = settleOutstandingDays({ quiet: false });
+                                    if (n === 0) showToast("Nothing outstanding — every finished day this cycle is settled.", "info");
+                                  }}>
+                                  <i className="bx bx-calendar-check"></i> Settle outstanding days
                                 </button>
                               </div>
                             </div>

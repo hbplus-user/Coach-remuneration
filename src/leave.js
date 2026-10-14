@@ -125,11 +125,28 @@ export function assessAttendanceDay({
   const logged = Math.max(0, Number(loggedHours) || 0);
   const shortfall = Math.max(0, expected - logged);
 
-  if (availabilityMissing) {
-    return { outcome: 'review', shortfallHours: shortfall, lopDays: 0, expected, logged };
-  }
+  // A day with nothing logged at all is settled before the availability feed
+  // is considered.
+  //
+  // Not working at all is not a question the roster can answer differently:
+  // whatever hours they were scheduled, they did none of them, and no leave,
+  // weekly off or holiday covers the day — those were ruled out above. The
+  // standard hours stand in only to say what was lost.
+  //
+  // The order used to be the other way round, and because the scheduling feed
+  // has never been connected — availabilityHoursFor returns missing: true for
+  // every day — this branch was unreachable. Every absence in the system read
+  // as 'review', and no Loss of Pay was ever charged to anybody.
   if (logged === 0) {
     return { outcome: 'lop', shortfallHours: expected, lopDays: 1, expected, logged };
+  }
+
+  // A part-worked day is a different matter: deciding whether it fell short
+  // needs to know what was expected, and without the feed that figure is a
+  // stand-in. Charging a shortfall against a guess would be unfair, so the day
+  // is flagged for a person to look at and nothing is charged.
+  if (availabilityMissing) {
+    return { outcome: 'review', shortfallHours: shortfall, lopDays: 0, expected, logged };
   }
   if (shortfall * 60 <= SHORTFALL_TOLERANCE_MINUTES) {
     return { outcome: 'ok', shortfallHours: 0, lopDays: 0, expected, logged };
