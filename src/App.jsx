@@ -11653,8 +11653,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     && inAttendanceScope(a.coach_id)).length;
                   const onFloor = attendanceLogs.filter(l => !l.logged_out_at
                     && inAttendanceScope(l.coach_id)).length;
-                  const regWaiting = attendanceRegularizations.filter(r => r.status === 'Pending'
-                    && inAttendanceScope(r.coach_id)).length;
+                  // Both registers. A coach raising one from their day strip
+                  // writes to `regularisations`; the modal writes to
+                  // `attendanceRegularizations`. Counting one of them left the
+                  // other with no badge and nothing to find it by.
+                  const regWaiting =
+                    attendanceRegularizations.filter(r => r.status === 'Pending'
+                      && inAttendanceScope(r.coach_id)).length
+                    + regularisations.filter(r => r.status === 'Pending'
+                      && inAttendanceScope(r.coach_id)).length;
                   const tabs = [
                     ...(LEAVE_APPROVER_ROLES.includes(currentRole)
                       ? [{ key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting }] : []),
@@ -11686,12 +11693,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     Super Admin, HR, or that coach's own Reporting Manager. The
                     decision is what turns the day into leave or into Loss of
                     Pay, so what it will cost is said before it is taken. */}
-                {onTab('leave') && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
-                  const mineToDecide = regularisations.filter(r => {
-                    if (!inAttendanceScope(r.coach_id)) return false;
-                    if (coach && r.coach_id !== coach.id) return false;
-                    return r.status === 'Pending';
-                  }).sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
+                {/* On the Regularizations tab, not Leave: a coach raising one
+                    from their day looks for it here, and so does the approver
+                    who gets told about it. */}
+                {onTab('regularization') && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                  // Everyone in scope, not just whoever is open in the picker.
+                  // Narrowing it meant a request could be raised and then be
+                  // invisible because an approver happened to have a different
+                  // coach selected — and the card vanished entirely rather than
+                  // saying so. A queue that hides work is worse than no queue.
+                  const mineToDecide = regularisations
+                    .filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id))
+                    .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
                   if (mineToDecide.length === 0) return null;
 
                   return (
@@ -12108,22 +12121,41 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     HR, Manager, Super Admin, and Finance can view all regularization requests,
                     see reasons why they were raised, and approve or reject them. */}
                 {onTab('regularization') && (() => {
-                  const scopedRegs = attendanceRegularizations.filter(r => {
+                  // Both registers, read as one list. A coach raising a day
+                  // from their calendar writes to `regularisations`; the modal
+                  // writes to `attendanceRegularizations`. Counting only one of
+                  // them meant a coach could raise a day and watch it appear
+                  // nowhere. The rows differ — one carries the hours claimed,
+                  // the other only the claim — so the shape is normalised here
+                  // rather than pretending they are the same record.
+                  const allRegs = [
+                    ...attendanceRegularizations.map(r => ({ ...r, _src: 'hours' })),
+                    ...regularisations.map(r => ({
+                      ...r, _src: 'day',
+                      coach_name: coaches.find(c => c.id === r.coach_id)?.name || r.coach_id,
+                      check_in_time: null, check_out_time: null, hours: null,
+                      detailed_reason: r.reason
+                    }))
+                  ];
+                  const scopedRegs = allRegs.filter(r => {
                     if (!inAttendanceScope(r.coach_id)) return false;
                     if (coach && r.coach_id !== coach.id) return false;
                     if (regTabFilter !== 'All' && r.status !== regTabFilter) return false;
                     return true;
                   });
 
-                  const pendingRegs = attendanceRegularizations
-                    .filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id))
+                  // The cards below review an hours claim, which only the
+                  // modal's rows carry; a day claim is decided in the queue
+                  // above, so it is not offered here twice.
+                  const pendingRegs = allRegs
+                    .filter(r => r._src === 'hours' && r.status === 'Pending' && inAttendanceScope(r.coach_id))
                     .sort((a, b) => new Date(a.applied_at) - new Date(b.applied_at));
 
                   const counts = {
-                    all: attendanceRegularizations.filter(r => inAttendanceScope(r.coach_id)).length,
-                    pending: attendanceRegularizations.filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id)).length,
-                    approved: attendanceRegularizations.filter(r => r.status === 'Approved' && inAttendanceScope(r.coach_id)).length,
-                    rejected: attendanceRegularizations.filter(r => r.status === 'Rejected' && inAttendanceScope(r.coach_id)).length,
+                    all: allRegs.filter(r => inAttendanceScope(r.coach_id)).length,
+                    pending: allRegs.filter(r => r.status === 'Pending' && inAttendanceScope(r.coach_id)).length,
+                    approved: allRegs.filter(r => r.status === 'Approved' && inAttendanceScope(r.coach_id)).length,
+                    rejected: allRegs.filter(r => r.status === 'Rejected' && inAttendanceScope(r.coach_id)).length,
                   };
 
                   return (
@@ -12397,8 +12429,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       <strong>{r.coach_name}</strong>
                                       <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{r.coach_id}</div>
                                     </td>
-                                    <td>{r.check_in_time} – {r.check_out_time}</td>
-                                    <td><strong>{r.hours} h</strong></td>
+                                    <td>
+                                      {r._src === 'hours'
+                                        ? `${r.check_in_time} – ${r.check_out_time}`
+                                        : <small className="text-muted">no times claimed</small>}
+                                    </td>
+                                    <td>
+                                      {r._src === 'hours'
+                                        ? <strong>{r.hours} h</strong>
+                                        : <small className="text-muted">worked the day</small>}
+                                    </td>
                                     <td>
                                       <div style={{ fontWeight: 600 }}>{r.reason}</div>
                                       {r.detailed_reason && (
@@ -12430,9 +12470,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       )}
                                     </td>
                                     <td>
-                                      <button className="btn btn-secondary btn-sm" onClick={() => openReviewRegularization(r)}>
-                                        {r.status === 'Pending' && REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? 'Review' : 'View'}
-                                      </button>
+                                      {/* The review modal reads an hours claim.
+                                          A day claim is decided in the queue at
+                                          the top of this tab, so pointing at a
+                                          modal that cannot show it would be a
+                                          dead end. */}
+                                      {r._src === 'hours' ? (
+                                        <button className="btn btn-secondary btn-sm" onClick={() => openReviewRegularization(r)}>
+                                          {r.status === 'Pending' && REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? 'Review' : 'View'}
+                                        </button>
+                                      ) : r.status === 'Pending' ? (
+                                        <small className="text-muted">decide it above</small>
+                                      ) : <small className="text-muted">—</small>}
                                     </td>
                                   </tr>
                                 ))
