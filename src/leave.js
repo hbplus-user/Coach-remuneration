@@ -78,7 +78,22 @@ export function loggedHoursForDay(periods, now = new Date()) {
   for (const p of periods || []) {
     if (!p.logged_in_at) continue;
     const start = new Date(p.logged_in_at);
-    const end = p.logged_out_at ? new Date(p.logged_out_at) : new Date(now);
+
+    // A session nobody closed stops when its working day does, not whenever
+    // the page is being looked at. Without this a login left open on the 2nd
+    // read as 68 hours a fortnight later, and would have gone on growing.
+    let end;
+    if (p.logged_out_at) {
+      end = new Date(p.logged_out_at);
+    } else {
+      const cap = p.working_day
+        ? new Date(`${p.working_day}T00:00:00`)
+        : new Date(start);
+      if (p.working_day) cap.setDate(cap.getDate() + 1);
+      cap.setHours(WORKING_DAY_START_HOUR - 2, 0, 0, 0);   // 2 AM, the day's end
+      end = new Date(Math.min(new Date(now).getTime(), cap.getTime()));
+    }
+
     const mins = (end - start) / 60000;
     if (mins < MIN_LOGIN_MINUTES) continue;
     minutes += mins;

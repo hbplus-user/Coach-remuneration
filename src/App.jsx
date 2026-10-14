@@ -2018,6 +2018,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // the clock, the status, Log in / Log out / Settle — stays bound to
   // today; this only moves the table of logins underneath it.
   const [attLogDay, setAttLogDay] = useState("");
+  const [attCalMonth, setAttCalMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [penaltyFilter, setPenaltyFilter] = useState("All");
   const [trackerMode, setTrackerMode] = useState("record");
   // Close & pay: 'summary' is the ten columns Finance signs off against,
@@ -3330,6 +3331,64 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // for the same coach cannot both read "no violations yet" and claim the same
   // occurrence number.
   // -------------------------------------------------------------------------
+  /**
+   * How one day reads on a coach's calendar.
+   *
+   * The same facts the day panel shows, reduced to a chip. Order matters: a
+   * weekly off or a holiday is not a day anybody failed to work, approved
+   * leave is accounted for, and an undecided request stops the day being
+   * judged at all — only after those is an absence an absence.
+   */
+  const coachDayState = (coach, day) => {
+    if (!coach || !day) return null;
+    const future = day > todayWorkingDay;
+    const settled = attendanceDays.find(d => d.coach_id === coach.id && d.working_day === day);
+    const logs = logsFor(coach.id, day);
+
+    if (isWeeklyOffFor(coach, day)) return { key: 'woff', label: 'W-OFF', tone: 'mute' };
+    if (holidayOn(coach, day)) return { key: 'holiday', label: 'HOLIDAY', tone: 'info' };
+
+    const approved = leaveApplications.find(a => a.coach_id === coach.id
+      && a.status === 'Approved' && a.from_date <= day && a.to_date >= day);
+    if (approved) return { key: 'leave', label: 'LEAVE', tone: 'leave' };
+
+    const waiting = leaveApplications.some(a => a.coach_id === coach.id
+        && a.status === 'Pending' && a.from_date <= day && a.to_date >= day)
+      // Read from state rather than through the helper, which is declared
+      // further down: this file has lost a morning to that before.
+      || regularisations.some(r => r.coach_id === coach.id
+           && r.working_day === day && r.status === 'Pending')
+      || attendanceRegularizations.some(r => r.coach_id === coach.id
+           && r.working_day === day && r.status === 'Pending');
+    if (waiting) return { key: 'waiting', label: 'WAITING', tone: 'info' };
+
+    if (logs.length > 0) {
+      return { key: 'logged', label: 'LOGGED', tone: 'ok',
+        hours: asClock(loggedHoursForDay(logs, nowTick)) };
+    }
+    if (future) return null;
+    if (day === todayWorkingDay) return { key: 'today', label: 'NOT YET', tone: 'mute' };
+
+    // Nobody logged in, and nothing accounts for the day. It reads as a
+    // penalty whether or not anyone has settled it yet — "SETTLED" told a
+    // coach nothing about what the day had cost them, and on a row left over
+    // from when availability blocked the charge it said the day was dealt with
+    // when nothing had been taken at all.
+    if (settled) {
+      if (settled.cover_type_id) {
+        return { key: 'covered', label: 'PNLTY', tone: 'bad',
+          note: `${leaveType(settled.cover_type_id)?.label || settled.cover_type_id} used` };
+      }
+      if (Number(settled.lop_days) > 0) {
+        return { key: 'lop', label: 'PNLTY', tone: 'bad', note: 'Loss of Pay' };
+      }
+      // Settled, but nothing was taken — one of the rows written while the
+      // availability check was swallowing every absence. It still needs doing.
+      return { key: 'stale', label: 'PNLTY', tone: 'bad', note: 'needs settling again' };
+    }
+    return { key: 'absent', label: 'PNLTY', tone: 'bad', note: 'not charged yet' };
+  };
+
   const settleOutstandingDays = ({ quiet = false } = {}) => {
     if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return 0;
     const period = currentMonth[0];
@@ -3340,7 +3399,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const until = new Date(`${todayWorkingDay}T12:00:00`);
     if (until <= from) return 0;
 
-    const settledKeys = new Set(attendanceDays.map(d => `${d.coach_id}|${d.working_day}`));
+    const settledRows = new Map(attendanceDays.map(d => [`${d.coach_id}|${d.working_day}`, d]));
+    const resettled = [];
     const openLeaveOn = (coachId, day) => leaveApplications.some(a =>
       a.coach_id === coachId && a.status === 'Pending'
       && a.from_date <= day && a.to_date >= day);
@@ -3371,7 +3431,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
       for (let t = new Date(from); t < until; t = new Date(t.getTime() + dayMs)) {
         const day = t.toISOString().slice(0, 10);
         if (joined && t < joined) continue;
-        if (settledKeys.has(`${coach.id}|${day}`)) continue;
+        // A settled row that took nothing, on a day with no login, is one of
+        // the ones written while availability was swallowing every absence.
+        // Settle it again rather than treating the day as dealt with.
+        const prior = settledRows.get(`${coach.id}|${day}`);
+        const staleRow = prior && Number(prior.lop_days) === 0 && !prior.cover_type_id
+          && logsFor(coach.id, day).length === 0;
+        if (prior && !staleRow) continue;
         if (openLeaveOn(coach.id, day) || openRegOn(coach.id, day)) continue;
         if (decidedRegOn(coach.id, day)) continue;
 
@@ -3397,6 +3463,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         const absence = !onLeave && logged === 0 && assessed.lopDays > 0;
         const cover = absence ? coverAbsenceWith(coach, spent) : null;
 
+        if (staleRow) resettled.push(`${coach.id}|${day}`);
         newDays.push({
           coach_id: coach.id, working_day: day,
           expected_hours: assessed.expected ?? avail.hours,
@@ -3457,7 +3524,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (c && days > 0) spendLeaveDay(c, typeId, days);
     }
 
-    setAttendanceDays(prev => [...prev, ...newDays]);
+    const replacing = new Set(resettled);
+    setAttendanceDays(prev => [
+      ...prev.filter(d => !replacing.has(`${d.coach_id}|${d.working_day}`)),
+      ...newDays
+    ]);
     if (newVios.length) setViolations(prev => [...prev, ...newVios]);
     if (lopByCoach.size) {
       const patch = (list) => list.map(r => {
@@ -3558,10 +3629,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     if (reg && reg.status === 'Approved') {
       showToast(
-        `${workingDay} was already settled by its regularisation — ` +
-        (reg.outcome === 'Leave'
-          ? `taken from their ${leaveType(reg.type_id)?.label || reg.type_id}.`
-          : 'recorded as 1 day of Loss of Pay.'), "info");
+        `${workingDay} was regularised and counts as worked. Settling it again ` +
+        `would charge a day somebody has already decided.`, "info");
       return;
     }
 
@@ -4684,7 +4753,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     return true;
   };
 
-  const raiseRegularisation = (coach, workingDay, typeId, reason) => {
+  const raiseRegularisation = (coach, workingDay, reason) => {
     // The coach's own account, so only the coach gives it. An approver who
     // could raise and decide one would be both sides of the same decision.
     if (currentRole !== 'Coach') {
@@ -4708,7 +4777,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
       id: `REG_${Date.now().toString().substring(6)}`,
       coach_id: coach.id,
       working_day: workingDay,
-      type_id: typeId,
+      // No leave type: the day has already been paid for by the Holiday/Paid
+      // ladder or by Loss of Pay, and this is a claim that none of that should
+      // have happened. Approving gives back whatever was taken.
+      type_id: null,
       reason: reason.trim(),
       status: 'Pending',
       outcome: null,
@@ -4718,8 +4790,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }]);
 
     logAudit("Regularisation Raised",
-      `${coach.name} (${coach.id}) asked for ${workingDay} to be regularised against ` +
-      `${leaveType(typeId)?.label || typeId} — "${reason.trim()}".`);
+      `${coach.name} (${coach.id}) says they worked ${workingDay} — "${reason.trim()}".`);
     showToast("Sent. Nothing is charged for that day while it waits.", "success");
     return true;
   };
@@ -4746,48 +4817,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     let outcome = null;
     if (decision === 'Approved') {
-      // Balance first, Loss of Pay only when there is none. Read now, not when
-      // it was raised: days may have been spent in between.
-      const bal = leaveBalanceFor(coach, reg.type_id);
-      const days = Number(reg.days) || 1;
-      outcome = bal.available >= days ? 'Leave' : 'LOP';
-
-      // If the day was already settled, take back what it charged before
-      // applying what this decision says instead.
+      // The claim is that the coach worked the day, so approving it undoes
+      // everything the absence took — the leave day or the pay, and the
+      // incident with it — rather than booking the day against some other
+      // balance. `reverseSettledDay` gives back whichever was taken.
       reverseSettledDay(coach.id, reg.working_day,
         `Regularisation approved by ${actorName}.`);
 
-      if (outcome === 'Leave') {
-        const { year } = leaveYearFor(new Date());
-        setLeaveBalances(prev => {
-          const has = prev.some(b => b.coach_id === coach.id
-            && b.leave_year === year && b.type_id === reg.type_id);
-          if (has) {
-            return prev.map(b => (b.coach_id === coach.id
-              && b.leave_year === year && b.type_id === reg.type_id)
-              ? { ...b, used: (Number(b.used) || 0) + days } : b);
-          }
-          // No row yet: the balance was accrued rather than stored, so write
-          // one that carries what was accrued and what has now been spent.
-          return [...prev, {
-            coach_id: coach.id, leave_year: year, type_id: reg.type_id,
-            opening: bal.opening, accrued: bal.accrued, adjusted: bal.adjusted, used: days
-          }];
-        });
-      } else {
-        // Onto the cycle the day falls in, which payroll already reads.
-        const patch = (list) => list.map(r => {
-          if (r.coach_id !== coach.id) return r;
-          if (reg.working_day < r.period_start || reg.working_day > r.period_end) return r;
-          return {
-            ...r,
-            lop_days: (Number(r.lop_days) || 0) + days,
-            unplanned_lop_days: (Number(r.unplanned_lop_days) || 0) + days
-          };
-        });
-        setCurrentMonth(patch);
-        setHistoricMonths(patch);
-      }
+      // Then write the day down as worked, so the next sweep does not look at
+      // an unlogged day and charge it all over again.
+      setAttendanceDays(prev => [
+        ...prev.filter(d => !(d.coach_id === coach.id && d.working_day === reg.working_day)),
+        {
+          coach_id: coach.id, working_day: reg.working_day,
+          expected_hours: standardDailyHours(coach.coach_category),
+          logged_hours: standardDailyHours(coach.coach_category),
+          shortfall_hours: 0,
+          outcome: 'ok',
+          lop_days: 0,
+          cover_type_id: null,
+          planned: false,
+          disputed: false,
+          dispute_note: `Regularised: ${reg.reason}`,
+          resolved_by: actorName
+        }
+      ]);
+      outcome = 'Worked';
     }
 
     setRegularisations(prev => prev.map(r => r.id === reg.id
@@ -4798,15 +4853,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     logAudit(`Regularisation ${decision}`,
       `${decision} ${reg.working_day} for ${coach?.name || reg.coach_id}` +
-      (outcome === 'Leave' ? ` — covered by ${leaveType(reg.type_id)?.label || reg.type_id}.`
-        : outcome === 'LOP' ? ` — no ${leaveType(reg.type_id)?.label || reg.type_id} left, so 1 day Loss of Pay.`
+      (outcome === 'Worked'
+        ? ' — recorded as worked; what the absence took was given back and the incident waived.'
         : `${note ? ` — ${note}` : ''}.`));
 
     showToast(
-      decision === 'Rejected' ? "Refused. The day settles as it stood."
-        : outcome === 'Leave' ? `Approved — taken from their ${leaveType(reg.type_id)?.label || reg.type_id}.`
-        : "Approved — no balance left, so it is 1 day of Loss of Pay.",
-      decision === 'Rejected' ? "warning" : outcome === 'LOP' ? "danger" : "success");
+      decision === 'Rejected'
+        ? "Refused. The day stands as it was."
+        : `Approved — ${reg.working_day} counts as worked, and what it took has been given back.`,
+      decision === 'Rejected' ? "warning" : "success");
   };
 
   /**
@@ -11538,12 +11593,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const todays = coach ? logsFor(coach.id, todayWorkingDay) : [];
             // The five working days the coach tab can look back over, and which
             // of them its login table is currently showing.
-            const attDays5 = Array.from({ length: 5 }, (_, n) => {
-              const d = new Date(`${todayWorkingDay}T12:00:00`);
-              d.setDate(d.getDate() - n);
-              return d.toISOString().slice(0, 10);
-            });
-            const shownLogDay = attDays5.includes(attLogDay) ? attLogDay : todayWorkingDay;
+            const shownLogDay = attLogDay || todayWorkingDay;
             const shownLogs = coach ? logsFor(coach.id, shownLogDay) : [];
             const hours = loggedHoursForDay(todays, nowTick);
             const avail = coach ? availabilityHoursFor(coach, todayWorkingDay) : { hours: 0, missing: true };
@@ -11653,14 +11703,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </span>
                       </div>
                       <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                        Approving takes the day from the balance they named. If there is none left it
-                        becomes a day of Loss of Pay instead — the figures below say which it will be.
+                        The coach is saying they worked a day with no login. Approving marks it worked and
+                        gives back whatever the absence took — the leave day or the pay — and waives the
+                        incident. Refusing leaves the day as it stands.
                       </p>
                       <section className="hb-queue">
                         {mineToDecide.map(r => {
                           const c = coaches.find(x => x.id === r.coach_id);
-                          const bal = leaveBalanceFor(c, r.type_id);
-                          const willBe = bal.available >= (Number(r.days) || 1) ? 'Leave' : 'LOP';
+                          // What the day took, so the decision is made against
+                          // the real figure rather than a guess.
+                          const settledRow = attendanceDays.find(d =>
+                            d.coach_id === r.coach_id && d.working_day === r.working_day);
+                          const took = settledRow?.cover_type_id
+                            ? `1 day of ${leaveType(settledRow.cover_type_id)?.label || settledRow.cover_type_id}`
+                            : Number(settledRow?.lop_days) > 0
+                              ? `${settledRow.lop_days} day of Loss of Pay`
+                              : null;
                           const waited = Math.floor((Date.now() - new Date(r.applied_at)) / 86400000);
                           return (
                             <article className="card hb-qcard" key={r.id}>
@@ -11678,19 +11736,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <p className="hb-qwhat">
                                   <strong>No login on {new Date(`${r.working_day}T12:00:00`)
                                     .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</strong>
-                                  {' · asks to use '}{leaveType(r.type_id)?.label || r.type_id}
+                                  {' · says they worked it'}
                                 </p>
                                 <p className="hb-qreason">“{r.reason}”</p>
-                                <p className={willBe === 'LOP' ? 'hb-qcover' : 'hb-qok'}>
-                                  {willBe === 'Leave'
-                                    ? `They have ${bal.available} left, so approving takes 1 day of it.`
-                                    : `They have ${bal.available} left, so approving makes this 1 day of Loss of Pay.`}
+                                <p className="hb-qok">
+                                  {took
+                                    ? `The day took ${took}. Approving marks it worked and gives that back, and waives the incident.`
+                                    : 'The day has not been charged yet. Approving marks it worked, so nothing will be.'}
                                 </p>
                               </div>
                               <div className="hb-qacts">
                                 <button className="hb-btn hb-btn-primary"
                                   onClick={() => decideRegularisation(r, 'Approved')}>
-                                  {willBe === 'Leave' ? 'Approve as leave' : 'Approve as Loss of Pay'}
+                                  Approve — they worked it
                                 </button>
                                 <button className="hb-btn hb-btn-danger"
                                   onClick={() => decideRegularisation(r, 'Rejected')}>Refuse</button>
@@ -13287,31 +13345,169 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           Friday does not need a different screen. Today's
                           figures above are unaffected by which chip is on. */}
                       {(() => {
-                        const days = attDays5;
                         const shown = shownLogDay;
                         const logs = shownLogs;
+                        // The month the calendar is showing — the selected day's
+                        // own month, so stepping days never leaves the grid.
+                        const [cy, cm] = (attCalMonth || shown.slice(0, 7)).split('-').map(Number);
+                        const monthDays = Array.from({ length: new Date(cy, cm, 0).getDate() },
+                          (_, i) => `${cy}-${String(cm).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
+                        const pad = new Date(cy, cm - 1, 1).getDay();
+                        const monthLabel = new Date(cy, cm - 1, 1)
+                          .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+                        const stepMonth = (by) => {
+                          const d = new Date(cy, cm - 1 + by, 1);
+                          setAttCalMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                        };
+                        const monthTotal = monthDays.reduce((n, d) =>
+                          n + loggedHoursForDay(logsFor(coach.id, d), nowTick), 0);
                         const h = loggedHoursForDay(logs, nowTick);
                         const a = availabilityHoursFor(coach, shown);
                         const diff = h - a.hours;
-                        const total = days.reduce((n, d) =>
-                          n + loggedHoursForDay(logsFor(coach.id, d), nowTick), 0);
+
                         return (
                           <div className="att-days">
-                            <div className="att-day-chips" role="group" aria-label="Which day to show">
-                              {days.map((d, n) => {
-                                const dt = new Date(`${d}T12:00:00`);
+                            {/* The month at a glance: what each day was, and
+                                which of them cost something. Click one to open
+                                it underneath. */}
+                            <div className="att-cal-head">
+                              <button type="button" className="btn btn-secondary btn-sm"
+                                aria-label="Previous month" onClick={() => stepMonth(-1)}>←</button>
+                              <strong>{monthLabel}</strong>
+                              <button type="button" className="btn btn-secondary btn-sm"
+                                aria-label="Next month" onClick={() => stepMonth(1)}>→</button>
+                              <button type="button" className="btn btn-secondary btn-sm att-cal-today"
+                                onClick={() => { setAttCalMonth(todayWorkingDay.slice(0, 7)); setAttLogDay(todayWorkingDay); }}>
+                                Today
+                              </button>
+                            </div>
+                            <div className="att-cal" role="grid" aria-label={`Attendance in ${monthLabel}`}>
+                              {WEEKDAYS.map(w => (
+                                <div className="att-cal-dow" key={w} role="columnheader">{w.slice(0, 3)}</div>
+                              ))}
+                              {Array.from({ length: pad }, (_, i) => (
+                                <div className="att-cal-pad" key={`p-${i}`} aria-hidden="true" />
+                              ))}
+                              {monthDays.map(d => {
+                                const st = coachDayState(coach, d);
                                 return (
                                   <button
-                                    key={d} type="button" aria-pressed={shown === d}
-                                    className={shown === d ? 'is-on' : ''}
+                                    type="button" key={d}
+                                    aria-pressed={shown === d}
+                                    className={[
+                                      'att-cal-day',
+                                      st ? `is-${st.tone}` : 'is-blank',
+                                      shown === d ? 'is-on' : '',
+                                      d === todayWorkingDay ? 'is-today' : ''
+                                    ].join(' ')}
                                     onClick={() => setAttLogDay(d)}
+                                    title={st ? `${d} — ${st.label}${st.note ? ` · ${st.note}` : ''}` : d}
                                   >
-                                    {n === 0 ? 'Today · ' : ''}
-                                    {WEEKDAYS[dt.getDay()].slice(0, 3)} {dt.getDate()}
+                                    <span className="att-cal-n">{Number(d.slice(8))}</span>
+                                    {st && <span className="att-cal-tag">{st.label}</span>}
+                                    {st?.hours && <span className="att-cal-h">{st.hours}</span>}
+                                    {st?.note && <span className="att-cal-note">{st.note}</span>}
                                   </button>
                                 );
                               })}
                             </div>
+                            {/* What the month has cost so far, and where it came
+                                from. The calendar says which days went wrong;
+                                this says what they added up to. */}
+                            {(() => {
+                              const inMonth = (d) => d.slice(0, 7) === `${cy}-${String(cm).padStart(2, '0')}`;
+                              const states = monthDays.map(d => ({ d, st: coachDayState(coach, d) }));
+                              const loggedDays = states.filter(x => x.st?.key === 'logged').length;
+                              const pnlty = states.filter(x => x.st?.key === 'absent'
+                                || x.st?.key === 'lop' || x.st?.key === 'covered');
+                              const settledRows = attendanceDays.filter(r =>
+                                r.coach_id === coach.id && inMonth(r.working_day));
+                              const coveredBy = new Map();
+                              for (const r of settledRows) {
+                                if (!r.cover_type_id) continue;
+                                coveredBy.set(r.cover_type_id, (coveredBy.get(r.cover_type_id) || 0) + 1);
+                              }
+                              const lopDays = settledRows.reduce((n, r) => n + (Number(r.lop_days) || 0), 0);
+                              const monthVios = violations.filter(v => v.coach_id === coach.id
+                                && inMonth(v.incident_date) && v.reported_by === 'System — attendance');
+                              const vioCharged = monthVios.filter(isPenaltyChargeable)
+                                .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                              const perDay = seesMoney ? lopPerDay(coach.coach_category,
+                                computeMonthlyPay(coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
+                                  { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []).basePay) : 0;
+                              const lopCost = perDay * lopDays;
+                              const unsettled = states.filter(x => x.st?.key === 'absent').length;
+                              if (pnlty.length === 0 && loggedDays === 0) return null;
+
+                              return (
+                                <div className="att-month-sum">
+                                  <div className="att-month-sum-head">
+                                    <strong>{monthLabel} so far</strong>
+                                    {unsettled > 0 && (
+                                      <span className="att-month-pending">
+                                        {unsettled} day{unsettled === 1 ? '' : 's'} not settled yet — not charged until they are
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="att-month-grid">
+                                    <div><span>Days logged</span><strong className="num">{loggedDays}</strong></div>
+                                    <div><span>Days with no login</span><strong className="num">{pnlty.length}</strong></div>
+                                    {[...coveredBy.entries()].map(([t, n]) => (
+                                      <div key={t}>
+                                        <span>Taken from {leaveType(t)?.label || t}</span>
+                                        <strong className="num">{n}</strong>
+                                      </div>
+                                    ))}
+                                    <div className={lopDays ? 'is-bad' : ''}>
+                                      <span>Loss of Pay</span>
+                                      <strong className="num">
+                                        {lopDays} day{lopDays === 1 ? '' : 's'}
+                                        {seesMoney && lopCost > 0 && <em> · −{rupees(lopCost)}</em>}
+                                      </strong>
+                                    </div>
+                                    <div className={monthVios.length ? 'is-bad' : ''}>
+                                      <span>Attendance incidents</span>
+                                      <strong className="num">
+                                        {monthVios.length}
+                                        {seesMoney && vioCharged > 0 && <em> · −{rupees(vioCharged)}</em>}
+                                      </strong>
+                                    </div>
+                                  </div>
+                                  {monthVios.length > 0 && (
+                                    <details className="att-month-vios">
+                                      <summary>How the penalty was worked out · {monthVios.length} incident{monthVios.length === 1 ? '' : 's'}</summary>
+                                      <table className="data-table">
+                                        <thead>
+                                          <tr><th>Day</th><th>What</th><th className="num-col">Occurrence</th><th>Consequence</th><th className="num-col">Charged</th></tr>
+                                        </thead>
+                                        <tbody>
+                                          {[...monthVios].sort((a, b) =>
+                                            a.incident_date.localeCompare(b.incident_date)).map(v => (
+                                            <tr key={v.id}>
+                                              <td className="num-col">{v.incident_date}</td>
+                                              <td>{v.type}</td>
+                                              <td className="num-col">#{v.occurrence_no}</td>
+                                              <td><small>{v.consequence}</small></td>
+                                              <td className="num-col">
+                                                {!isPenaltyChargeable(v)
+                                                  ? <small className="text-green">waived</small>
+                                                  : seesMoney ? rupees(v.penalty_amount) : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                      <p className="text-muted scorecard-legend">
+                                        The occurrence number is counted over the coach's whole record, not the
+                                        month, so each one costs more than the last. A waived incident still
+                                        holds its place in that count.
+                                      </p>
+                                    </details>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
                             <div className="att-day-tiles">
                               <div><span>Logged in</span><strong>{asClock(h)}</strong></div>
                               <div><span>Expected</span><strong>{asClock(a.hours)}</strong></div>
@@ -13321,7 +13517,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   {diff < 0 ? '−' : '+'}{asClock(Math.abs(diff))}
                                 </strong>
                               </div>
-                              <div><span>Last 5 days, total</span><strong>{asClock(total)}</strong></div>
+                              <div><span>{monthLabel}, total</span><strong>{asClock(monthTotal)}</strong></div>
                             </div>
                             {shown !== todayWorkingDay && (
                               <p className="calc-notes">
@@ -13456,12 +13652,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 return (
                                   <div className={`hb-reg-note hb-reg-${existing.status.toLowerCase()}`}>
                                     <strong>
-                                      {existing.status === 'Pending' ? 'Regularisation waiting on a decision'
+                                      {existing.status === 'Pending'
+                                        ? 'Raised — waiting on your approver'
                                         : existing.status === 'Approved'
-                                          ? (existing.outcome === 'Leave'
-                                              ? `Approved — taken from your ${leaveType(existing.type_id)?.label || existing.type_id}`
-                                              : 'Approved — no balance left, so this is 1 day of Loss of Pay')
-                                          : 'Refused'}
+                                          ? 'Approved — the day counts as worked, and what it took was given back'
+                                          : 'Refused — the day stands as it was'}
                                     </strong>
                                     <span>
                                       “{existing.reason}”
@@ -13482,32 +13677,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <div className="hb-reg-form">
                                   <strong>No login on this day — say what happened</strong>
                                   <span>
-                                    A day with no login is paid out of your Holiday balance first, then your
-                                    Paid balance, and only costs you pay when both are empty. Raise this if
-                                    you actually worked — approving it gives back whatever the day took,
-                                    the leave day or the pay.
+                                    If you worked and did not log it, say so here. Once it is approved the day
+                                    counts as worked and everything it took is given back — the leave day or
+                                    the pay, and the incident with it.
                                     {(() => {
                                       const al = regularisationAllowance(coach.id, shown);
                                       return al ? ` You have ${al.left} of ${al.max} regularisations left for ${al.label}, and this cycle closes on ${al.lockInLabel}.` : '';
                                     })()}
                                   </span>
                                   <div className="hb-reg-fields">
-                                    <label className="hb-f">
-                                      <span>If it has to be leave, use</span>
-                                      <select
-                                        value={regDraft.type || types[0]?.id || ''}
-                                        onChange={(e) => setRegDraft(d => ({ ...d, type: e.target.value }))}
-                                      >
-                                        {types.map(t => {
-                                          const b = leaveBalanceFor(coach, t.id);
-                                          return (
-                                            <option key={t.id} value={t.id}>
-                                              {t.label} — {b.available} left
-                                            </option>
-                                          );
-                                        })}
-                                      </select>
-                                    </label>
                                     <label className="hb-f hb-f-grow">
                                       <span>What happened</span>
                                       <input
@@ -13518,12 +13696,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     </label>
                                     <button
                                       className="hb-btn hb-btn-primary"
+                                      disabled={!regDraft.reason.trim()}
                                       onClick={() => {
-                                        const ok = raiseRegularisation(
-                                          coach, shown, regDraft.type || types[0]?.id, regDraft.reason);
+                                        const ok = raiseRegularisation(coach, shown, regDraft.reason);
                                         if (ok) setRegDraft({ type: '', reason: '' });
                                       }}
-                                    >Send for approval</button>
+                                    >Regularise this day</button>
                                   </div>
                                 </div>
                               );

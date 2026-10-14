@@ -4821,3 +4821,103 @@ form {
 }
 .hb-day-cost.is-waiting > strong { color: var(--brand-navy); }
 .hb-day-cost.is-waiting .hb-day-cost-total { border-top: 0; padding-top: 0.35rem; }
+
+/* ===========================================================================
+   The coach's attendance month
+
+   A day at a time answered "what happened on Friday" and never "how did this
+   month go", which is the question behind every regularisation. Each cell
+   carries what the day was; the ones that cost something are marked.
+   =========================================================================== */
+
+.att-cal-head {
+  display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem;
+}
+.att-cal-head strong {
+  font-family: var(--font-title); font-size: 1.05rem; font-weight: 700;
+  min-width: 10rem;
+}
+.att-cal-today { margin-left: auto; }
+
+.att-cal {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px;
+}
+.att-cal-dow {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-secondary); padding: 0 0 3px 2px;
+}
+.att-cal-pad { min-height: 76px; }
+.att-cal-day {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  min-height: 76px; padding: 6px 7px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border-color); background: var(--bg-surface);
+  font: inherit; text-align: left; overflow: hidden;
+}
+.att-cal-day:hover { border-color: var(--border-strong); }
+.att-cal-day.is-blank { background: var(--wash); cursor: default; }
+.att-cal-day.is-on { box-shadow: inset 0 0 0 2px var(--brand-olive); }
+.att-cal-day.is-today .att-cal-n {
+  background: var(--brand-brown); color: #fff; border-radius: 99px;
+  min-width: 1.35rem; text-align: center;
+}
+.att-cal-n {
+  font-weight: 700; font-size: 0.82rem; font-variant-numeric: tabular-nums;
+  color: var(--text-primary); padding: 0 3px;
+}
+.att-cal-tag {
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.02em;
+  padding: 2px 6px; border-radius: 5px; white-space: nowrap;
+}
+.att-cal-h, .att-cal-note {
+  font-size: 0.64rem; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+/* what the day was */
+.att-cal-day.is-ok    .att-cal-tag { background: rgba(111,142,124,0.3);  color: #2f4a3c; }
+.att-cal-day.is-bad   .att-cal-tag { background: rgba(159,64,34,0.2);    color: var(--brand-rust); }
+.att-cal-day.is-bad               { background: rgba(159,64,34,0.07); border-color: rgba(159,64,34,0.3); }
+.att-cal-day.is-leave .att-cal-tag { background: rgba(169,103,77,0.25);  color: #7a4330; }
+.att-cal-day.is-info  .att-cal-tag { background: rgba(52,65,97,0.16);    color: var(--brand-navy); }
+.att-cal-day.is-mute  .att-cal-tag { background: var(--wash-strong);     color: var(--text-secondary); }
+.att-cal-day.is-mute              { background: var(--wash); }
+
+@media (max-width: 760px) {
+  .att-cal { gap: 3px; }
+  .att-cal-day, .att-cal-pad { min-height: 58px; }
+  .att-cal-h, .att-cal-note { display: none; }
+}
+
+/* What the month cost, under the calendar that shows which days caused it —
+   with the working behind each penalty one click away. */
+.att-month-sum {
+  margin-top: 1rem; padding: 1rem 1.1rem; border-radius: 12px;
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+}
+.att-month-sum-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; margin-bottom: 0.8rem;
+}
+.att-month-sum-head strong { font-size: 0.95rem; }
+.att-month-pending {
+  font-size: 0.76rem; font-weight: 600; color: #6b4a14;
+  background: rgba(201, 157, 93, 0.22); padding: 2px 9px; border-radius: 99px;
+}
+.att-month-grid {
+  display: grid; gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+}
+.att-month-grid > div {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 0.6rem 0.75rem; border-radius: 10px; background: var(--wash);
+}
+.att-month-grid > div.is-bad { background: rgba(159, 64, 34, 0.1); }
+.att-month-grid span { font-size: 0.72rem; color: var(--text-secondary); }
+.att-month-grid strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.att-month-grid strong em {
+  font-style: normal; font-size: 0.82rem; font-weight: 700; color: var(--brand-rust);
+}
+.att-month-vios { margin-top: 0.9rem; }
+.att-month-vios > summary {
+  cursor: pointer; font-size: 0.85rem; font-weight: 600; color: var(--brand-olive);
+  padding: 6px 0; list-style: revert;
+}
+.att-month-vios > summary:hover { color: #3c4419; }
+.att-month-vios table { margin-top: 0.6rem; }
