@@ -6412,7 +6412,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       target_type: appealTargetType,
       target_id: appealTargetId,
       reason: appealReason,
-      raised_at: new Date().toLocaleDateString('en-IN'),
+      raised_at: new Date().toISOString(),
       status: "PENDING_RM"
     };
 
@@ -11729,6 +11729,106 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 })()}
 
 
+                {/* Appeals against a leave decision. They are listed on the
+                    Incidents view with the penalty appeals, but a refused leave
+                    is argued about here, beside the register that refused it —
+                    so the decision can be made where the context is. */}
+                {onTab('leave') && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                  const open = appeals.filter(a => {
+                    if (a.target_type !== 'Leave') return false;
+                    if (a.status !== 'PENDING_RM' && a.status !== 'PENDING_HR') return false;
+                    if (!inAttendanceScope(a.coach_id)) return false;
+                    return true;
+                  }).sort((a, b) => new Date(a.raised_at) - new Date(b.raised_at));
+                  if (open.length === 0) return null;
+
+                  const isHR = currentRole === 'HR Manager' || currentRole === 'Super Admin';
+                  return (
+                    <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Appeals · {open.length}</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          A coach disputing a refused leave
+                        </span>
+                      </div>
+                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
+                        Upholding one does not grant the leave by itself — it says the refusal should be
+                        looked at again. Decide the application underneath once you have.
+                      </p>
+                      <section className="hb-queue">
+                        {open.map(a => {
+                          const c = coaches.find(x => x.id === a.coach_id);
+                          const app = leaveApplications.find(x => x.id === a.target_id);
+                          const waited = a.raised_at
+                            ? Math.floor((Date.now() - new Date(a.raised_at)) / 86400000) : 0;
+                          const ui = APPEAL_UI[a.status] || [a.status, 'badge-muted'];
+                          return (
+                            <article className="card hb-qcard" key={a.id}>
+                              <div className="hb-qmain">
+                                <div className="hb-qwho">
+                                  <button className="linklike hb-qname"
+                                    onClick={() => openCoachOnAttendance(a.coach_id)}>
+                                    {c?.name || a.coach_id}
+                                  </button>
+                                  <span className="hb-qid">{a.coach_id}</span>
+                                  <span className={`hb-qage ${waited >= 3 ? 'is-late' : 'is-soon'}`}>
+                                    {waited === 0 ? 'raised today' : `raised ${waited} day${waited === 1 ? '' : 's'} ago`}
+                                  </span>
+                                  <span className={`badge ${ui[1]}`}>{ui[0]}</span>
+                                </div>
+                                {app && (
+                                  <p className="hb-qwhat">
+                                    <strong>{leaveType(app.type_id)?.label || app.type_id}</strong>
+                                    {' · '}{app.from_date}{app.to_date !== app.from_date ? ` – ${app.to_date}` : ''}
+                                    {' · '}{app.days} day{Number(app.days) === 1 ? '' : 's'}
+                                  </p>
+                                )}
+                                {app?.decision_note && (
+                                  <p className="hb-qcover">Refused because: {app.decision_note}</p>
+                                )}
+                                <p className="hb-qreason">“{a.reason}”</p>
+                              </div>
+                              <div className="hb-qacts">
+                                {a.status === 'PENDING_RM' ? (
+                                  <>
+                                    <button className="hb-btn hb-btn-primary"
+                                      onClick={() => handleRMAppealDecision(a.id, 'Approve')}>
+                                      Uphold the appeal
+                                    </button>
+                                    <button className="hb-btn hb-btn-danger"
+                                      onClick={() => handleRMAppealDecision(a.id, 'Reject')}>
+                                      Refuse it
+                                    </button>
+                                    <button className="hb-btn"
+                                      onClick={() => handleRMEscalateAppeal(a.id)}>
+                                      Send to HR
+                                    </button>
+                                  </>
+                                ) : isHR ? (
+                                  <>
+                                    <button className="hb-btn hb-btn-primary"
+                                      onClick={() => handleHRAppealDecision(a.id, 'Approve')}>
+                                      Uphold — final
+                                    </button>
+                                    <button className="hb-btn hb-btn-danger"
+                                      onClick={() => handleHRAppealDecision(a.id, 'Reject')}>
+                                      Refuse — final
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                                    With HR
+                                  </span>
+                                )}
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </section>
+                    </div>
+                  );
+                })()}
+
                 {/* Regularisations. Raised only by the coach, decided only by
                     Super Admin, HR, or that coach's own Reporting Manager. The
                     decision is what turns the day into leave or into Loss of
@@ -14671,7 +14771,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <td><strong>{coach?.name}</strong><br /><small className="text-muted">{coach?.id}</small></td>
                             <td>{a.target_type}: {a.target_id}</td>
                             <td><em>"{a.reason}"</em></td>
-                            <td>{a.raised_at}</td>
+                            <td>{a.raised_at
+                              ? new Date(a.raised_at).toLocaleDateString('en-IN')
+                              : '—'}</td>
                             <td><span className={`badge ${statusClass}`}>{a.status.replace('_', ' ')}</span></td>
                             <td>{a.rm_decision_notes || 'Pending'}</td>
                             <td>{a.hr_decision_notes || 'Pending'}</td>

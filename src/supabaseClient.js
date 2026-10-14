@@ -254,7 +254,11 @@ const MAPPERS = {
       'id', 'coach_id', 'target_type', 'target_id', 'reason',
       'status', 'rm_remark', 'hr_remark'
     ]),
-    fromRow: r => ({ ...r, raised_at: new Date(r.raised_at).toLocaleDateString('en-IN') })
+    // Kept as the timestamp it is. Formatting it here turned 2026-10-14 into
+    // "14/10/2026", which new Date() reads as a month of 14 and returns
+    // Invalid Date — so the appeals list showed that instead of a date, and
+    // sorted by it too.
+    fromRow: r => r
   },
   auditLog: {
     table: 'audit_log',
