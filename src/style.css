@@ -4931,3 +4931,18 @@ form {
   background: var(--brand-rust); color: #fff;
 }
 .nav-appeal-badge i { font-size: 0.78rem; }
+
+/* The modelling banner's actions. Saving is a button rather than automatic:
+   the same form models a what-if, and a what-if that silently changed a
+   coach's category would be a trap. */
+.calc-modelling-acts { display: flex; flex-wrap: wrap; gap: 0.4rem; flex: none; }
+
+/* The pay card's month picker. It used to be pinned to the last recorded
+   month, so a coach whose last figures were June showed June for ever. */
+.hb-ov-pick { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.hb-ov-pick select {
+  min-height: 34px; border-radius: 9px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 9px;
+  font: 600 0.82rem var(--font-body); color: var(--text-primary);
+}
+.hb-ov-pick select:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }

@@ -587,7 +587,7 @@ const resolvePeriodScore = (coach, record, vConfig) => {
  * editable; the breakdown below is driven by computeMonthlyPay so it can never
  * drift from the payroll the rest of the app produces.
  */
-function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange, canOverridePay = false, onSavePayOverrides }) {
+function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoachId, onCoachChange, lockCoach, periodOptions, onPeriodChange, canOverridePay = false, onSavePayOverrides, onCommitModel }) {
   const [coachName, setCoachName] = useState(seed?.coachName ?? "");
   const [variantId, setVariantId] = useState(seed?.variantId ?? "V1");
   const [category, setCategory] = useState(seed?.category ?? "Fixed");
@@ -600,6 +600,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [penalties, setPenalties] = useState(seed?.penalties ?? 0);
   const [missedSessions, setMissedSessions] = useState(seed?.missedSessions ?? 0);
   const [lopDays, setLopDays] = useState(seed?.lopDays ?? 0);
+  // When the month's own figures last went to the record, for the chip that
+  // says so. '' means nothing has been saved from here yet this session.
+  const [calcSavedAt, setCalcSavedAt] = useState("");
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
   // Blank means "use the band's rate"; a number overrides it for this model.
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
@@ -692,20 +695,52 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const modelledChanges = (() => {
     if (!seed?.coachId) return [];
     const same = (a, b) => String(a ?? '') === String(b ?? '');
+    // The fourth column is where the figure really lives; the fifth is the key
+    // it writes to when saved. The ones without a key are derived or kept
+    // somewhere this screen has no business writing — a score comes from six
+    // ratings, a penalty total from the incidents behind it.
     return [
-      ['Coach Category', category, seed.category, 'the coach profile'],
-      ['HB+ Benchmark Score', score, seed.score, 'the score card'],
-      ['Sessions Completed', sessions, seed.sessions, 'the score card — Incentive'],
-      ['Night Sessions', nightSessions, seed.nightSessions, 'the score card — Incentive'],
-      ['5-Star Streak', streak, seed.streak, 'the score card — Incentive'],
-      ['Missed Sessions', missedSessions, seed.missedSessions ?? 0, 'the score card — Incentive'],
-      ['Loss of Pay (days)', lopDays, seed.lopDays ?? 0, 'the score card — Incentive, or by settling a day'],
-      ['Policy Variant', variantId, seed.variantId, 'the coach profile'],
-      ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work'],
-      ['Total Penalty', penalties, seed.penalties, 'the Penalties tab']
+      ['Coach Category', category, seed.category, 'the coach profile', 'category', 'profile'],
+      ['HB+ Benchmark Score', score, seed.score, 'the score card', null, null],
+      ['Sessions Completed', sessions, seed.sessions, 'the score card — Incentive', 'sessions', 'period'],
+      ['Night Sessions', nightSessions, seed.nightSessions, 'the score card — Incentive', 'nightSessions', 'period'],
+      ['5-Star Streak', streak, seed.streak, 'the score card — Incentive', 'streak', 'period'],
+      ['Missed Sessions', missedSessions, seed.missedSessions ?? 0, 'the score card — Incentive', 'missedSessions', 'period'],
+      ['Loss of Pay (days)', lopDays, seed.lopDays ?? 0, 'the score card — Incentive, or by settling a day', 'lopDays', 'period'],
+      ['Policy Variant', variantId, seed.variantId, 'the coach profile', 'variantId', 'profile'],
+      ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work', null, null],
+      ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null]
     ].filter(([, now, was]) => !same(now, was))
-     .map(([label, now, was, where]) => ({ label, now, was, where }));
+     .map(([label, now, was, where, commit, scope]) => ({ label, now, was, where, commit, scope }));
   })();
+
+  // The month's own figures save themselves, a couple of seconds after typing
+  // stops — the same way the score card does.
+  //
+  // Finance opens this screen to enter what a month actually was, reads the
+  // total, and closes the tab. Making that a button somebody had to find meant
+  // the figures were nowhere, and the next person opened the same screen and
+  // saw a different answer. So they are not a model: they are the record.
+  //
+  // Category and policy variant are not included. They change how every month
+  // for that coach is paid, and this form is also used to ask "what would they
+  // get on Flexi-Fixed" — saving that as it was typed would answer the
+  // question by making it true. Those stay behind the button.
+  const autoSavable = modelledChanges.filter(c => c.scope === 'period');
+  const autoKey = autoSavable.map(c => `${c.commit}:${c.now}`).join('|');
+  useEffect(() => {
+    if (!onCommitModel || !seed?.coachId || !seed?.periodMonth) return;
+    if (autoSavable.length === 0) return;
+    const t = setTimeout(() => {
+      const ok = onCommitModel(seed.coachId, seed.periodMonth,
+        Object.fromEntries(autoSavable.map(c => [c.commit, c.now])), { quiet: true });
+      if (ok) setCalcSavedAt(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
+    }, 1800);
+    return () => clearTimeout(t);
+    // autoKey collapses the figures to one string: the effect should fire when
+    // a number changes, not whenever the array is rebuilt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoKey, seed?.coachId, seed?.periodMonth]);
 
   const resetToRecorded = () => {
     if (!seed) return;
@@ -952,17 +987,46 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             <i className="bx bx-flask"></i>
             <span>
               <strong>
-                Modelling — {modelledChanges.length} input
-                {modelledChanges.length === 1 ? '' : 's'} changed, nothing saved
+                {onCommitModel && autoSavable.length > 0
+                  ? (calcSavedAt
+                      ? `${autoSavable.length} figure${autoSavable.length === 1 ? '' : 's'} saved · ${calcSavedAt}`
+                      : `Saving ${autoSavable.length} figure${autoSavable.length === 1 ? '' : 's'}…`)
+                  : `Modelling — ${modelledChanges.length} input${modelledChanges.length === 1 ? '' : 's'} changed, nothing saved`}
               </strong>
               <small>
                 {modelledChanges.map(c => `${c.label} (${c.was} → ${c.now}), edited on ${c.where}`).join('; ')}.
-                {' '}Only Per-Session Rate and Base / Fixed Pay save from here, each with its own button.
+                {!onCommitModel
+                  ? ' Only Per-Session Rate and Base / Fixed Pay save from here, each with its own button.'
+                  : modelledChanges.some(c => c.scope === 'profile')
+                    ? ' The month\u2019s own figures save as you type. Coach Category and Policy Variant change every month for this coach, so they wait for the button.'
+                    : ' The month\u2019s own figures save as you type — everyone reads the same record.'}
               </small>
             </span>
-            <button className="btn btn-secondary btn-sm" onClick={resetToRecorded}>
-              Reset to recorded
-            </button>
+            <div className="calc-modelling-acts">
+              {onCommitModel && modelledChanges.some(c => c.scope === 'profile') && (
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const savable = modelledChanges.filter(c => c.commit && c.scope === 'profile');
+                    if (savable.length === 0) {
+                      window.alert('The month\u2019s figures have already saved themselves. What is left here is read from elsewhere — the score from its six ratings, the penalty from the incidents behind it.');
+                      return;
+                    }
+                    const list = savable.map(c => `• ${c.label}: ${c.was} → ${c.now}`).join('\n');
+                    if (!window.confirm(
+                      `Save these to ${seed.periodMonth}?\n\n${list}\n\n` +
+                      `They stop being a model and become what the coach is paid on.`)) return;
+                    onCommitModel(seed.coachId, seed.periodMonth,
+                      Object.fromEntries(savable.map(c => [c.commit, c.now])));
+                  }}
+                >
+                  Save profile changes
+                </button>
+              )}
+              <button className="btn btn-secondary btn-sm" onClick={resetToRecorded}>
+                Reset to recorded
+              </button>
+            </div>
           </div>
         )}
         {seed?.coachId && seed.coreRecorded === false && (
@@ -2021,6 +2085,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // today; this only moves the table of logins underneath it.
   const [attLogDay, setAttLogDay] = useState("");
   const [attCalMonth, setAttCalMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  // Which month the coach profile's pay card is showing. Empty means "the one
+  // that makes sense" — the open cycle if it has figures, otherwise the last
+  // month that does.
+  const [ovPayMonth, setOvPayMonth] = useState("");
   const [penaltyFilter, setPenaltyFilter] = useState("All");
   const [trackerMode, setTrackerMode] = useState("record");
   // Close & pay: 'summary' is the ten columns Finance signs off against,
@@ -3389,6 +3457,80 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return { key: 'stale', label: 'PNLTY', tone: 'bad', note: 'needs settling again' };
     }
     return { key: 'absent', label: 'PNLTY', tone: 'bad', note: 'not charged yet' };
+  };
+
+  /**
+   * Commit what the calculator was modelling.
+   *
+   * The calculator is a sandbox: it seeds from the record and nothing it does
+   * writes back, which is right for a what-if and wrong for the case that kept
+   * happening — Finance types the month's real figures in, reads the total,
+   * and closes the tab. The numbers were never anywhere, so Super Admin opened
+   * the same screen and saw a different answer.
+   *
+   * This writes each changed input to where it actually lives rather than
+   * inventing a store for the calculator. Session counts and the rest belong
+   * to the period record; category and variant to the coach. Everything goes
+   * through the same state the score card writes, so it syncs the same way.
+   *
+   * Deliberately a button and not automatic: the same form models a what-if,
+   * and a what-if that silently changed a coach's category would be a trap.
+   */
+  const commitCalculatorModel = (coachId, periodMonth, values, opts = {}) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      if (!opts.quiet) showToast("Your role cannot change what is recorded.", "error");
+      return false;
+    }
+    const coach = coaches.find(c => c.id === coachId);
+    const run = [...currentMonth, ...historicMonths]
+      .find(r => r.coach_id === coachId && r.period_month === periodMonth);
+    if (!coach || !run) {
+      if (!opts.quiet) showToast("No record for that coach and month to save into.", "error");
+      return false;
+    }
+    if (run.status === 'FINANCE_LOCKED') {
+      // Quiet or not, a locked month refusing silently would let somebody type
+      // a cycle's figures into a void.
+      showToast(`${periodMonth} is locked. Reopen it before changing what it holds.`, "error");
+      return false;
+    }
+
+    const periodPatch = {};
+    if (values.sessions !== undefined) periodPatch.sessions_completed = Number(values.sessions) || 0;
+    if (values.nightSessions !== undefined) periodPatch.night_sessions = Number(values.nightSessions) || 0;
+    if (values.streak !== undefined) periodPatch.five_star_streak = Number(values.streak) || 0;
+    if (values.missedSessions !== undefined) periodPatch.missed_sessions = Number(values.missedSessions) || 0;
+    // Loss of Pay is normally written by settling a day, so only the roles
+    // that own pay may correct it here — which is already the gate above.
+    if (values.lopDays !== undefined) periodPatch.lop_days = Number(values.lopDays) || 0;
+
+    const coachPatch = {};
+    if (values.category !== undefined && values.category !== coach.coach_category) {
+      coachPatch.coach_category = values.category;
+    }
+    if (values.variantId !== undefined && values.variantId !== coach.variant_id) {
+      coachPatch.variant_id = values.variantId;
+    }
+
+    if (Object.keys(periodPatch).length) {
+      const apply = (list) => list.map(r =>
+        (r.coach_id === coachId && r.period_month === periodMonth)
+          ? { ...r, ...periodPatch } : r);
+      setCurrentMonth(apply);
+      setHistoricMonths(apply);
+    }
+    if (Object.keys(coachPatch).length) {
+      setCoaches(prev => prev.map(c => c.id === coachId ? { ...c, ...coachPatch } : c));
+    }
+
+    const what = [...Object.keys(periodPatch), ...Object.keys(coachPatch)].join(', ');
+    logAudit("Calculator Figures Saved",
+      `${actorName} saved ${periodMonth} figures for ${coach.name} (${coachId}) from the ` +
+      `calculator: ${what || 'nothing'}.`);
+    if (!opts.quiet) {
+      showToast(`Saved to ${periodMonth}. The score card and everyone else now read the same figures.`, "success");
+    }
+    return true;
   };
 
   const settleOutstandingDays = ({ quiet = false } = {}) => {
@@ -5416,6 +5558,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Leaving a tab mid-edit would hide an open editor and its draft, so say so
   // rather than losing the changes quietly.
+  // A month chosen for one coach means nothing for the next one, and leaving
+  // it set would show a month that coach may not even have.
+  useEffect(() => { setOvPayMonth(""); }, [coachDetailId]);
+
   const switchCoachDetailTab = (tab) => {
     if (tab === coachDetailTab) return;
     if (editingCoachCard && !window.confirm('Discard the changes you are editing?')) return;
@@ -6473,6 +6619,87 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   // RM decision on appeal
+  /**
+   * Carry an appeal's decision through to the thing it disputed.
+   *
+   * Upholding one used to change only the appeal's own row, so a coach saw
+   * "UPHELD" beside a leave still marked REJECTED, and the calendar still
+   * counted the day against them. The decision has to reach the record it was
+   * about or it has not really been made.
+   *
+   * Shared by the Reporting Manager and HR handlers: two copies would drift,
+   * and the half that drifted would be the one nobody tested.
+   */
+  const applyAppealOutcome = (appeal, action, decidedBy, notes) => {
+    if (!appeal) return;
+    const upheld = action === 'Approve';
+
+    if (appeal.target_type === 'Violation') {
+      setViolations(prev => prev.map(v => v.id === appeal.target_id
+        ? { ...v,
+            status: upheld ? 'Appeal_Approved' : 'Appeal_Rejected',
+            penalty_amount: upheld ? 0 : v.penalty_amount }
+        : v));
+      return;
+    }
+
+    if (appeal.target_type === 'Leave' && upheld) {
+      const app = leaveApplications.find(x => x.id === appeal.target_id);
+      if (!app) return;
+
+      setLeaveApplications(prev => prev.map(x => x.id === appeal.target_id
+        ? { ...x,
+            status: 'Approved',
+            approved_days: x.days,
+            approved_from: x.from_date,
+            approved_to: x.to_date,
+            decided_by: decidedBy,
+            decided_at: new Date().toISOString(),
+            decision_note: `Appeal upheld${notes ? ` — ${notes}` : ''}` }
+        : x));
+
+      // Refusing an application put its days back; granting it on appeal has
+      // to take them again, or the coach keeps both the leave and the balance.
+      const { year } = leaveYearFor(new Date());
+      const days = Number(app.days) || 0;
+      if (days > 0) {
+        setLeaveBalances(prev => {
+          const has = prev.some(b => b.coach_id === app.coach_id
+            && b.leave_year === year && b.type_id === app.type_id);
+          if (has) {
+            return prev.map(b => (b.coach_id === app.coach_id
+              && b.leave_year === year && b.type_id === app.type_id)
+              ? { ...b, used: (Number(b.used) || 0) + days } : b);
+          }
+          const coachRec = coaches.find(c => c.id === app.coach_id);
+          const bal = leaveBalanceFor(coachRec, app.type_id);
+          return [...prev, {
+            coach_id: app.coach_id, leave_year: year, type_id: app.type_id,
+            opening: bal.opening, accrued: bal.accrued, adjusted: bal.adjusted, used: days
+          }];
+        });
+      }
+
+      // The days may already have been settled against the coach while the
+      // appeal was being decided — charged as Loss of Pay, or paid for out of
+      // a balance, with a No-Show on top. Granting the leave has to take all
+      // of that back, or the calendar reads LEAVE while the money is gone.
+      const DAY = 86400000;
+      for (let t = new Date(`${app.from_date}T12:00:00`);
+           t <= new Date(`${app.to_date}T12:00:00`);
+           t = new Date(t.getTime() + DAY)) {
+        reverseSettledDay(app.coach_id, t.toISOString().slice(0, 10),
+          `Leave granted on appeal by ${decidedBy}.`);
+      }
+
+      logAudit("Leave Granted On Appeal",
+        `${coaches.find(c => c.id === app.coach_id)?.name || app.coach_id} — ` +
+        `${leaveType(app.type_id)?.label || app.type_id} ${app.from_date}` +
+        `${app.to_date !== app.from_date ? ` to ${app.to_date}` : ''} is approved after appeal. ` +
+        `${days} day(s) taken from the balance.`);
+    }
+  };
+
   const handleRMAppealDecision = (appealId, action) => {
     const notes = window.prompt(`Enter Reporting Manager ${action} justification notes:`);
     if (notes === null) return;
@@ -6492,21 +6719,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }));
 
     const targetAppeal = appeals.find(ap => ap.id === appealId);
-    if (targetAppeal && targetAppeal.target_type === 'Violation') {
-      setViolations(prev => prev.map(vio => {
-        if (vio.id === targetAppeal.target_id) {
-          return {
-            ...vio,
-            status: action === 'Approve' ? "Appeal_Approved" : "Appeal_Rejected",
-            penalty_amount: action === 'Approve' ? 0 : vio.penalty_amount
-          };
-        }
-        return vio;
-      }));
-    }
+    applyAppealOutcome(targetAppeal, action, actorName, notes);
 
-    logAudit("Appeal RM Decision", `RM ${action}d appeal ${appealId}. Notes: ${notes}`);
-    showToast(`Appeal decision recorded.`);
+    logAudit("Appeal RM Decision", `${actorName} ${action}d appeal ${appealId}. Notes: ${notes}`);
+    showToast(action === 'Approve'
+      ? (targetAppeal?.target_type === 'Leave'
+          ? "Appeal upheld — the leave is approved and the days are taken from the balance."
+          : "Appeal upheld — the penalty is no longer charged.")
+      : "Appeal refused. The decision stands.",
+      action === 'Approve' ? "success" : "warning");
   };
 
   // RM Escalate appeal to HR
@@ -6538,21 +6759,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }));
 
     const targetAppeal = appeals.find(ap => ap.id === appealId);
-    if (targetAppeal && targetAppeal.target_type === 'Violation') {
-      setViolations(prev => prev.map(vio => {
-        if (vio.id === targetAppeal.target_id) {
-          return {
-            ...vio,
-            status: action === 'Approve' ? "Appeal_Approved" : "Appeal_Rejected",
-            penalty_amount: action === 'Approve' ? 0 : vio.penalty_amount
-          };
-        }
-        return vio;
-      }));
-    }
+    applyAppealOutcome(targetAppeal, action, actorName, notes);
 
-    logAudit("Appeal HR Decision", `HR finalized appeal ${appealId} as ${action}d.`);
-    showToast("Appeal resolved and finalized.");
+    logAudit("Appeal HR Decision", `${actorName} finalised appeal ${appealId} as ${action}d.`);
+    showToast(action === 'Approve'
+      ? (targetAppeal?.target_type === 'Leave'
+          ? "Appeal upheld — the leave is approved and the days are taken from the balance."
+          : "Appeal upheld — the penalty is no longer charged.")
+      : "Appeal refused. The decision stands.",
+      action === 'Approve' ? "success" : "warning");
   };
 
   // Delete violation
@@ -7073,35 +7288,77 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const rows = buildPayrollRun(periodMonth).filter(
       r => payrollCategoryFilter === "All" || r.coach.coach_category === payrollCategoryFilter
     );
-    const header = ["Coach ID", "Coach Name", "Category", "Score Card", "HB+ Score", "Band", "Per-Session Rate",
-      "Base Pay", "Extra Sessions", "Extra Session Pay", "Session Pay", "Night Premium",
-      "Milestone", "Consistency", "Streak Bonus", "Org Work", "Penalty", "Gross Pay"];
-    const body = rows.map(r => [
-      r.coach.id, r.coach.name, r.coach.coach_category,
-      r.recorded ? "Recorded" : "NOT RECORDED — fixed points only",
-      r.score, r.recorded ? r.band : "Awaiting entry", r.pay.perSessionRate,
-      r.pay.basePay, r.pay.extraSessions, r.pay.extraSessionPay, r.pay.sessionPay, r.pay.nightSessionPay,
-      r.pay.milestoneIncentive, r.pay.consistencyBonus, r.pay.streakBonusPay, r.pay.orgWorkPay,
-      r.pay.penaltyDeductions, r.pay.grossPay
-    ].map(v => `"${v}"`).join(","));
 
-    const encodedUri = encodeURI(`data:text/csv;charset=utf-8,${header.map(h => `"${h}"`).join(",")}\n${body.join("\n")}`);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
+    // Every line of the Computed Pay Breakdown, in the order the screen shows
+    // them, and ending where the screen ends — at what reaches the coach.
+    // Gross was the last column before, so anyone paying from this had to work
+    // out the tax themselves, by hand, per coach.
+    const header = [
+      "Coach ID", "Coach Name", "Category", "Policy Variant", "Score Card",
+      "HB+ Score", "Band",
+      "Base / Fixed Pay", "Per-Session Rate",
+      "Sessions For The Month", "Session Threshold",
+      "Extra Sessions", "Extra Session Pay", "Per-Session Pay",
+      "Night Session Premium", "Milestone Incentive", "Consistency Bonus",
+      "5-Star Streak Bonus", "Org Work Pay",
+      "Missed Sessions", "Missed Session Penalty",
+      "Loss of Pay (days)", "Loss of Pay",
+      "Incident Penalty", "Total Deductions",
+      "Gross Monthly Pay", "Income Tax u/s 194J (10%)", "Net Monthly Pay"
+    ];
+
+    const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const body = rows.map(r => {
+      const tds = money(r.pay.grossPay * TDS_194J_RATE);
+      const deductions = money(r.pay.penaltyDeductions + r.pay.lossOfPay);
+      return [
+        r.coach.id, r.coach.name, r.coach.coach_category, r.vConfig.name,
+        r.recorded ? "Recorded" : "NOT RECORDED — fixed points only",
+        money(r.score), r.recorded ? r.band : "Awaiting entry",
+        money(r.pay.basePay), money(r.pay.perSessionRate),
+        Number(r.record.sessions_completed) || 0,
+        // The same threshold the tracker prints: the band's own figure when the
+        // variant sets one, otherwise the category default.
+        r.vConfig.rates?.[r.coach.coach_category]?.[r.band]?.threshold
+          ?? (r.coach.coach_category === 'Fixed'
+                ? (r.vConfig.discipline === 'Yoga' ? 117 : 156)
+                : 96),
+        r.pay.extraSessions || 0, money(r.pay.extraSessionPay), money(r.pay.sessionPay),
+        money(r.pay.nightSessionPay), money(r.pay.milestoneIncentive), money(r.pay.consistencyBonus),
+        money(r.pay.streakBonusPay), money(r.pay.orgWorkPay),
+        r.pay.missedSessions || 0, money(r.pay.missedSessionDeduction),
+        r.pay.lopDays || 0, money(r.pay.lossOfPay),
+        money(r.pay.violationPenalties), deductions,
+        money(r.pay.grossPay), tds, money(r.pay.grossPay - tds)
+      ];
+    });
+
+    // A totals line, because the first thing anyone does with this is add the
+    // net column up and check it against the bank file.
+    const sum = (i) => money(body.reduce((n, row) => n + (Number(row[i]) || 0), 0));
+    const totals = header.map((_, i) =>
+      i === 0 ? 'TOTAL' : i === 1 ? `${rows.length} coaches` : (i >= 7 ? sum(i) : ''));
+
+    const csv = [header, ...body, totals]
+      .map(row => row.map(csvCell).join(','))
+      .join('\r\n');
+
+    // A Blob rather than a data: URI — encodeURI mangles a coach name with a
+    // # or a + in it, and silently truncates a long run.
     const categoryTag = payrollCategoryFilter === "All" ? '' : `_${payrollCategoryFilter.replace('-', '')}`;
-    link.setAttribute("download", `HB_Payroll_Run_${periodMonth.replace(' ', '_')}${categoryTag}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadBlob(
+      new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }),
+      `HB_Payroll_Run_${periodMonth.replace(/ /g, '_')}${categoryTag}.csv`
+    );
 
     const unrecorded = rows.filter(r => !r.recorded).length;
     logAudit(
       "Payroll Run Exported",
-      `Exported the ${periodMonth} payroll run (${rows.length} coaches` +
+      `${actorName} exported the ${periodMonth} payroll run (${rows.length} coaches` +
       (payrollCategoryFilter === "All" ? '' : `, ${payrollCategoryFilter} only`) + `) to CSV` +
       (unrecorded ? ` — ${unrecorded} score card${unrecorded > 1 ? 's' : ''} not recorded, paid on fixed points only` : '')
     );
-    showToast(`${periodMonth} payroll run downloaded.`);
+    showToast(`${periodMonth} payroll run downloaded — ${rows.length} coaches, through to net pay.`);
   };
 
   // Export CSV
@@ -7366,6 +7623,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   {(() => {
                     if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return null;
                     const open = appeals.filter(a => {
+                      // Penalty appeals only: a leave appeal is decided on
+                      // Attendance & Leave, so counting it here would send
+                      // somebody to a page that cannot act on it.
+                      if (a.target_type === 'Leave') return false;
                       if (a.status !== 'PENDING_RM' && a.status !== 'PENDING_HR') return false;
                       if (currentRole !== 'Reporting Manager') return true;
                       return coaches.find(c => c.id === a.coach_id)?.reporting_manager_id === currentRmContext;
@@ -7905,20 +8166,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   },
                   // An appeal is somebody disputing a decision this system
                   // made about their pay. It belongs above the data chores.
-                  (() => {
-                    const open = appeals.filter(a =>
+                  // Split by kind, because each is decided somewhere different:
+                  // a penalty appeal on Incidents, a leave appeal beside the
+                  // register that refused it. One row pointing at one page
+                  // would send half of them to the wrong screen.
+                  ...(() => {
+                    const waiting = appeals.filter(a =>
                       a.status === 'PENDING_RM' || a.status === 'PENDING_HR');
-                    if (open.length === 0) return null;
-                    const named = open.slice(0, 2)
-                      .map(a => coaches.find(c => c.id === a.coach_id)?.name?.split(' ')[0])
-                      .filter(Boolean).join(', ');
-                    return {
-                      k: 'appeals', tone: 'red',
-                      title: `${open.length} appeal${open.length === 1 ? '' : 's'} waiting on a decision`,
-                      detail: `${named ? `${named}${open.length > 2 ? ` and ${open.length - 2} more` : ''} ` : ''}`
-                        + 'dispute a penalty or a refused leave. Nothing moves until somebody answers.',
-                      cta: 'Decide', go: () => setActiveView('penalties')
+                    const name = (a) => coaches.find(c => c.id === a.coach_id)?.name?.split(' ')[0];
+                    const row = (list, k, what, view) => {
+                      if (list.length === 0) return null;
+                      const named = list.slice(0, 2).map(name).filter(Boolean).join(', ');
+                      return {
+                        k, tone: 'red',
+                        title: `${list.length} ${what} appeal${list.length === 1 ? '' : 's'} waiting on a decision`,
+                        detail: `${named ? `${named}${list.length > 2 ? ` and ${list.length - 2} more` : ''} ` : ''}`
+                          + 'dispute what was decided. Nothing moves until somebody answers.',
+                        cta: 'Decide', go: () => setActiveView(view)
+                      };
                     };
+                    return [
+                      row(waiting.filter(a => a.target_type === 'Leave'), 'appeals-leave', 'leave', 'attendance'),
+                      row(waiting.filter(a => a.target_type !== 'Leave'), 'appeals-penalty', 'penalty', 'penalties')
+                    ].filter(Boolean);
                   })(),
                   bandMovements.length && {
                     k: 'band', tone: 'amber',
@@ -9028,8 +9298,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     // to each question rather than two that can disagree.
                     const cycleRun = curr;
                     const cycleRecorded = cycleRun && isRecorded(cycleRun);
-                    const shownRun = statRun;
+                    // The card used to be pinned to statRun — the last month
+                    // with any figures in it — so a coach whose last recorded
+                    // month was June showed June for ever, whatever month you
+                    // had open. It follows the picker now, defaulting to the
+                    // open cycle when that has figures and to the last recorded
+                    // month when it does not.
+                    const defaultRun = (curr && isRecorded(curr)) ? curr : statRun;
+                    const shownRun = allRuns.find(r => r.period_month === ovPayMonth) || defaultRun;
                     const shownMonth = shownRun?.period_month || '—';
+                    const shownRecorded = shownRun ? isRecorded(shownRun) : false;
 
                     const vios = shownRun ? coachVios.filter(v =>
                       new Date(v.incident_date) >= new Date(shownRun.period_start) &&
@@ -9142,9 +9420,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <div className="hb-ov-head">
                                 <div>
                                   <h3>{shownMonth} pay</h3>
-                                  <span>{cycleRecorded ? 'as recorded' : 'forecast — no score card yet'}</span>
+                                  <span>
+                                    {shownRecorded
+                                      ? 'as recorded'
+                                      : 'forecast — this month has no score card yet'}
+                                  </span>
                                 </div>
-                                <span className="hb-ov-note">Each figure says where it came from</span>
+                                <div className="hb-ov-pick">
+                                  <label htmlFor="ov-pay-month" className="sr-only">Month</label>
+                                  <select
+                                    id="ov-pay-month"
+                                    value={shownMonth}
+                                    onChange={(e) => setOvPayMonth(e.target.value)}
+                                  >
+                                    {[...allRuns].reverse().map(r => (
+                                      <option key={r.period_month} value={r.period_month}>
+                                        {r.period_month}{isRecorded(r) ? '' : ' — not recorded'}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <span className="hb-ov-note">Each figure says where it came from</span>
+                                </div>
                               </div>
                               {!pay ? (
                                 <p className="hb-empty">No period has been opened for this coach yet.</p>
@@ -11565,6 +11861,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   <PayCalculator
                     variants={variants}
                     onSavePayOverrides={savePayOverrides}
+                    onCommitModel={PROFILE_PAY_ROLES.includes(currentRole) ? commitCalculatorModel : null}
                     coachOptions={run.map(r => r.coach)}
                     selectedCoachId={payCalcCoachId}
                     onCoachChange={setPayCalcCoachId}
@@ -14970,7 +15267,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // existed; the screen that reaches them was never enabled, so
                 // an appeal went in and was never seen again. This is that
                 // screen, on the view where the incidents themselves live.
+                // Penalty appeals only. A refused leave is argued about on
+                // Attendance & Leave, beside the register that refused it, and
+                // listing it here as well meant two places to look and two
+                // places to miss it. Each appeal now sits next to the thing it
+                // disputes.
                 const mine = appeals.filter(a => {
+                  if (a.target_type === 'Leave') return false;
                   const c = coaches.find(x => x.id === a.coach_id);
                   if (currentRole === 'Reporting Manager') return c?.reporting_manager_id === currentRmContext;
                   return true;
@@ -14990,7 +15293,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     <div className="card-header-row">
                       <h3>Appeals · {mine.filter(a => a.status === 'PENDING_RM' || a.status === 'PENDING_HR').length} open</h3>
                       <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                        Raised by the coach against a penalty or a refused leave
+                        Raised by the coach against a penalty. Leave appeals are on Attendance &amp; Leave.
                       </span>
                     </div>
                     <div className="table-container">
