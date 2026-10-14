@@ -27,13 +27,15 @@ import {
 const NO_SHOW_VIOLATION = 'Coach No-Show';
 
 // What an appeal's state means, said once for the coach watching it and the
-// approver deciding it. RESOLVED is the coach's win; RM_DECIDED is the
-// manager refusing it, which is the end of the road unless it was escalated.
+// approver deciding it. These are the table's own values — the handlers
+// used to write RESOLVED / RM_DECIDED / ESCALATED_HR, none of which the
+// appeals check constraint allows, so no decision was ever saved.
 const APPEAL_UI = {
-  PENDING_RM:   ['With the Reporting Manager', 'badge-warning'],
-  ESCALATED_HR: ['Escalated to HR',            'badge-info'],
-  RM_DECIDED:   ['Refused',                    'badge-danger'],
-  RESOLVED:     ['Upheld',                     'badge-success']
+  PENDING_RM: ['With the Reporting Manager', 'badge-warning'],
+  PENDING_HR: ['Escalated to HR',            'badge-info'],
+  REJECTED:   ['Refused',                    'badge-danger'],
+  APPROVED:   ['Upheld',                     'badge-success'],
+  WITHDRAWN:  ['Withdrawn',                  'badge-muted']
 };
 import {
   supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
@@ -6480,7 +6482,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
         return {
           ...a,
           rm_decision_notes: notes,
-          status: action === 'Approve' ? 'RESOLVED' : 'RM_DECIDED'
+          // The table's own vocabulary. These used to be RESOLVED and
+          // RM_DECIDED, which it allows neither of, so no decision ever
+          // reached it.
+          status: action === 'Approve' ? 'APPROVED' : 'REJECTED'
         };
       }
       return a;
@@ -6508,7 +6513,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const handleRMEscalateAppeal = (appealId) => {
     setAppeals(prev => prev.map(a => {
       if (a.id === appealId) {
-        return { ...a, status: "ESCALATED_HR" };
+        return { ...a, status: "PENDING_HR" };
       }
       return a;
     }));
@@ -6526,7 +6531,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         return {
           ...a,
           hr_decision_notes: notes,
-          status: "RESOLVED"
+          status: action === 'Approve' ? 'APPROVED' : 'REJECTED'
         };
       }
       return a;
@@ -7354,7 +7359,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
             )}
             {isViewEnabled('penalties') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner") && (
               <li className={`nav-item ${activeView === 'penalties' ? 'active' : ''}`} onClick={() => handleNavClick('penalties', "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner")}>
-                <a href="#penalties"><i className="bx bx-error-circle nav-icon"></i><span>Penalties</span></a>
+                <a href="#penalties">
+                  <i className="bx bx-error-circle nav-icon"></i><span>Penalties</span>
+                  {/* Appeals wait on a person, so the number waiting belongs
+                      where they will see it without going looking. */}
+                  {(() => {
+                    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return null;
+                    const open = appeals.filter(a => {
+                      if (a.status !== 'PENDING_RM' && a.status !== 'PENDING_HR') return false;
+                      if (currentRole !== 'Reporting Manager') return true;
+                      return coaches.find(c => c.id === a.coach_id)?.reporting_manager_id === currentRmContext;
+                    }).length;
+                    if (open === 0) return null;
+                    return (
+                      <span className="nav-appeal-badge" title={`${open} appeal${open === 1 ? '' : 's'} waiting on a decision`}>
+                        <i className="bx bx-conversation"></i>{open}
+                      </span>
+                    );
+                  })()}
+                </a>
               </li>
             )}
             {isViewEnabled('certifications') && verifyAccess("Super Admin,HR Manager") && (
@@ -7880,6 +7903,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     detail: 'Their pay is worked out from fixed points only, so it reads low.',
                     cta: 'Record', go: () => setActiveView('score-tracker')
                   },
+                  // An appeal is somebody disputing a decision this system
+                  // made about their pay. It belongs above the data chores.
+                  (() => {
+                    const open = appeals.filter(a =>
+                      a.status === 'PENDING_RM' || a.status === 'PENDING_HR');
+                    if (open.length === 0) return null;
+                    const named = open.slice(0, 2)
+                      .map(a => coaches.find(c => c.id === a.coach_id)?.name?.split(' ')[0])
+                      .filter(Boolean).join(', ');
+                    return {
+                      k: 'appeals', tone: 'red',
+                      title: `${open.length} appeal${open.length === 1 ? '' : 's'} waiting on a decision`,
+                      detail: `${named ? `${named}${open.length > 2 ? ` and ${open.length - 2} more` : ''} ` : ''}`
+                        + 'dispute a penalty or a refused leave. Nothing moves until somebody answers.',
+                      cta: 'Decide', go: () => setActiveView('penalties')
+                    };
+                  })(),
                   bandMovements.length && {
                     k: 'band', tone: 'amber',
                     title: `${bandMovements.length} coaches changed band — pay did not follow`,
@@ -14601,9 +14641,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         const coach = coaches.find(c => c.id === a.coach_id);
                         let statusClass = "badge-muted";
                         if (a.status === "PENDING_RM") statusClass = "badge-warning";
-                        if (a.status === "RM_DECIDED") statusClass = "badge-info";
-                        if (a.status === "ESCALATED_HR") statusClass = "badge-warning";
-                        if (a.status === "RESOLVED") statusClass = "badge-success";
+                        if (a.status === "REJECTED") statusClass = "badge-danger";
+                        if (a.status === "PENDING_HR") statusClass = "badge-warning";
+                        if (a.status === "APPROVED") statusClass = "badge-success";
 
                         let actionButtons = "";
                         if (currentRole === "Reporting Manager" && a.status === 'PENDING_RM') {
@@ -14614,7 +14654,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <button className="btn btn-secondary" onClick={() => handleRMEscalateAppeal(a.id)}>Escalate</button>
                             </div>
                           );
-                        } else if (currentRole === "HR Manager" && a.status === 'ESCALATED_HR') {
+                        } else if (currentRole === "HR Manager" && a.status === 'PENDING_HR') {
                           actionButtons = (
                             <div style={{ display: 'flex', gap: '4px' }}>
                               <button className="btn btn-teal" onClick={() => handleHRAppealDecision(a.id, 'Approve')}>Approve Appeal</button>
@@ -14835,13 +14875,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 }).sort((a, b) => new Date(b.raised_at) - new Date(a.raised_at));
                 if (mine.length === 0 || currentRole === 'Coach') return null;
 
-                const isRM = currentRole === 'Reporting Manager' || currentRole === 'Super Admin';
+                // A coach's appeal goes to whoever can act on it: the
+                // Reporting Manager it belongs to, HR, or a Super Admin. It
+                // used to wait on the RM alone, so an appeal against a coach
+                // with no manager — and there are several — could never be
+                // decided by anybody.
+                const isRM = LEAVE_APPROVER_ROLES.includes(currentRole);
                 const isHR = currentRole === 'HR Manager' || currentRole === 'Super Admin';
 
                 return (
                   <div className="card" style={{ marginBottom: '1.5rem' }}>
                     <div className="card-header-row">
-                      <h3>Appeals · {mine.filter(a => a.status === 'PENDING_RM' || a.status === 'ESCALATED_HR').length} open</h3>
+                      <h3>Appeals · {mine.filter(a => a.status === 'PENDING_RM' || a.status === 'PENDING_HR').length} open</h3>
                       <span className="text-muted" style={{ fontSize: '0.82rem' }}>
                         Raised by the coach against a penalty or a refused leave
                       </span>
@@ -14855,7 +14900,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {mine.map(a => {
                             const c = coaches.find(x => x.id === a.coach_id);
                             const ui = APPEAL_UI[a.status] || [a.status, 'badge-muted'];
-                            const open = a.status === 'PENDING_RM' || a.status === 'ESCALATED_HR';
+                            const open = a.status === 'PENDING_RM' || a.status === 'PENDING_HR';
                             return (
                               <tr key={a.id}>
                                 <td style={{ whiteSpace: 'nowrap' }}>
@@ -14886,7 +14931,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                           </button>
                                         </>
                                       )}
-                                      {a.status === 'ESCALATED_HR' && isHR && (
+                                      {a.status === 'PENDING_HR' && isHR && (
                                         <>
                                           <button className="btn-row-icon icon-save" title="Uphold — final"
                                             onClick={() => handleHRAppealDecision(a.id, 'Approve')}>

@@ -4921,3 +4921,13 @@ form {
 }
 .att-month-vios > summary:hover { color: #3c4419; }
 .att-month-vios table { margin-top: 0.6rem; }
+
+/* Appeals waiting on a decision, marked where an approver will pass anyway.
+   An appeal is somebody disputing what this system did to their pay, so it
+   should not need looking for. */
+.nav-appeal-badge {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: auto;
+  font-size: 0.7rem; font-weight: 700; padding: 2px 7px; border-radius: 99px;
+  background: var(--brand-rust); color: #fff;
+}
+.nav-appeal-badge i { font-size: 0.78rem; }
