@@ -9572,10 +9572,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       <span>Loss of Pay · {pay.lopDays || 0} day{pay.lopDays === 1 ? '' : 's'}</span>
                                       <strong>−{rupees(pay.lossOfPay)}</strong>
                                     </div>
+                                    {/* Incidents and missed sessions are two
+                                        charges under two policies. Shown as one
+                                        line against an incident count, a coach
+                                        with no incidents still read a penalty. */}
                                     <div className="hb-pay-row">
                                       <span>Penalties · {vios.length ? `${vios.length} incident${vios.length === 1 ? '' : 's'} this cycle` : 'no incidents this cycle'}</span>
-                                      <strong>−{rupees(pay.penaltyDeductions)}</strong>
+                                      <strong>−{rupees(pay.violationPenalties)}</strong>
                                     </div>
+                                    {pay.missedSessionDeduction > 0 && (
+                                      <div className="hb-pay-row">
+                                        <span>
+                                          Missed sessions · {pay.missedSessions} at {pay.missedSessionTierLabel}
+                                        </span>
+                                        <strong>−{rupees(pay.missedSessionDeduction)}</strong>
+                                      </div>
+                                    )}
                                     <div className="hb-pay-row">
                                       <span>TDS u/s 194J · 10%</span>
                                       <strong>−{rupees(tds)}</strong>
@@ -12003,7 +12015,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       streak: Number(selected.record.five_star_streak) || 0,
                       consistency: selected.pay.consistencyEligible ? "YES" : "NO",
                       orgWorkPay: selected.pay.orgWorkPay,
-                      penalties: selected.pay.penaltyDeductions,
+                      // Incidents only. penaltyDeductions is violations plus
+                      // the missed-session charge, and the breakdown already
+                      // shows that charge on its own row — seeding it here
+                      // counted it twice, and put a figure against a month
+                      // with no incidents at all.
+                      penalties: selected.pay.violationPenalties,
                       missedSessions: Number(selected.record.missed_sessions) || 0,
                       penaltyWaiver: Number(selected.record.penalty_waiver) || 0,
                       lopDays: Number(selected.record.lop_days) || 0,
@@ -17438,10 +17455,19 @@ HB+_030,185,0,96`} />
                             <td className="amt">{pay.lossOfPay.toFixed(2)}</td>
                           </tr>
                         )}
-                        {pay.penaltyDeductions > 0 && (
+                        {pay.violationPenalties > 0 && (
                           <tr>
                             <td>Penalty ({activeVio.length} incident{activeVio.length === 1 ? '' : 's'})</td>
-                            <td className="amt">{pay.penaltyDeductions.toFixed(2)}</td>
+                            <td className="amt">{pay.violationPenalties.toFixed(2)}</td>
+                          </tr>
+                        )}
+                        {/* Its own line: a missed session is charged under a
+                            different rule from an incident, and putting the two
+                            together made the incident count look wrong. */}
+                        {pay.missedSessionDeduction > 0 && (
+                          <tr>
+                            <td>Missed sessions ({pay.missedSessions} at {pay.missedSessionTierLabel})</td>
+                            <td className="amt">{pay.missedSessionDeduction.toFixed(2)}</td>
                           </tr>
                         )}
                         <tr>
