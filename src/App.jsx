@@ -1093,9 +1093,12 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         )}
         <table className="data-table calc-table">
           <tbody>
-            {/* Which period the figures below belong to. Read-only: it follows
-                the period picker above rather than being keyed in here, so the
-                inputs and the score card can never drift apart silently. */}
+            {/* Which period the figures below belong to. A select wherever the
+                caller supplies the months, so another month can be checked
+                without leaving the figures; plain text where it does not, and
+                then it follows the picker above. Either way it re-seeds from
+                that month's score card, so the inputs and the record cannot
+                drift apart. */}
             {seed?.periodMonth && inputRow(
               "Performance Period",
               periodOptions?.length && onPeriodChange ? (
@@ -11972,6 +11975,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     coachOptions={run.map(r => r.coach)}
                     selectedCoachId={payCalcCoachId}
                     onCoachChange={setPayCalcCoachId}
+                    // Without these the Performance Period row is read-only
+                    // text, so the only way to check another month was the
+                    // select at the top of the page — a long way from the
+                    // figures being read.
+                    periodOptions={periods}
+                    onPeriodChange={setPayrollRunPeriod}
                     canOverridePay={PROFILE_PAY_ROLES.includes(currentRole)}
                     seed={selected ? {
                       key: `${selected.coach.id}-${period}`,
