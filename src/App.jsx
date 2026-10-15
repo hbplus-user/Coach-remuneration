@@ -600,9 +600,13 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [penalties, setPenalties] = useState(seed?.penalties ?? 0);
   const [missedSessions, setMissedSessions] = useState(seed?.missedSessions ?? 0);
   const [lopDays, setLopDays] = useState(seed?.lopDays ?? 0);
-  // When the month's own figures last went to the record, for the chip that
-  // says so. '' means nothing has been saved from here yet this session.
-  const [calcSavedAt, setCalcSavedAt] = useState("");
+  // The change-set the save bar was last dismissed for. Keyed rather than a
+  // plain boolean: dismissing it should quiet this edit, not every edit after.
+  // Rupees of this month's penalty forgiven. Kept apart from the incidents:
+  // they keep their amounts and their occurrence numbers, and only what is
+  // taken this month moves.
+  const [penaltyWaiver, setPenaltyWaiver] = useState(seed?.penaltyWaiver ?? 0);
+  const [savePromptHiddenFor, setSavePromptHiddenFor] = useState("");
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
   // Blank means "use the band's rate"; a number overrides it for this model.
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
@@ -637,6 +641,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setConsistency(seed.consistency ?? "NO");
     setOrgWorkPay(seed.orgWorkPay ?? 0);
     setPenalties(seed.penalties ?? 0);
+    setPenaltyWaiver(seed.penaltyWaiver ?? 0);
     setMissedSessions(seed.missedSessions ?? 0);
     setLopDays(seed.lopDays ?? 0);
     setBaseOverride(seed.baseOverride ?? "");
@@ -709,38 +714,45 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       ['Loss of Pay (days)', lopDays, seed.lopDays ?? 0, 'the score card — Incentive, or by settling a day', 'lopDays', 'period'],
       ['Policy Variant', variantId, seed.variantId, 'the coach profile', 'variantId', 'profile'],
       ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work', null, null],
-      ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null]
+      ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null],
+      ['Penalty Waived', penaltyWaiver, seed.penaltyWaiver ?? 0, 'this screen', 'penaltyWaiver', 'period']
     ].filter(([, now, was]) => !same(now, was))
      .map(([label, now, was, where, commit, scope]) => ({ label, now, was, where, commit, scope }));
   })();
 
-  // The month's own figures save themselves, a couple of seconds after typing
-  // stops — the same way the score card does.
-  //
-  // Finance opens this screen to enter what a month actually was, reads the
-  // total, and closes the tab. Making that a button somebody had to find meant
-  // the figures were nowhere, and the next person opened the same screen and
-  // saw a different answer. So they are not a model: they are the record.
-  //
-  // Category and policy variant are not included. They change how every month
-  // for that coach is paid, and this form is also used to ask "what would they
-  // get on Flexi-Fixed" — saving that as it was typed would answer the
-  // question by making it true. Those stay behind the button.
-  const autoSavable = modelledChanges.filter(c => c.scope === 'period');
-  const autoKey = autoSavable.map(c => `${c.commit}:${c.now}`).join('|');
-  useEffect(() => {
-    if (!onCommitModel || !seed?.coachId || !seed?.periodMonth) return;
-    if (autoSavable.length === 0) return;
-    const t = setTimeout(() => {
-      const ok = onCommitModel(seed.coachId, seed.periodMonth,
-        Object.fromEntries(autoSavable.map(c => [c.commit, c.now])), { quiet: true });
-      if (ok) setCalcSavedAt(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
-    }, 1800);
-    return () => clearTimeout(t);
-    // autoKey collapses the figures to one string: the effect should fire when
-    // a number changes, not whenever the array is rebuilt.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoKey, seed?.coachId, seed?.periodMonth]);
+  /**
+   * Commit whatever has been typed, and say what happened.
+   *
+   * Shared by the banner above the fields and the bar below them: the banner
+   * scrolls out of sight the moment anyone starts editing, which is exactly
+   * when the button is wanted.
+   */
+  const saveModelToRecord = () => {
+    if (!onCommitModel || !seed?.coachId) return;
+    const savable = modelledChanges.filter(c => c.commit);
+    const readOnly = modelledChanges.filter(c => !c.commit);
+    if (savable.length === 0) return;
+
+    const list = savable.map(c => `• ${c.label}: ${c.was} → ${c.now}`).join('\n');
+    const left = readOnly.length
+      ? `\n\nNot saved, because they are worked out elsewhere:\n` +
+        readOnly.map(c => `• ${c.label} — ${c.where}`).join('\n')
+      : '';
+    if (!window.confirm(
+      `Save to ${seed.periodMonth}?\n\n${list}${left}\n\n` +
+      `These stop being a model and become what the coach is paid on.`)) return;
+
+    const res = onCommitModel(seed.coachId, seed.periodMonth,
+      Object.fromEntries(savable.map(c => [c.commit, c.now]))) || {};
+
+    window.alert(res.ok
+      ? `Saved to ${seed.periodMonth}.\n\n` +
+        `${savable.length} figure${savable.length === 1 ? '' : 's'} written to the record, ` +
+        `and the score card and payroll now read the same.\n\n` +
+        `It reaches the database within a few seconds. If that fails, a red banner ` +
+        `appears at the top of the screen saying so — nothing fails silently.`
+      : `Not saved — nothing was written.\n\n${res.why || 'The save was refused.'}`);
+  };
 
   const resetToRecorded = () => {
     if (!seed) return;
@@ -754,6 +766,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setLopDays(seed.lopDays ?? 0);
     setOrgWorkPay(seed.orgWorkPay ?? 0);
     setPenalties(seed.penalties ?? 0);
+    setPenaltyWaiver(seed.penaltyWaiver ?? 0);
   };
 
   const forecastNow = forecastFor(band.label);
@@ -795,8 +808,15 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   // here rather than above because it divides `pay`, which does not exist yet
   // up there — and a render reaches these in order.
   const lopPerDayHere = Math.round((pay.basePay / 26) * 100) / 100;
+  // Forgiving money is a pay decision, so it needs the same permission as
+  // saving one — otherwise the field invites an edit that cannot be kept.
+  const canWaive = Boolean(onCommitModel && seed?.coachId);
   const penaltyTotal = Number(penalties) || 0;
-  const grossPay = Math.round((pay.grossPay - penaltyTotal) * 100) / 100;
+  // Clamped to what was actually charged. Waiving more than that would turn a
+  // penalty into a payment.
+  const waived = Math.min(Math.max(Number(penaltyWaiver) || 0, 0), penaltyTotal);
+  const penaltyCharged = Math.round((penaltyTotal - waived) * 100) / 100;
+  const grossPay = Math.round((pay.grossPay - penaltyCharged) * 100) / 100;
   // Section 194J: TDS on professional or technical fees, withheld at source.
   // Withheld in whole rupees, as on the payslip.
   const incomeTax = Math.round(grossPay * TDS_194J_RATE);
@@ -910,6 +930,45 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       </tr>
     ];
 
+    // Waiving sits with the penalty it reduces. It is the one editable cell on
+    // this side of the screen, and deliberately so: somebody looking at a
+    // ₹15,600 charge wants to forgive part of it there, not in a column away
+    // from the figure they are reading.
+    if (penaltyTotal > 0 && canWaive) {
+      rows.push(
+        <tr key="penalty-waived">
+          <td className="calc-label">
+            Penalty Waived (₹)
+            <span className="calc-hint">
+              forgive part or all of it — the incidents keep their amounts and their place on the ladder
+            </span>
+          </td>
+          <td className="calc-output-cell">
+            <input
+              type="number" min="0" max={penaltyTotal} step="any"
+              className="calc-input calc-waive-input"
+              value={penaltyWaiver}
+              onChange={(e) => setPenaltyWaiver(e.target.value)}
+              aria-label="Penalty waived this month"
+            />
+          </td>
+        </tr>
+      );
+      if (waived > 0) {
+        rows.push(
+          <tr key="penalty-charged">
+            <td className="calc-label">
+              Penalty Charged (₹)
+              <span className="calc-hint">
+                what actually comes off this month, after {rupees(waived)} waived
+              </span>
+            </td>
+            <td className="calc-output-cell">− {rupees(penaltyCharged)}</td>
+          </tr>
+        );
+      }
+    }
+
     if (!penaltyOpen || penaltyItems.length === 0) return rows;
 
     rows.push(
@@ -987,42 +1046,31 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             <i className="bx bx-flask"></i>
             <span>
               <strong>
-                {onCommitModel && autoSavable.length > 0
-                  ? (calcSavedAt
-                      ? `${autoSavable.length} figure${autoSavable.length === 1 ? '' : 's'} saved · ${calcSavedAt}`
-                      : `Saving ${autoSavable.length} figure${autoSavable.length === 1 ? '' : 's'}…`)
-                  : `Modelling — ${modelledChanges.length} input${modelledChanges.length === 1 ? '' : 's'} changed, nothing saved`}
+                {modelledChanges.length} input{modelledChanges.length === 1 ? '' : 's'} changed, nothing saved yet
               </strong>
               <small>
                 {modelledChanges.map(c => `${c.label} (${c.was} → ${c.now}), edited on ${c.where}`).join('; ')}.
-                {!onCommitModel
-                  ? ' Only Per-Session Rate and Base / Fixed Pay save from here, each with its own button.'
-                  : modelledChanges.some(c => c.scope === 'profile')
-                    ? ' The month\u2019s own figures save as you type. Coach Category and Policy Variant change every month for this coach, so they wait for the button.'
-                    : ' The month\u2019s own figures save as you type — everyone reads the same record.'}
+                {onCommitModel
+                  ? ' Press Save to the record and they become what the coach is paid on; leave them and they go when you do.'
+                  : ' Only Per-Session Rate and Base / Fixed Pay save from here, each with its own button.'}
               </small>
             </span>
             <div className="calc-modelling-acts">
-              {onCommitModel && modelledChanges.some(c => c.scope === 'profile') && (
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    const savable = modelledChanges.filter(c => c.commit && c.scope === 'profile');
-                    if (savable.length === 0) {
-                      window.alert('The month\u2019s figures have already saved themselves. What is left here is read from elsewhere — the score from its six ratings, the penalty from the incidents behind it.');
-                      return;
-                    }
-                    const list = savable.map(c => `• ${c.label}: ${c.was} → ${c.now}`).join('\n');
-                    if (!window.confirm(
-                      `Save these to ${seed.periodMonth}?\n\n${list}\n\n` +
-                      `They stop being a model and become what the coach is paid on.`)) return;
-                    onCommitModel(seed.coachId, seed.periodMonth,
-                      Object.fromEntries(savable.map(c => [c.commit, c.now])));
-                  }}
-                >
-                  Save profile changes
-                </button>
-              )}
+              {onCommitModel && (() => {
+                const savable = modelledChanges.filter(c => c.commit);
+                return (
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={savable.length === 0}
+                    title={savable.length === 0
+                      ? 'Nothing here can be written from this screen'
+                      : `Write ${savable.length} figure${savable.length === 1 ? '' : 's'} to ${seed.periodMonth}`}
+                    onClick={saveModelToRecord}
+                  >
+                    Save to the record
+                  </button>
+                );
+              })()}
               <button className="btn btn-secondary btn-sm" onClick={resetToRecorded}>
                 Reset to recorded
               </button>
@@ -1151,6 +1199,56 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             ), paySourceHint(seed?.payFrom?.fixedFrom, unlockedPay.base))}
           </tbody>
         </table>
+        {/* The same action, where the editing is. The banner carrying it sits
+            above every field, so it is off screen by the time anyone has
+            changed anything. */}
+        {onCommitModel && modelledChanges.length > 0 && (() => {
+          const savable = modelledChanges.filter(c => c.commit);
+          // What this edit looks like. Dismissing the bar hides it for this
+          // set of figures; change one again and it comes back.
+          const changeKey = modelledChanges.map(c => `${c.label}=${c.now}`).join('|');
+          if (savePromptHiddenFor === changeKey) return null;
+          return (
+            <div className="calc-save-bar">
+              <span>
+                <strong>
+                  {modelledChanges.length} change{modelledChanges.length === 1 ? '' : 's'} not saved
+                </strong>
+                <small>
+                  {savable.length === 0
+                    ? 'None of them can be written from this screen — they are worked out elsewhere.'
+                    : `${savable.length} of them write to ${seed.periodMonth}.`}
+                </small>
+              </span>
+              <div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  title="Hide this bar and carry on — your figures stay exactly as you have them"
+                  onClick={() => setSavePromptHiddenFor(changeKey)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  title="Put every figure back to what is recorded, throwing away what you have typed"
+                  onClick={resetToRecorded}
+                >
+                  Reset
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={savable.length === 0}
+                  title={savable.length === 0
+                    ? 'Nothing here can be written from this screen'
+                    : `Write ${savable.length} figure${savable.length === 1 ? '' : 's'} to ${seed.periodMonth}`}
+                  onClick={saveModelToRecord}
+                >
+                  Save to the record
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         {canOverridePay && onSavePayOverrides && seed?.coachId && (() => {
           const savedBase = seed.baseOverride === "" || seed.baseOverride == null
             ? null : Number(seed.baseOverride);
@@ -1202,7 +1300,14 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Sessions for the month", Number(sessions) || 0)}
             {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
             {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
-            {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay))}
+            {/* 144 extra sessions paying nothing looks like the sum failed.
+                It is the rule: a 0–30 Non-Functional coach earns no extra
+                session pay however many they take. Say so, or the screen reads
+                as broken. */}
+            {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay),
+              (pay.extraSessions > 0 && pay.extraSessionPay === 0 && band.label.startsWith('0'))
+                ? `not paid in ${band.label} — extra sessions earn nothing until the band improves`
+                : null)}
             {/* Only Flexi and Flexi-Fixed are paid per session on every session;
                 for Fixed the row is always ₹0, so it is not shown. */}
             {category !== "Fixed" && outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay))}
@@ -3476,23 +3581,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * Deliberately a button and not automatic: the same form models a what-if,
    * and a what-if that silently changed a coach's category would be a trap.
    */
-  const commitCalculatorModel = (coachId, periodMonth, values, opts = {}) => {
+  const commitCalculatorModel = (coachId, periodMonth, values) => {
     if (!PROFILE_PAY_ROLES.includes(currentRole)) {
-      if (!opts.quiet) showToast("Your role cannot change what is recorded.", "error");
-      return false;
+      return { ok: false, why: "Your role cannot change what is recorded." };
     }
     const coach = coaches.find(c => c.id === coachId);
     const run = [...currentMonth, ...historicMonths]
       .find(r => r.coach_id === coachId && r.period_month === periodMonth);
     if (!coach || !run) {
-      if (!opts.quiet) showToast("No record for that coach and month to save into.", "error");
-      return false;
+      return { ok: false, why: `There is no ${periodMonth} record for this coach to save into.` };
     }
     if (run.status === 'FINANCE_LOCKED') {
-      // Quiet or not, a locked month refusing silently would let somebody type
-      // a cycle's figures into a void.
-      showToast(`${periodMonth} is locked. Reopen it before changing what it holds.`, "error");
-      return false;
+      return { ok: false, why: `${periodMonth} is locked. Reopen it on Close & pay before changing what it holds.` };
     }
 
     const periodPatch = {};
@@ -3503,6 +3603,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // Loss of Pay is normally written by settling a day, so only the roles
     // that own pay may correct it here — which is already the gate above.
     if (values.lopDays !== undefined) periodPatch.lop_days = Number(values.lopDays) || 0;
+    // Never negative: the column refuses it, and waiving a negative amount
+    // would charge a coach more than their incidents came to.
+    if (values.penaltyWaiver !== undefined) {
+      periodPatch.penalty_waiver = Math.max(0, Number(values.penaltyWaiver) || 0);
+    }
 
     const coachPatch = {};
     if (values.category !== undefined && values.category !== coach.coach_category) {
@@ -3527,10 +3632,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     logAudit("Calculator Figures Saved",
       `${actorName} saved ${periodMonth} figures for ${coach.name} (${coachId}) from the ` +
       `calculator: ${what || 'nothing'}.`);
-    if (!opts.quiet) {
-      showToast(`Saved to ${periodMonth}. The score card and everyone else now read the same figures.`, "success");
-    }
-    return true;
+    return { ok: true, why: null };
   };
 
   const settleOutstandingDays = ({ quiet = false } = {}) => {
@@ -10414,11 +10516,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <p className="text-muted calc-seed-note">
                             Seeded from {selected.period_month}'s score card
                             ({fmtDay(selected.period_start)} – {fmtDay(selected.period_end)}).
-                            Change any input to model a different outcome — nothing here writes back to the record.
+                            Change any input to model a different outcome.
+                            {PROFILE_PAY_ROLES.includes(currentRole)
+                              ? ' Nothing is written until you press Save to the record.'
+                              : ' Nothing here writes back to the record.'}
                           </p>
                           <PayCalculator
                             variants={variants}
                             onSavePayOverrides={savePayOverrides}
+                            onCommitModel={PROFILE_PAY_ROLES.includes(currentRole) ? commitCalculatorModel : null}
                             coachOptions={[coach]}
                             selectedCoachId={coach.id}
                             lockCoach
@@ -10444,6 +10550,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 .filter(isPenaltyChargeable)
                                 .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0),
                               missedSessions: Number(selected.missed_sessions) || 0,
+                              penaltyWaiver: Number(selected.penalty_waiver) || 0,
                               lopDays: Number(selected.lop_days) || 0,
                               penaltyItems: periodVios,
                               penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
@@ -11885,6 +11992,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       orgWorkPay: selected.pay.orgWorkPay,
                       penalties: selected.pay.penaltyDeductions,
                       missedSessions: Number(selected.record.missed_sessions) || 0,
+                      penaltyWaiver: Number(selected.record.penalty_waiver) || 0,
                       lopDays: Number(selected.record.lop_days) || 0,
                       penaltyItems: selected.periodVios || [],
                       penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),

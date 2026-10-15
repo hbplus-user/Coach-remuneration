@@ -52,7 +52,10 @@ const PERIOD_COLS = [
   // Pay set for this month specifically, which the band must not overwrite.
   'fixed_pay_override', 'per_session_override',
   // What the cycle lost to Loss of Pay, and how much of it nobody could plan for.
-  'lop_days', 'unplanned_lop_days'
+  'lop_days', 'unplanned_lop_days',
+  // Rupees of this month's incident penalty forgiven, kept apart from the
+  // incidents so they keep their amounts and their place on the ladder.
+  'penalty_waiver'
 ];
 
 const COACH_COLS = [
@@ -86,6 +89,7 @@ const DATE_ISH = [
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
   'per_session_override', 'fixed_pay_override',
   'training_end_date', 'probation_start_date', 'probation_end_date', 'weekly_off_day',
+  'penalty_waiver',
   'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'
 ];
 

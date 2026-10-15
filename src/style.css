@@ -4946,3 +4946,35 @@ form {
   font: 600 0.82rem var(--font-body); color: var(--text-primary);
 }
 .hb-ov-pick select:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+
+/* The save bar under the calculator's fields.
+   Sticky, because the banner that carries the same action sits above every
+   input — by the time somebody has changed a figure it is off screen, which
+   is exactly when they want it. */
+.calc-save-bar {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.85rem; margin-top: 0.75rem; padding: 0.85rem 1rem;
+  border-radius: 12px; border: 1px solid var(--border-strong);
+  background: var(--brand-cream);
+  box-shadow: 0 -4px 14px rgba(26, 26, 26, 0.08);
+}
+.calc-save-bar > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.calc-save-bar strong { font-size: 0.9rem; }
+.calc-save-bar small { font-size: 0.78rem; color: var(--text-secondary); }
+.calc-save-bar > div { display: flex; flex-wrap: wrap; gap: 0.4rem; flex: none; }
+.calc-save-bar .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* A waived penalty reads as a credit against the charge above it, not as
+   another deduction — the sign is the whole point of the row. */
+.calc-waived-cell { color: #3b5a49; }
+
+/* The one editable cell in the computed column. Styled as an input so it does
+   not read as another figure the screen worked out for you. */
+.calc-waive-input {
+  width: 9rem; text-align: right; min-height: 34px;
+  border: 1px solid var(--brand-olive); border-radius: 8px;
+  background: var(--bg-surface); padding: 0 9px;
+  font: 600 0.9rem var(--font-body); font-variant-numeric: tabular-nums;
+}
+.calc-waive-input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
