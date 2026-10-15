@@ -4978,3 +4978,44 @@ form {
   font: 600 0.9rem var(--font-body); font-variant-numeric: tabular-nums;
 }
 .calc-waive-input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+
+/* Incident filters. "By month" and "by pay cycle" are different questions —
+   a cycle runs the 16th to the 15th — and payroll asks the second. */
+.hb-inc-filters {
+  display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; margin-bottom: 0.75rem;
+}
+.hb-inc-filters label { display: flex; flex-direction: column; gap: 3px; }
+.hb-inc-filters span { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); }
+.hb-inc-filters select {
+  min-height: 38px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 0 10px; max-width: 16rem;
+  font: 500 0.86rem var(--font-body); color: var(--text-primary);
+}
+.hb-inc-filters select:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+.hb-inc-filters .hb-btn { min-height: 38px; }
+
+/* ===========================================================================
+   Single-header sticky tables
+
+   The score-tracker rules assume two header rows: a group banner at top 0 and
+   the column names beneath it at top 36px. A table with only column names
+   inherits that 36px, so it sits a row's height down the page with nothing
+   above it — and its headers carry no group-tint class, so they have no
+   background and the rows scroll through them. Together that reads as the
+   header and the first row printed on top of each other.
+   =========================================================================== */
+
+.hb-pay-table thead .column-header-row th {
+  top: 0;
+  height: auto;
+  /* Opaque, or the rows underneath show through a transparent header. */
+  background-color: var(--bg-surface-header);
+  color: var(--text-secondary);
+}
+.hb-pay-table thead .column-header-row th.sticky-col {
+  /* Above its own row's sticky first column, which is also sticky and would
+     otherwise win on paint order. */
+  z-index: 5;
+}
+/* The body's sticky first column sits under the header, never over it. */
+.hb-pay-table tbody .sticky-col { z-index: 1; }

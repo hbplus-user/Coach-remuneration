@@ -2198,6 +2198,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // month that does.
   const [ovPayMonth, setOvPayMonth] = useState("");
   const [penaltyFilter, setPenaltyFilter] = useState("All");
+  // Incidents, narrowed the way payroll asks about them: which cycle will be
+  // charged, and whose.
+  const [penaltyCycle, setPenaltyCycle] = useState("All");
+  const [penaltyCoach, setPenaltyCoach] = useState("All");
   const [trackerMode, setTrackerMode] = useState("record");
   // Close & pay: 'summary' is the ten columns Finance signs off against,
   // 'full' is the seventeen-column breakdown behind them.
@@ -15499,11 +15503,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 const present = [...new Set(violations.map(v => v.status))];
                 const chips = ['All', ...present];
-                const shown = [...violations]
-                  .filter(v => penaltyFilter === 'All' || v.status === penaltyFilter)
+
+                // Which cycle an incident is charged on. A cycle runs the 16th
+                // to the 15th, so a date in early October belongs to October's
+                // cycle, which began on 16 September — "by month" and "by pay
+                // cycle" are not the same question and the second is the one
+                // payroll asks.
+                const cycleOf = (d) => {
+                  try { return getPeriodForDate(new Date(`${d}T12:00:00`)).period_month; }
+                  catch { return '—'; }
+                };
+                const cycles = [...new Set(violations.map(v => cycleOf(v.incident_date)))]
+                  .sort((a, b) => new Date(`1 ${b}`) - new Date(`1 ${a}`));
+                const coachesWithIncidents = [...new Set(violations.map(v => v.coach_id))]
+                  .map(id => coaches.find(c => c.id === id))
+                  .filter(Boolean)
+                  .sort((a, b) => a.name.localeCompare(b.name));
+
+                const matches = (v) =>
+                  (penaltyFilter === 'All' || v.status === penaltyFilter)
+                  && (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
+                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach);
+
+                const inScope = violations.filter(matches);
+                const shown = [...inScope]
                   .sort((a, b) => new Date(b.incident_date) - new Date(a.incident_date));
 
-                const chargeable = violations.filter(isPenaltyChargeable)
+                // The totals follow the filter: a figure for everything, under
+                // a list of one cycle, is the wrong number to act on.
+                const chargeable = inScope.filter(isPenaltyChargeable)
+                  .reduce((s, v) => s + (Number(v.penalty_amount) || 0), 0);
+                const notCharged = inScope.filter(v => !isPenaltyChargeable(v))
                   .reduce((s, v) => s + (Number(v.penalty_amount) || 0), 0);
 
                 // The same live reckoning the modal shows, for the panel.
@@ -15526,6 +15556,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 return (
                   <div className="hb-inc">
                     <div className="hb-inc-main">
+                      <div className="hb-inc-filters">
+                        <label>
+                          <span>Pay cycle</span>
+                          <select value={penaltyCycle} onChange={(e) => setPenaltyCycle(e.target.value)}>
+                            <option value="All">Every cycle</option>
+                            {cycles.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Coach</span>
+                          <select value={penaltyCoach} onChange={(e) => setPenaltyCoach(e.target.value)}>
+                            <option value="All">Every coach</option>
+                            {coachesWithIncidents.map(c => (
+                              <option key={c.id} value={c.id}>{c.name} · {c.id}</option>
+                            ))}
+                          </select>
+                        </label>
+                        {(penaltyCycle !== 'All' || penaltyCoach !== 'All' || penaltyFilter !== 'All') && (
+                          <button className="hb-btn" onClick={() => {
+                            setPenaltyCycle('All'); setPenaltyCoach('All'); setPenaltyFilter('All');
+                          }}>Clear</button>
+                        )}
+                      </div>
                       <div className="hb-inc-chips" role="group" aria-label="Filter by status">
                         {chips.map(k => (
                           <button
@@ -15535,7 +15588,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           >
                             {k === 'All' ? 'All' : (STATUS_UI[k]?.[0] || k)}
                             <span className="hb-inc-n">
-                              {k === 'All' ? violations.length : violations.filter(v => v.status === k).length}
+                              {k === 'All'
+                              ? violations.filter(v =>
+                                  (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
+                                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length
+                              : violations.filter(v => v.status === k
+                                  && (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
+                                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length}
                             </span>
                           </button>
                         ))}
@@ -15543,13 +15602,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                       <div className="card">
                         <div className="hb-pay-count">
-                          {shown.length} of {violations.length} recorded · {rupees(chargeable)} chargeable
+                          {shown.length} of {violations.length} recorded ·{' '}
+                          <strong>{rupees(chargeable)} will be charged</strong>
+                          {notCharged > 0 && <> · {rupees(notCharged)} waived or won on appeal</>}
+                          {penaltyCycle !== 'All' && <> · charged on the {penaltyCycle} cycle</>}
                         </div>
                         <div className="table-container">
                           <table className="data-table hb-inc-table">
                             <thead>
                               <tr>
                                 <th>Date</th>
+                                <th>Charged on</th>
                                 <th>Coach</th>
                                 <th>What happened</th>
                                 <th>How many times</th>
@@ -15559,7 +15622,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             </thead>
                             <tbody>
                               {shown.length === 0 && (
-                                <tr><td colSpan={6} className="text-muted">
+                                <tr><td colSpan={7} className="text-muted">
                                   {violations.length === 0
                                     ? 'No incidents recorded.'
                                     : 'Nothing with that status.'}
@@ -15577,6 +15640,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <td style={{ whiteSpace: 'nowrap' }}>
                                       {new Date(v.incident_date).toLocaleDateString('en-IN',
                                         { day: 'numeric', month: 'short' })}
+                                    </td>
+                                    {/* The cycle it lands on, which is not the
+                                        month it happened in: a cycle runs the
+                                        16th to the 15th. */}
+                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                      {cycleOf(v.incident_date)}
+                                      {!isPenaltyChargeable(v) && (
+                                        <div className="hb-sub">nothing charged</div>
+                                      )}
                                     </td>
                                     <td>
                                       <button type="button" className="linklike hb-inc-coach"

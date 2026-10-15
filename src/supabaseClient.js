@@ -394,6 +394,45 @@ export async function setUserAccess({ id, role, coachId = null, rmId = null }) {
 // ---------------------------------------------------------------------------
 
 /** Reads everything back in the shape App.jsx holds in useState. */
+/**
+ * Read a whole table, not the first thousand rows of it.
+ *
+ * PostgREST caps a plain select at 1000 rows and says nothing about it: the
+ * request succeeds, the array is simply short. Every table here was read that
+ * way, so once a coach had been in the system a few months the older half of
+ * their violations stopped loading — and pay is computed from the array the
+ * app holds, so a partial read quietly undercharges. Months of incidents were
+ * visible in the database and nowhere in the app.
+ *
+ * Pages through with range() until a page comes back short, which is the only
+ * reliable end marker: a count can race with a concurrent insert.
+ */
+const PAGE = 1000;
+async function fetchAll(table, shape = (q) => q) {
+  const rows = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await shape(
+      supabase.from(table).select('*').range(from, from + PAGE - 1)
+    );
+    if (error) return { data: null, error };
+    const batch = data ?? [];
+    rows.push(...batch);
+
+    // Advance by what came back rather than by what was asked for. A project
+    // whose max-rows is set below PAGE returns a short page that is not the
+    // end of the table, and stopping on "shorter than asked" would silently
+    // truncate exactly the way this function exists to prevent. An empty page
+    // is the only honest end marker.
+    if (batch.length === 0) break;
+    from += batch.length;
+
+    // A runaway would hang the whole load, and nothing here is that large.
+    if (rows.length >= 200000) break;
+  }
+  return { data: rows, error: null };
+}
+
 export async function loadState() {
   if (!supabase) return null;
 
@@ -405,17 +444,19 @@ export async function loadState() {
       supabase.from('certifications').select('*').order('id'),
       supabase.from('education_formats').select('*').order('id'),
       supabase.from('education_levels').select('*').order('id'),
-      supabase.from('coaches').select('*').order('id'),
-      supabase.from('performance_records').select('*'),
-      supabase.from('org_work').select('*'),
-      supabase.from('attendance_logs').select('*').order('logged_in_at', { ascending: false }).limit(5000),
-      supabase.from('attendance_days').select('*'),
-      supabase.from('leave_balances').select('*'),
-      supabase.from('leave_applications').select('*').order('applied_at', { ascending: false }),
-      supabase.from('attendance_regularisations').select('*').order('working_day', { ascending: false }),
-      supabase.from('holidays').select('*').order('holiday_date'),
-      supabase.from('violations').select('*').order('incident_date', { ascending: false }),
-      supabase.from('appeals').select('*'),
+      fetchAll('coaches', q => q.order('id')),
+      fetchAll('performance_records'),
+      fetchAll('org_work'),
+      fetchAll('attendance_logs', q => q.order('logged_in_at', { ascending: false })),
+      fetchAll('attendance_days'),
+      fetchAll('leave_balances'),
+      fetchAll('leave_applications', q => q.order('applied_at', { ascending: false })),
+      fetchAll('attendance_regularisations', q => q.order('working_day', { ascending: false })),
+      fetchAll('holidays', q => q.order('holiday_date')),
+      fetchAll('violations', q => q.order('incident_date', { ascending: false })),
+      fetchAll('appeals'),
+      // Deliberately the last 500: the audit log is read as a recent history,
+      // not as something to compute from.
       supabase.from('audit_log').select('*').order('timestamp', { ascending: false }).limit(500),
       supabase.from('payroll_cycles').select('*')
     ]);
