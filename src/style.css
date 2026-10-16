@@ -5019,3 +5019,13 @@ form {
 }
 /* The body's sticky first column sits under the header, never over it. */
 .hb-pay-table tbody .sticky-col { z-index: 1; }
+
+/* Opening a month a coach has no card for. The rollover only fills forward,
+   so anyone added after a month closed is simply missing from it — and with
+   no row there is nowhere for the figures to go. */
+.hb-open-months {
+  margin-top: 0.9rem; padding: 1rem 1.1rem; border-radius: 12px;
+  background: var(--brand-cream); border: 1px solid var(--border-strong);
+}
+.hb-open-months p { margin: 0 0 0.8rem; font-size: 0.86rem; line-height: 1.5; }
+.hb-open-months > div { display: flex; flex-wrap: wrap; gap: 0.5rem; }

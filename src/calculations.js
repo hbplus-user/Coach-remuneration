@@ -631,8 +631,20 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     const creditsPoints = Number(monthData.performance_credits_points) || 0;
     hopPerformanceCreditsPay = Math.min(500, creditsPoints * 10);
     
-    // Since V5 has offer-letter fixed pay, standard basePay is replaced by offer-letter base pay
-    basePay = offerLetterFixedPay;
+    // HOP is paid an offer-letter salary rather than the band's standard fixed
+    // pay. But that column is not on the coach record — nothing in the app
+    // writes it and it does not round-trip to the database — so for every real
+    // HOP coach it reads as 0. Replacing basePay with it outright therefore
+    // wiped out the salary that had been set, and since HOP is not session
+    // based either, the whole month came to zero.
+    //
+    // So it only governs where it is actually set, and a figure set for this
+    // month still outranks it: an offer letter is a standing arrangement, a
+    // month's override is a decision about this month. Where neither is set,
+    // the base worked out above — profile override, then the band — stands.
+    basePay = positive(monthData.fixed_pay_override)
+      ?? positive(offerLetterFixedPay)
+      ?? basePay;
     extraSessionPay = 0; // Not applicable for HOP
     sessionPay = 0; // Not session based
   }

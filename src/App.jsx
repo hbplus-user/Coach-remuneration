@@ -61,7 +61,8 @@ import {
   fixedPerSessionRate,
   payslipEarnings,
   getPeriodForDate,
-  getNextPeriod
+  getNextPeriod,
+  buildPeriod
 } from './calculations.js';
 
 // Phase 1 scope: only these modules are exposed in the UI.
@@ -2377,6 +2378,50 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`New performance period opened: ${livePeriod.period_month}.`, "info");
   }, [isStateLoaded, coaches.length]);
 
+  // Backfill: the rollover above only writes score cards forward, as the
+  // calendar passes a period end. A coach taken on after a month closed is
+  // never given a card for it, and with no card there is nowhere to record
+  // that month's figures and nothing for payroll to pay from.
+  //
+  // So on load, every active coach is given a blank card for each cycle they
+  // are missing between the month they joined and the open one. Blanks only
+  // ever fill gaps — a recorded month is never touched — and the bounds in
+  // missingPeriodsForCoach keep this to real months: nothing before the coach
+  // joined, and nothing before the org's own records begin.
+  const backfilledRef = useRef(false);
+  useEffect(() => {
+    if (!isStateLoaded || currentMonth.length === 0 || coaches.length === 0) return;
+    if (backfilledRef.current) return;
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) return;
+    backfilledRef.current = true;
+
+    const openMonth = currentMonth[0]?.period_month;
+    const made = [];
+    const rows = [];
+    for (const c of coaches.filter(c => c.status === "Active")) {
+      const gaps = missingPeriodsForCoach(c.id);
+      if (gaps.length === 0) continue;
+      made.push(`${c.name}: ${gaps.map(p => p.period_month).join(', ')}`);
+      rows.push(...gaps.map(p => blankPeriodRecord(c.id, p)));
+    }
+    if (rows.length === 0) return;
+
+    setHistoricMonths(prev => [...prev, ...rows.filter(r => r.period_month !== openMonth)]);
+    setCurrentMonth(prev => [...prev, ...rows.filter(r => r.period_month === openMonth)]);
+
+    logAudit(
+      "Cycles Backfilled",
+      `${rows.length} blank score card${rows.length === 1 ? '' : 's'} created for ` +
+      `${made.length} coach${made.length === 1 ? '' : 'es'} who joined after those ` +
+      `cycles closed — ${made.join('; ')}. Nothing recorded; the cards are empty drafts.`
+    );
+    showToast(
+      `${rows.length} missing score card${rows.length === 1 ? '' : 's'} opened for ` +
+      `${made.length} coach${made.length === 1 ? '' : 'es'}.`,
+      "info"
+    );
+  }, [isStateLoaded, coaches.length, currentRole]);
+
   // The scoring engine keeps the education matrix in module scope, so it has to
   // be handed the master rows. useMemo runs during render, which means an edit
   // to the points is reflected in the same pass rather than one render later.
@@ -3640,6 +3685,113 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `${actorName} saved ${periodMonth} figures for ${coach.name} (${coachId}) from the ` +
       `calculator: ${what || 'nothing'}.`);
     return { ok: true, why: null };
+  };
+
+  /**
+   * Open a month for a coach who has no row for it.
+   *
+   * The rollover only fills forward: it writes a blank for every active coach
+   * as the calendar passes a period end. A coach added after a month had
+   * already closed never gets a row for it, and with no row there is nothing
+   * to record against — the score card has nowhere to put the figures, and
+   * payroll has nothing to pay from. That is how a coach ends up missing from
+   * July when everyone else has it.
+   *
+   * This fills those gaps on request, one coach across a span of months. The
+   * rows are blanks in DRAFT, exactly what the rollover would have written, so
+   * nothing is invented — only the place to put it.
+   */
+  /**
+   * Every pay cycle the calendar can name, two years back and one ahead.
+   *
+   * Derived from the cycle rule rather than from the rows that happen to
+   * exist, because the months we most need to name are exactly the ones
+   * nobody has a record for yet.
+   */
+  const periodCalendar = () => {
+    const anchor = currentMonth[0]?.period_end
+      ? new Date(`${currentMonth[0].period_end}T12:00:00`)
+      : new Date();
+    const out = [];
+    for (let back = 24; back >= -1; back -= 1) {
+      const d = new Date(anchor.getFullYear(), anchor.getMonth() - back, 10);
+      out.push(buildPeriod(d.getFullYear(), d.getMonth()));
+    }
+    return out;
+  };
+
+  /**
+   * The cycles this coach has no score card for, from the month they joined
+   * (or a year back, whichever is later) up to the open one. The rollover only
+   * writes cards forward, so a coach added after a month closed never got one.
+   */
+  const missingPeriodsForCoach = (coachId) => {
+    const coach = coaches.find(c => c.id === coachId);
+    if (!coach) return [];
+    const order = periodCalendar();
+    const openMonth = currentMonth[0]?.period_month;
+    const openIdx = openMonth
+      ? order.findIndex(p => p.period_month === openMonth)
+      : order.length - 2;
+    if (openIdx < 0) return [];
+    let startIdx = Math.max(0, openIdx - 11);
+    // Never offer a cycle from before the org's own records begin — there is
+    // nothing to compare such a card against and nobody to score it.
+    const earliest = [...historicMonths, ...currentMonth]
+      .map(r => order.findIndex(p => p.period_month === r.period_month))
+      .filter(i => i >= 0)
+      .sort((a, b) => a - b)[0];
+    if (earliest !== undefined) startIdx = Math.max(startIdx, earliest);
+    if (coach.date_of_joining) {
+      const joined = getPeriodForDate(new Date(`${coach.date_of_joining}T12:00:00`));
+      const ji = order.findIndex(p => p.period_month === joined.period_month);
+      if (ji >= 0) startIdx = Math.max(startIdx, ji);
+    }
+    const has = new Set(
+      [...historicMonths, ...currentMonth]
+        .filter(r => r.coach_id === coachId)
+        .map(r => r.period_month)
+    );
+    return order.slice(startIdx, openIdx + 1).filter(p => !has.has(p.period_month));
+  };
+
+  const missingMonthsForCoach = (coachId) =>
+    missingPeriodsForCoach(coachId).map(p => p.period_month);
+
+  const openMonthsForCoach = (coachId, fromMonth, toMonth) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      return { ok: false, why: "Your role cannot open a cycle." };
+    }
+    const coach = coaches.find(c => c.id === coachId);
+    if (!coach) return { ok: false, why: "No such coach." };
+
+    // Every period the calendar can name between the two, walked rather than
+    // read off existing rows, so a month nobody has a record for is still
+    // created.
+    const all = [...historicMonths, ...currentMonth];
+    const order = periodCalendar();
+    const fromIdx = order.findIndex(p => p.period_month === fromMonth);
+    const toIdx = order.findIndex(p => p.period_month === toMonth);
+    if (fromIdx === -1 || toIdx === -1) {
+      return { ok: false, why: "Those months are not in the calendar yet." };
+    }
+    const span = order.slice(Math.min(fromIdx, toIdx), Math.max(fromIdx, toIdx) + 1);
+
+    const has = new Set(all.filter(r => r.coach_id === coachId).map(r => r.period_month));
+    const missing = span.filter(p => !has.has(p.period_month));
+    if (missing.length === 0) {
+      return { ok: false, why: `${coach.name} already has every month from ${fromMonth} to ${toMonth}.` };
+    }
+
+    const rows = missing.map(p => blankPeriodRecord(coachId, p));
+    const openMonth = currentMonth[0]?.period_month;
+    setHistoricMonths(prev => [...prev, ...rows.filter(r => r.period_month !== openMonth)]);
+    setCurrentMonth(prev => [...prev, ...rows.filter(r => r.period_month === openMonth)]);
+
+    logAudit("Cycles Opened",
+      `${actorName} opened ${missing.map(p => p.period_month).join(', ')} for ` +
+      `${coach.name} (${coachId}) — blank score cards, nothing recorded.`);
+    return { ok: true, months: missing.map(p => p.period_month) };
   };
 
   const settleOutstandingDays = ({ quiet = false } = {}) => {
@@ -10366,6 +10518,57 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </div>
 
                     {(() => {
+                      const missing = missingMonthsForCoach(coach.id);
+                      if (missing.length === 0) return null;
+                      const plural = missing.length === 1 ? 'cycle has' : 'cycles have';
+                      if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+                        return (
+                          <div className="hb-open-months">
+                            <p>
+                              <strong>{missing.length} pay {plural} no score card for {coach.name}:</strong>{' '}
+                              {missing.join(', ')}. Ask HR or Finance to open {missing.length === 1 ? 'it' : 'them'}.
+                            </p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="hb-open-months">
+                          <p>
+                            <strong>{missing.length} pay {plural} no score card for {coach.name}:</strong>{' '}
+                            {missing.join(', ')}. The rollover only writes cards forward, so a coach
+                            added after a month closed never got one. Opening writes a blank card —
+                            nothing is recorded, it only gives the figures somewhere to go.
+                          </p>
+                          <div className="hb-open-months-actions">
+                            <button
+                              type="button" className="btn btn-primary"
+                              onClick={() => {
+                                const res = openMonthsForCoach(coach.id, missing[0], missing[missing.length - 1]);
+                                window.alert(res.ok
+                                  ? `Opened ${res.months.join(', ')} for ${coach.name}. Record each cycle as normal.`
+                                  : res.why);
+                              }}
+                            >
+                              Open all {missing.length}
+                            </button>
+                            {missing.length > 1 && (
+                              <button
+                                type="button" className="btn btn-secondary"
+                                onClick={() => {
+                                  const last = missing[missing.length - 1];
+                                  const res = openMonthsForCoach(coach.id, last, last);
+                                  window.alert(res.ok ? `Opened ${res.months.join(', ')} for ${coach.name}.` : res.why);
+                                }}
+                              >
+                                Just {missing[missing.length - 1]}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {(() => {
                       const openOverrides = COACH_SCORECARD_COLUMNS.filter(c => {
                         const v = (scoreDraft.overrides || {})[c.key];
                         return editingScorePeriod && v !== undefined && v !== null && v !== "";
@@ -11070,8 +11273,58 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         ) : !run ? (
                           <div className="card">
                             <p className="hb-empty">
-                              {picked.name} has no open period for {currentPeriodMonth}. Open the cycle before scoring.
+                              {picked.name} has no open period for {currentPeriodMonth}.
                             </p>
+                            {/* A coach added after a month closed never got a
+                                row for it, and with no row there is nowhere to
+                                put the figures. Offer to make one rather than
+                                leaving a dead end. */}
+                            {(() => {
+                              const all = [...historicMonths, ...currentMonth];
+                              const months = [...new Map(all.map(r => [r.period_month, r.period_start])).entries()]
+                                .sort((a, b) => new Date(a[1]) - new Date(b[1]))
+                                .map(([m]) => m);
+                              const has = new Set(all.filter(r => r.coach_id === picked.id).map(r => r.period_month));
+                              const missing = months.filter(m => !has.has(m));
+                              if (!PROFILE_PAY_ROLES.includes(currentRole) || missing.length === 0) {
+                                return (
+                                  <p className="hb-empty">
+                                    {missing.length === 0
+                                      ? 'Every month in the calendar already has a card for them.'
+                                      : 'Ask HR or Finance to open it.'}
+                                  </p>
+                                );
+                              }
+                              return (
+                                <div className="hb-open-months">
+                                  <p>
+                                    <strong>{missing.length} month{missing.length === 1 ? '' : 's'} have no card for them:</strong>{' '}
+                                    {missing.join(', ')}. Opening one writes a blank score card — nothing is
+                                    recorded, it just gives the figures somewhere to go.
+                                  </p>
+                                  <div>
+                                    <button className="hb-btn hb-btn-primary" onClick={() => {
+                                      const res = openMonthsForCoach(picked.id, missing[0], missing[missing.length - 1]);
+                                      window.alert(res.ok
+                                        ? `Opened ${res.months.join(', ')} for ${picked.name}.\n\nThey are blank and in draft — record the figures on each.`
+                                        : `Not opened.\n\n${res.why}`);
+                                    }}>
+                                      Open all {missing.length}
+                                    </button>
+                                    {missing.includes(currentPeriodMonth) && (
+                                      <button className="hb-btn" onClick={() => {
+                                        const res = openMonthsForCoach(picked.id, currentPeriodMonth, currentPeriodMonth);
+                                        window.alert(res.ok
+                                          ? `Opened ${currentPeriodMonth} for ${picked.name}.`
+                                          : `Not opened.\n\n${res.why}`);
+                                      }}>
+                                        Just {currentPeriodMonth}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <>
