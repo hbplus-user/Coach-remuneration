@@ -40,7 +40,7 @@ const APPEAL_UI = {
 import {
   supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
   listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES,
-  uploadAttendancePhoto, signedPhotoUrls, deleteAttendancePhotos
+  uploadAttendancePhoto, signedPhotoUrls, deleteAttendancePhotos, getSession
 } from './supabaseClient.js';
 import { buildZip, downloadBlob } from './zip.js';
 
@@ -64,6 +64,11 @@ import {
   getNextPeriod,
   buildPeriod
 } from './calculations.js';
+import {
+  fetchReviews, fiveStarStreak, REVIEW_API_DEFAULT,
+  fetchSessionSummary, SESSION_API_DEFAULT,
+  fetchAvailability, AVAILABILITY_API_DEFAULT, istTimeOf
+} from './reviews.js';
 
 // Phase 1 scope: only these modules are exposed in the UI.
 // Add a view key back to this list to re-enable its nav item and its view section.
@@ -264,6 +269,11 @@ const SCORE_TRACKER_GROUPS = [
     key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", decimals: 0, sortable: true },
+      // The month's sessions less the threshold the salary covers. Paid on top
+      // at the coach's own per-session rate, every band.
+      { key: "extra_sessions", label: "Extra Sessions", decimals: 0 },
+      { key: "beyond_sessions", label: "Beyond Availability", decimals: 0, emphasis: true },
+      { key: "beyond_pay", label: "Beyond Availability Pay", money: true },
       { key: "night_sessions", label: "Night Sessions", decimals: 0 },
       { key: "streak", label: "5-Star Streak", decimals: 0 },
       { key: "missed_sessions", label: "Missed Sessions", decimals: 0 },
@@ -271,7 +281,6 @@ const SCORE_TRACKER_GROUPS = [
       { key: "lop_days", label: "Loss of Pay (days)", decimals: 1 },
       { key: "lop_amount", label: "Loss of Pay", money: true },
       { key: "threshold", label: "Threshold", decimals: 0 },
-      { key: "extra_sessions", label: "Extra Sessions", decimals: 0, emphasis: true },
       { key: "violations", label: "Violations in Period", decimals: 0 }
     ]
   },
@@ -447,6 +456,7 @@ const COACH_SCORECARD_GROUPS = [
     key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
+      { key: "beyond_sessions", label: "Beyond Availability", entry: "derived", decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "missed_sessions", label: "Missed Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
@@ -483,6 +493,7 @@ const overrideCeiling = (col, weights) => {
     case "cert_raw": return 10;
     case "threshold": return 400;
     case "extra_sessions": return 999;
+    case "beyond_sessions": return 999;
     case "violations": return 99;
     default: return null;
   }
@@ -494,13 +505,13 @@ const OVERRIDABLE_KEYS = [
   "core_total", "core", "tenure_years", "org",
   "attendance_pct", "attendance_score", "hb_score",
   // Incentive inputs. They drive pay, not the HB+ score.
-  "threshold", "extra_sessions", "violations"
+  "threshold", "extra_sessions", "beyond_sessions", "violations"
 ];
 
 // The subset of the above that actually feeds the HB+ score. Overriding an
 // incentive cell must not make a locked month's stored score recompute.
 const SCORE_DRIVING_OVERRIDES = OVERRIDABLE_KEYS.filter(
-  k => !["threshold", "extra_sessions", "violations"].includes(k)
+  k => !["threshold", "extra_sessions", "beyond_sessions", "violations"].includes(k)
 );
 
 // Fields an RM / the app keys in each period. A rolled-over period starts with
@@ -611,6 +622,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [baseOverride, setBaseOverride] = useState(seed?.baseOverride ?? "");
   // Blank means "use the band's rate"; a number overrides it for this model.
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
+  // Blank means "use the band's threshold"; a number sets it for this month.
+  const [thresholdOverride, setThresholdOverride] = useState(seed?.thresholdOverride ?? "");
   // Both pay fields start locked. Taking one over is a deliberate act, as it is
   // for a calculated cell on the score card.
   const [unlockedPay, setUnlockedPay] = useState({ rate: false, base: false });
@@ -627,7 +640,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         seed.key, seed.coachName, seed.variantId, seed.category, seed.score,
         seed.sessions, seed.nightSessions, seed.streak, seed.consistency,
         seed.orgWorkPay, seed.penalties, seed.missedSessions, seed.lopDays,
-        seed.baseOverride, seed.rateOverride
+        seed.baseOverride, seed.rateOverride, seed.thresholdOverride
       ].join('|')
     : '';
   useEffect(() => {
@@ -647,6 +660,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setLopDays(seed.lopDays ?? 0);
     setBaseOverride(seed.baseOverride ?? "");
     setRateOverride(seed.rateOverride ?? "");
+    setThresholdOverride(seed.thresholdOverride ?? "");
     // A different coach or period is a different pay decision, so both lock again.
     setUnlockedPay({ rate: false, base: false });
   }, [seedSignature]);
@@ -716,7 +730,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       ['Policy Variant', variantId, seed.variantId, 'the coach profile', 'variantId', 'profile'],
       ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work', null, null],
       ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null],
-      ['Penalty Waived', penaltyWaiver, seed.penaltyWaiver ?? 0, 'this screen', 'penaltyWaiver', 'period']
+      ['Penalty Waived', penaltyWaiver, seed.penaltyWaiver ?? 0, 'this screen', 'penaltyWaiver', 'period'],
+      ['Session Threshold', thresholdOverride, seed.thresholdOverride ?? "", 'this screen', 'thresholdOverride', 'period']
     ].filter(([, now, was]) => !same(now, was))
      .map(([label, now, was, where, commit, scope]) => ({ label, now, was, where, commit, scope }));
   })();
@@ -768,6 +783,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setOrgWorkPay(seed.orgWorkPay ?? 0);
     setPenalties(seed.penalties ?? 0);
     setPenaltyWaiver(seed.penaltyWaiver ?? 0);
+    setThresholdOverride(seed.thresholdOverride ?? "");
   };
 
   const forecastNow = forecastFor(band.label);
@@ -792,7 +808,12 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     ...(baseOverride !== "" && category === "Flexi-Fixed" ? { flexi_fixed_base_salary: Number(baseOverride) } : {}),
     ...(rateOverrideNum !== null ? { per_session_override: rateOverrideNum } : {})
   };
+  const thresholdOverrideNum = thresholdOverride !== "" && Number.isFinite(Number(thresholdOverride))
+    ? Math.max(0, Math.floor(Number(thresholdOverride)))
+    : null;
+
   const syntheticMonth = {
+    ...(thresholdOverrideNum !== null ? { threshold_override: thresholdOverrideNum } : {}),
     lop_days: Number(lopDays) || 0,
     missed_sessions: Number(missedSessions) || 0,
     sessions_completed: Number(sessions) || 0,
@@ -1145,6 +1166,16 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               </select>
             ), "Fixed / Flexi / Flexi-Fixed")}
             {inputRow("HB+ Benchmark Score", num(score, setScore, 90), "0 – 90")}
+            {inputRow("Session Threshold", (
+              <input
+                type="number" className="calc-input" min="0"
+                value={thresholdOverride}
+                placeholder={String(pay.defaultThreshold)}
+                onChange={(e) => setThresholdOverride(e.target.value)}
+              />
+            ), pay.thresholdIsOverridden
+                 ? `set for this month · the band's own is ${pay.defaultThreshold}`
+                 : `blank uses the band's ${pay.defaultThreshold} · extra-session pay starts past this`)}
             {inputRow("Sessions Completed This Month", num(sessions, setSessions))}
             {inputRow("Night Sessions Count", num(nightSessions, setNightSessions), "10 PM – 4 AM")}
             {inputRow("5-Star Streak Count", num(streak, setStreak), "consecutive")}
@@ -1302,16 +1333,19 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
             {outputRow("Per-Session Rate (₹)", rupees(pay.perSessionRate),
               rateOverrideNum !== null ? "entered above" : null)}
             {outputRow("Sessions for the month", Number(sessions) || 0)}
-            {outputRow("Session Threshold", rates.threshold ?? (category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96))}
-            {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions)}
-            {/* 144 extra sessions paying nothing looks like the sum failed.
-                It is the rule: a 0–30 Non-Functional coach earns no extra
-                session pay however many they take. Say so, or the screen reads
-                as broken. */}
-            {outputRow("Extra Session Pay (₹)", rupees(pay.extraSessionPay),
-              (pay.extraSessions > 0 && pay.extraSessionPay === 0 && band.label.startsWith('0'))
-                ? `not paid in ${band.label} — extra sessions earn nothing until the band improves`
+            {outputRow("Extra Sessions (beyond threshold)", pay.extraSessions,
+              category === 'Fixed'
+                ? `${Number(sessions) || 0} completed − ${pay.threshold} threshold`
+                : "Fixed only — the flexible categories are paid per session")}
+            {outputRow("Sessions Beyond Availability", pay.beyondAvailabilitySessions,
+              "the same sessions, under the name they are paid by")}
+            {outputRow("Beyond-Availability Pay (₹)", rupees(pay.beyondAvailabilityPay),
+              pay.beyondAvailabilitySessions > 0
+                ? `${pay.beyondAvailabilitySessions} × ${rupees(pay.perSessionRate)}, on top of the salary — paid once, on this row only`
                 : null)}
+            {outputRow("Session Threshold", pay.threshold,
+              pay.thresholdIsOverridden ? "set for this month" : null)}
+
             {/* Only Flexi and Flexi-Fixed are paid per session on every session;
                 for Fixed the row is always ₹0, so it is not shown. */}
             {category !== "Fixed" && outputRow("Per-Session Pay (₹)", rupees(pay.sessionPay))}
@@ -1861,6 +1895,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Attendance & Leave
   const [attendanceLogs, setAttendanceLogs] = useState([]);
   const [attendanceDays, setAttendanceDays] = useState([]);
+  // Published availability, per coach per day, fetched from the scheduling
+  // system. Where a day is absent from here, availabilityHoursFor still falls
+  // back to standard hours and flags the day rather than charging it.
+  const [availability, setAvailability] = useState([]);
   const [leaveBalances, setLeaveBalances] = useState([]);
   const [leaveApplications, setLeaveApplications] = useState([]);
   // A coach's account of a day they did not log in for. Raised only by the
@@ -2069,6 +2107,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // 7. Payslip Preview Period
   const [payslipPeriod, setPayslipPeriod] = useState(getPeriodForDate(new Date()).period_month);
+  // What came back from the reviews feed, shown before anything is written:
+  // a parse failure and a genuine zero look identical on a score card.
+  const [reviewSync, setReviewSync] = useState(null);
+  const [sessionSync, setSessionSync] = useState(null);
+  const [availSync, setAvailSync] = useState(null);
+  // Kept in sessionStorage, never in the bundle — every VITE_ variable is
+  // compiled into the JS and readable by anyone who opens the app.
+  const [reviewToken, setReviewToken] = useState(() => {
+    try { return sessionStorage.getItem('hb_review_token') || ''; } catch { return ''; }
+  });
 
   // Filters State
   const [coachesSearch, setCoachesSearch] = useState("");
@@ -2085,6 +2133,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // which table the user clicked edit on — this pins it to one of them.
   const [editingScorePane, setEditingScorePane] = useState(null);
   const [scoreDraft, setScoreDraft] = useState({});
+  // What the last Fill-from-app write actually did, shown in the panel. Without
+  // it the buttons look inert: the fields they change are far down the form, so
+  // a successful write and a no-op are indistinguishable from the top of it.
+  const [applyNote, setApplyNote] = useState(null);
   // Dynamic columns the user has explicitly confirmed they want to hand-enter.
   const [unlockedDynamicKeys, setUnlockedDynamicKeys] = useState([]);
   // Score Management shows one column group at a time so the row stays readable.
@@ -2227,6 +2279,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setOrgWork(next.orgWork || []);
     setAttendanceLogs(next.attendanceLogs || []);
     setAttendanceDays(next.attendanceDays || []);
+    setAvailability(next.availability || []);
     setLeaveBalances(next.leaveBalances || []);
     setLeaveApplications(next.leaveApplications || []);
     setRegularisations(next.regularisations || []);
@@ -2466,6 +2519,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       orgWork,
       attendanceLogs,
       attendanceDays,
+      availability,
       leaveBalances,
       leaveApplications,
       regularisations,
@@ -3254,12 +3308,45 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const holidayOn = (coach, day) => holidays.find(h =>
     h.holiday_date === day && (!h.centre_name || h.centre_name === coach?.centre_name)) || null;
 
+  /**
+   * What this coach said they were available for on this day.
+   *
+   * Where the scheduling feed has been fetched for the day, that is the figure
+   * and `missing` is false — which is what lets a shortfall be measured and
+   * charged. Where it has not, the coach's standard hours stand in and the day
+   * is flagged, so it goes for review rather than being charged against a
+   * number nobody published. That is the same path a real outage takes, which
+   * is why it is not a special case.
+   */
+  /**
+   * What a coach was expected to work on a day, and the window they published.
+   *
+   * These are deliberately not the same number. The availability feed answers
+   * "when could I be booked", not "how long am I working": the live feed shows
+   * windows of 11 and 17 hours a day, 95 hours across one week. Treating that
+   * as expected hours would put every coach into a shortfall every single day
+   * and charge the lot as Loss of Pay.
+   *
+   * So the published window is carried for display and comparison only, and
+   * `hours` stays the standard day with `missing: true` — the day is flagged
+   * for a human rather than charged. If HB+ ever publishes contracted hours as
+   * distinct from bookable windows, that is the field to read here instead.
+   */
   const availabilityHoursFor = (coach, day) => {
-    // Nothing from the scheduling system yet, so the standard hours stand in
-    // and the day is flagged rather than charged. This is the same path a real
-    // outage takes, which is why it is not a special case.
-    void day;
-    return { hours: standardDailyHours(coach?.coach_category), missing: true };
+    const row = coach && day
+      ? availability.find(a => a.coach_id === coach.id && a.working_day === day)
+      : null;
+    const base = { hours: standardDailyHours(coach?.coach_category), missing: true };
+    if (row && row.source === 'api' && Number(row.hours) >= 0) {
+      return {
+        ...base,
+        windowHours: Number(row.hours),
+        windowFrom: row.start_time,
+        windowTo: row.end_time,
+        published: true
+      };
+    }
+    return base;
   };
 
   /**
@@ -3652,6 +3739,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (values.nightSessions !== undefined) periodPatch.night_sessions = Number(values.nightSessions) || 0;
     if (values.streak !== undefined) periodPatch.five_star_streak = Number(values.streak) || 0;
     if (values.missedSessions !== undefined) periodPatch.missed_sessions = Number(values.missedSessions) || 0;
+    // Blank is a decision too — it hands the month back to the band's figure.
+    if (values.thresholdOverride !== undefined) {
+      periodPatch.threshold_override = values.thresholdOverride === "" || values.thresholdOverride === null
+        ? null
+        : Math.max(0, Math.floor(Number(values.thresholdOverride) || 0));
+    }
     // Loss of Pay is normally written by settling a day, so only the roles
     // that own pay may correct it here — which is already the gate above.
     if (values.lopDays !== undefined) periodPatch.lop_days = Number(values.lopDays) || 0;
@@ -3757,6 +3850,394 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   const missingMonthsForCoach = (coachId) =>
     missingPeriodsForCoach(coachId).map(p => p.period_month);
+
+  /**
+   * Count a coach's 5-Star Streak for a period from the reviews feed.
+   *
+   * Fetches, counts, and shows the working — it does not write. Applying the
+   * figure is a separate, deliberate click, because the streak is a manual
+   * cell an RM is answerable for and a feed that changed shape upstream would
+   * otherwise quietly zero it.
+   */
+  const syncReviewsFor = async (coach, run) => {
+    if (!coach || !run) return;
+    if (!coach.app_coach_id) {
+      setReviewSync({
+        coachId: coach.id, period: run.period_month,
+        error: `${coach.name} has no App Coach ID. The feed is keyed by it — ` +
+               `set it on their profile under Details, then try again.`
+      });
+      return;
+    }
+
+    setReviewSync({ coachId: coach.id, period: run.period_month, busy: true });
+
+    const base = import.meta.env.VITE_REVIEW_API_BASE || REVIEW_API_DEFAULT;
+    const res = await fetchReviews(coach.app_coach_id, {
+      base,
+      token: await apiTokenFor(base)
+    });
+
+    if (!res.ok) {
+      setReviewSync({ coachId: coach.id, period: run.period_month, error: res.why });
+      return;
+    }
+
+    // The cycle, end to end. A review on the 15th at 11pm belongs to the month
+    // that ends that day.
+    const from = new Date(`${run.period_start}T00:00:00`);
+    const to = new Date(`${run.period_end}T23:59:59`);
+    // The pay engine's own rule: a violation or no-show resets the streak.
+    const breakers = violations
+      .filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved')
+      .map(v => v.incident_date);
+
+    const counted = fiveStarStreak(res.reviews, breakers, { from, to });
+
+    setReviewSync({
+      coachId: coach.id, period: run.period_month,
+      from, to, feed: res, counted
+    });
+  };
+
+  /**
+   * Remove a coach, and say plainly what goes with them.
+   *
+   * performance_records, violations, org_work and appeals are every one
+   * declared ON DELETE CASCADE against coaches, so this is not a tidy-up — it
+   * destroys their score cards, incidents and appeals too, and a payroll run
+   * that has already been reconciled against those figures no longer can be.
+   *
+   * Super Admin only, the count is shown first, and the coach's id has to be
+   * typed back. Retiring is offered as the alternative, because it is almost
+   * always what is actually wanted.
+   */
+  const deleteCoach = (coach) => {
+    if (currentRole !== 'Super Admin') {
+      return { ok: false, why: 'Only a Super Admin can delete a coach.' };
+    }
+    if (!coach) return { ok: false, why: 'No coach selected.' };
+
+    const cards = [...historicMonths, ...currentMonth].filter(r => r.coach_id === coach.id).length;
+    const incidents = violations.filter(v => v.coach_id === coach.id).length;
+    const work = orgWork.filter(o => o.coach_id === coach.id).length;
+    const apps = appeals.filter(a => a.coach_id === coach.id).length;
+    const total = cards + incidents + work + apps;
+
+    const inventory = total === 0
+      ? 'They have no score cards, incidents, org work or appeals — nothing else goes with them.'
+      : `This also deletes, permanently:\n` +
+        [[cards, 'score card'], [incidents, 'incident'], [work, 'org work item'], [apps, 'appeal']]
+          .filter(([n]) => n > 0)
+          .map(([n, label]) => `  • ${n} ${label}${n === 1 ? '' : 's'}`)
+          .join('\n') +
+        `\n\nAny payroll already reconciled against those figures will no longer reconcile.`;
+
+    if (!window.confirm(
+      `Delete ${coach.name} (${coach.id})?\n\n${inventory}\n\n` +
+      `There is no undo.\n\n` +
+      `If you only want them out of the rollover, payroll and the scoring ` +
+      `roster, set their status to Inactive instead — that keeps the history ` +
+      `and can be reversed.`)) {
+      return { ok: false, why: 'Cancelled.' };
+    }
+
+    const typed = window.prompt(
+      `Type ${coach.id} to confirm deleting ${coach.name}.`, '');
+    if (typed === null) return { ok: false, why: 'Cancelled.' };
+    if (typed.trim() !== coach.id) {
+      return { ok: false, why: `That did not match ${coach.id}. Nothing was deleted.` };
+    }
+
+    logAudit('Coach Deleted',
+      `${coach.name} (${coach.id}) deleted by ${actorName}, with ${cards} score card(s), ` +
+      `${incidents} incident(s), ${work} org work item(s) and ${apps} appeal(s).`);
+
+    // The database cascades these, but the screen holds its own copy. Without
+    // clearing it too, a deleted coach's incidents stay on the Incidents tab
+    // until someone reloads — attached to a coach who no longer exists.
+    setCoaches(prev => prev.filter(c => c.id !== coach.id));
+    setHistoricMonths(prev => prev.filter(r => r.coach_id !== coach.id));
+    setCurrentMonth(prev => prev.filter(r => r.coach_id !== coach.id));
+    setViolations(prev => prev.filter(v => v.coach_id !== coach.id));
+    setAppeals(prev => prev.filter(a => a.coach_id !== coach.id));
+    setOrgWork(prev => prev.filter(o => o.coach_id !== coach.id));
+    setCoachDetailId(null);
+
+    return { ok: true, total };
+  };
+
+  /**
+   * Count a coach's sessions for a period from the app's session summary.
+   *
+   * Completed and missed are two of the manual cells someone currently reads
+   * off the app and types in, so they are worth fetching. Cancelled is shown
+   * but not written — nothing on the score card is scored on it, and inventing
+   * a home for it here would be guessing at policy.
+   *
+   * Like the reviews fetch, this counts and shows; applying is a second click.
+   */
+  const syncSessionsFor = async (coach, run) => {
+    if (!coach || !run) return;
+    if (!coach.app_coach_id) {
+      setSessionSync({
+        coachId: coach.id, period: run.period_month,
+        error: `${coach.name} has no App Coach ID. The summary is keyed by it — ` +
+               `set it on their profile under Details, then try again.`
+      });
+      return;
+    }
+
+    setSessionSync({ coachId: coach.id, period: run.period_month, busy: true });
+
+    const base = import.meta.env.VITE_SESSION_API_BASE || SESSION_API_DEFAULT;
+    const res = await fetchSessionSummary(coach.app_coach_id, {
+      base,
+      fromDay: run.period_start,
+      toDay: run.period_end,
+      token: await apiTokenFor(base)
+    });
+
+    setSessionSync(res.ok
+      ? { coachId: coach.id, period: run.period_month, summary: res }
+      : { coachId: coach.id, period: run.period_month, error: res.why, empty: res.empty });
+  };
+
+  /**
+   * Fetch a coach's published availability for a period and set it against
+   * what they actually logged.
+   *
+   * This is the feed attendance settlement has been missing. Until it is
+   * fetched, availabilityHoursFor marks every day `missing`, a part-worked day
+   * is sent for review and no shortfall can be charged — so storing this
+   * changes what settling a day does. It is therefore a deliberate act with
+   * the comparison shown first, not something that happens on load.
+   */
+  /**
+   * Both score-filling feeds at once, for the one-button fill.
+   *
+   * Run together rather than one after the other: they are independent reads
+   * and the pair is what the Record panel applies in a single step. Failures
+   * stay separate — each feed reports its own error, so one being down does
+   * not hide the other's numbers.
+   */
+  const fillAllFromApp = async (coach, run) => {
+    // A note from the previous coach or period would read as if it applied to
+    // this one.
+    setApplyNote(null);
+    await Promise.all([syncSessionsFor(coach, run), syncReviewsFor(coach, run)]);
+  };
+
+  /**
+   * Fill one score card from the app in a single click, from anywhere.
+   *
+   * The Record panel deliberately splits this in two — fetch, read the
+   * figures, then confirm — because that panel has room to show them while
+   * you decide. The Incentive table on a coach's profile has no such room,
+   * and a row there is edited in place, so the split left people pressing a
+   * button that looked inert. Here it is one action: open the row if it is
+   * not already open, read both feeds, write the three cells, and say what it
+   * wrote. It still only writes into the draft — saving the row is separate,
+   * and nothing reaches payroll until it is saved.
+   */
+  const fillRowFromApp = async (coach, run, pane = 'main') => {
+    setApplyNote(null);
+    if (!coach || !run) return;
+
+    if (!SCORE_EDIT_ROLES.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot edit score cards.`, 'danger');
+      return;
+    }
+    if (run.status === 'FINANCE_LOCKED') {
+      showToast(`${run.period_month} is finance-locked — unlock it on Record ` +
+                `Status first.`, 'danger');
+      return;
+    }
+    if (!coach.app_coach_id) {
+      showToast(`${coach.name} has no App Coach ID. The app's figures are keyed ` +
+                `by it — set it under Details on their profile, then try again.`, 'danger');
+      return;
+    }
+
+    // Writing into a draft that is not open writes into nothing, so open it.
+    const key = draftKey(run.coach_id, run.period_month);
+    if (editingRef.current !== key) beginScoreRowEdit(coach, run, pane);
+
+    showToast(`Reading ${run.period_month} from the HB+ app…`, 'info');
+
+    const sBase = import.meta.env.VITE_SESSION_API_BASE || SESSION_API_DEFAULT;
+    const rBase = import.meta.env.VITE_REVIEW_API_BASE || REVIEW_API_DEFAULT;
+    const [sRes, rRes] = await Promise.all([
+      fetchSessionSummary(coach.app_coach_id, {
+        base: sBase, fromDay: run.period_start, toDay: run.period_end,
+        token: await apiTokenFor(sBase)
+      }),
+      fetchReviews(coach.app_coach_id, { base: rBase, token: await apiTokenFor(rBase) })
+    ]);
+
+    // One feed being down must not hide the other's numbers, so each is
+    // written on its own and the failures are reported together at the end.
+    const failed = [];
+    const changes = [];
+    const patch = {};
+
+    if (sRes.ok) {
+      if (sRes.completed != null) {
+        changes.push(`sessions ${run.sessions_completed ?? 0} → ${sRes.completed}`);
+        patch.sessions = sRes.completed;
+      }
+      if (sRes.coachMissed != null) {
+        changes.push(`missed ${run.missed_sessions ?? 0} → ${sRes.coachMissed}`);
+        patch.missed_sessions = sRes.coachMissed;
+      }
+    } else {
+      failed.push(`sessions — ${sRes.why}`);
+    }
+
+    if (rRes.ok) {
+      // The same cycle and the same streak rule the Record panel uses: a
+      // violation or a no-show resets the run.
+      const breakers = violations
+        .filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved')
+        .map(v => v.incident_date);
+      const counted = fiveStarStreak(rRes.reviews, breakers, {
+        from: new Date(`${run.period_start}T00:00:00`),
+        to: new Date(`${run.period_end}T23:59:59`)
+      });
+      changes.push(`streak ${run.five_star_streak ?? 0} → ${counted.streak}`);
+      patch.streak = counted.streak;
+    } else {
+      failed.push(`reviews — ${rRes.why}`);
+    }
+
+    if (Object.keys(patch).length === 0) {
+      const why = failed.length ? failed.join(' · ')
+        : `the app has nothing for ${coach.name} in this cycle`;
+      setApplyNote({ bad: true, text: `Nothing written — ${why}.` });
+      showToast(`Nothing written — ${why}.`, 'danger');
+      return;
+    }
+
+    setScoreDraft(prev => ({ ...prev, ...patch }));
+
+    const wrote = `Written into the form: ${changes.join(' · ')}. ` +
+      `Nothing is stored until you save the row.`;
+    const note = failed.length ? `${wrote} Could not read ${failed.join(' · ')}.` : wrote;
+    setApplyNote({ bad: false, text: note });
+    showToast(note, failed.length ? 'warning' : 'success');
+
+    logAudit('Filled From App',
+      `${coach.name} (${coach.id}) — ${run.period_month}: ${changes.join(', ')}` +
+      `${failed.length ? `; failed: ${failed.join('; ')}` : ''}.`);
+  };
+
+  /**
+   * What to authenticate an admin-API call with.
+   *
+   * A relative base means the call goes to this app's own proxy, which holds
+   * the admin token server-side and wants proof the caller is signed in here
+   * instead. A full URL means the browser is calling admin.hbplus.fit itself,
+   * which needs the admin token typed into the fetch panel.
+   */
+  const apiTokenFor = async (base) => {
+    if (!String(base).startsWith('/')) return reviewToken.trim() || null;
+    const session = await getSession();
+    return session?.access_token || null;
+  };
+
+  const syncAvailabilityFor = async (coach, fromDay, toDay) => {
+    if (!coach) return;
+    if (!coach.app_coach_id) {
+      setAvailSync({ coachId: coach.id, error:
+        `${coach.name} has no App Coach ID. The feed is keyed by it — set it on ` +
+        `their profile under Details, then try again.` });
+      return;
+    }
+
+    setAvailSync({ coachId: coach.id, busy: true });
+
+    const base = import.meta.env.VITE_AVAILABILITY_API_BASE || AVAILABILITY_API_DEFAULT;
+    const res = await fetchAvailability(coach.app_coach_id, {
+      base,
+      fromDay, toDay,
+      token: await apiTokenFor(base)
+    });
+    if (!res.ok) { setAvailSync({ coachId: coach.id, error: res.why }); return; }
+
+    // Availability against what was logged, day by day. Both figures are shown
+    // before anything is stored, because this is the comparison the charge is
+    // later made from.
+    const byDay = new Map(res.days.map(d => [d.working_day, d]));
+    const dayMs = 86400000;
+    const rows = [];
+    for (let t = new Date(`${fromDay}T12:00:00`).getTime();
+         t <= new Date(`${toDay}T12:00:00`).getTime(); t += dayMs) {
+      const day = new Date(t).toISOString().slice(0, 10);
+      const avail = byDay.get(day);
+      const logged = loggedHoursForDay(
+        attendanceLogs.filter(l => l.coach_id === coach.id && l.working_day === day));
+      const offered = avail ? avail.hours : 0;
+      const windowLabel = avail ? `${istTimeOf(avail.from)}–${istTimeOf(avail.to)}` : null;
+      // Did the login fall inside a published slot? That is the question the
+      // window can actually answer; total hours against it cannot.
+      const dayLogs = attendanceLogs.filter(
+        l => l.coach_id === coach.id && l.working_day === day);
+      const inWindow = Boolean(avail) && dayLogs.some(l => {
+        const t = l.logged_in_at ? new Date(l.logged_in_at).getTime() : null;
+        return t !== null && avail.spans.some(([a0, b0]) => t >= a0 && t <= b0);
+      });
+      const onLeave = leaveApplications.some(a =>
+        a.coach_id === coach.id && a.status === 'Approved'
+        && a.from_date <= day && a.to_date >= day);
+      const holiday = Boolean(holidayOn(coach, day));
+      const weeklyOff = isWeeklyOffFor(coach, day);
+
+      // Deliberately no "short" verdict. The feed publishes a bookable window —
+      // 11 and 17 hour days are normal in it — not contracted hours, so hours
+      // logged against it would mark a full day's work as a shortfall.
+      let verdict;
+      if (!avail) verdict = 'no availability published';
+      else if (onLeave) verdict = 'on approved leave';
+      else if (holiday) verdict = 'holiday';
+      else if (weeklyOff) verdict = 'weekly off';
+      else if (logged === 0) verdict = 'available, never logged in';
+      else if (inWindow) verdict = 'logged in, within the window';
+      else verdict = 'logged in, outside the window';
+
+      rows.push({
+        day, offered, windowLabel, inWindow,
+        logged: Math.round(logged * 100) / 100,
+        verdict, hasAvail: Boolean(avail)
+      });
+    }
+
+    setAvailSync({ coachId: coach.id, feed: res, rows, fromDay, toDay });
+  };
+
+  /** Store what was fetched, which is what makes a shortfall chargeable. */
+  const storeAvailability = (coach, rows) => {
+    const keep = rows.filter(r => r.hasAvail);
+    if (keep.length === 0) return { ok: false, why: 'Nothing to store — no day had availability published.' };
+
+    setAvailability(prev => {
+      const byKey = new Map(prev.map(a => [`${a.coach_id}|${a.working_day}`, a]));
+      for (const r of keep) {
+        byKey.set(`${coach.id}|${r.day}`, {
+          coach_id: coach.id, working_day: r.day,
+          hours: r.offered, source: 'api',
+          start_time: r.windowLabel ? r.windowLabel.split('–')[0] : null,
+          end_time: r.windowLabel ? r.windowLabel.split('–')[1] : null
+        });
+      }
+      return [...byKey.values()];
+    });
+
+    logAudit('Availability Fetched',
+      `${coach.name} (${coach.id}) — availability stored for ${keep.length} day(s) ` +
+      `between ${rows[0]?.day} and ${rows[rows.length - 1]?.day}. Shortfalls on those ` +
+      `days can now be measured rather than sent for review.`);
+    return { ok: true, stored: keep.length };
+  };
 
   const openMonthsForCoach = (coachId, fromMonth, toMonth) => {
     if (!PROFILE_PAY_ROLES.includes(currentRole)) {
@@ -7128,8 +7609,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const hbScore = record.hb_score != null ? record.hb_score : calc.hbScore;
     const band = record.band || getPerformanceBand(hbScore).label;
     const pay = computeMonthlyPay(coach, carryPay(record), { hbScore }, inPeriod, vConfig, coachOrgWork);
-    const threshold = vConfig.rates[coach.coach_category]?.[band]?.threshold
-      ?? (coach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96);
+    // computeMonthlyPay already resolved this — the month's own figure where
+    // one is set, the band's otherwise. Re-deriving it here is how the tracker
+    // and the pay sum came to disagree.
+    const threshold = pay.threshold;
 
     return {
       id: `${coach.id}-${record.period_month}`,
@@ -7173,6 +7656,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
       range: `${new Date(record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
       status: record.status,
       sessions: Number(record.sessions_completed) || 0,
+      beyond_sessions: pay.beyondAvailabilitySessions,
+      beyond_pay: pay.beyondAvailabilityPay,
       night_sessions: record.night_sessions,
       threshold,
       extra_sessions: pay.extraSessions,
@@ -7559,7 +8044,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       "HB+ Score", "Band",
       "Base / Fixed Pay", "Per-Session Rate",
       "Sessions For The Month", "Session Threshold",
-      "Extra Sessions", "Extra Session Pay", "Per-Session Pay",
+      "Extra Sessions", "Sessions Beyond Availability", "Beyond-Availability Pay", "Per-Session Pay",
       "Night Session Premium", "Milestone Incentive", "Consistency Bonus",
       "5-Star Streak Bonus", "Org Work Pay",
       "Missed Sessions", "Missed Session Penalty",
@@ -7578,13 +8063,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
         money(r.score), r.recorded ? r.band : "Awaiting entry",
         money(r.pay.basePay), money(r.pay.perSessionRate),
         Number(r.record.sessions_completed) || 0,
-        // The same threshold the tracker prints: the band's own figure when the
-        // variant sets one, otherwise the category default.
-        r.vConfig.rates?.[r.coach.coach_category]?.[r.band]?.threshold
-          ?? (r.coach.coach_category === 'Fixed'
-                ? (r.vConfig.discipline === 'Yoga' ? 117 : 156)
-                : 96),
-        r.pay.extraSessions || 0, money(r.pay.extraSessionPay), money(r.pay.sessionPay),
+        // The same threshold the pay sum used, including one set for the month.
+        r.pay.threshold,
+        r.pay.extraSessions || 0,
+        r.pay.beyondAvailabilitySessions || 0, money(r.pay.beyondAvailabilityPay),
+        money(r.pay.sessionPay),
         money(r.pay.nightSessionPay), money(r.pay.milestoneIncentive), money(r.pay.consistencyBonus),
         money(r.pay.streakBonusPay), money(r.pay.orgWorkPay),
         r.pay.missedSessions || 0, money(r.pay.missedSessionDeduction),
@@ -7644,7 +8127,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const bandVal = calcScoreObj.band || getPerformanceBand(scoreVal).label;
       const incSum = pay.milestoneIncentive + pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
 
-      csvContent += `"${coach.id}","${coach.name}","${coach.coach_category}",${scoreVal},"${bandVal}",${pay.basePay},${pay.extraSessionPay + pay.sessionPay},${incSum},${pay.penaltyDeductions},${pay.grossPay},"${e.status}"\n`;
+      csvContent += `"${coach.id}","${coach.name}","${coach.coach_category}",${scoreVal},"${bandVal}",${pay.basePay},${pay.beyondAvailabilityPay + pay.sessionPay},${incSum},${pay.penaltyDeductions},${pay.grossPay},"${e.status}"\n`;
     });
 
     const encodedUri = encodeURI(csvContent);
@@ -9068,8 +9551,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
               const isEdited = editingScorePeriod === run.period_month;
               const periodScore = (!isEdited && run.hb_score != null) ? run.hb_score : periodCalc.hbScore;
               const periodBand = (!isEdited && run.band) ? run.band : getPerformanceBand(periodScore).label;
-              const periodThreshold = vConfig.rates[coachObj.coach_category]?.[periodBand]?.threshold
-                ?? (coachObj.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96);
+              // A threshold set for the month wins over the band's, the same way
+              // the pay engine resolves it — otherwise this card would print one
+              // figure while the money was worked out from another.
+              const periodThreshold = (Number(run.threshold_override) > 0)
+                ? Number(run.threshold_override)
+                : (vConfig.rates[coachObj.coach_category]?.[periodBand]?.threshold
+                    ?? (coachObj.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96));
               const periodSessions = Number(run.sessions_completed) || 0;
               const b = periodCalc.breakdown;
               const w = vConfig.weights;
@@ -9154,6 +9642,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 streak: run.five_star_streak,
                 threshold: finalThreshold,
                 extra_sessions: pick("extra_sessions", Math.max(0, periodSessions - finalThreshold)),
+                beyond_sessions: pick("beyond_sessions", Math.max(0, periodSessions - finalThreshold)),
                 violations: pick("violations", coachVios.filter(v =>
                   v.status !== 'Appeal_Approved' &&
                   new Date(v.incident_date) >= new Date(run.period_start) &&
@@ -9385,6 +9874,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <td className="actions-col">
                             {isEditing ? (
                               <div className="table-btn-group">
+                                <button
+                                  className="btn-row-icon icon-fill"
+                                  title={coach.app_coach_id
+                                    ? `Read ${run.period_month} from the HB+ app — sessions, missed and 5-star streak`
+                                    : 'No App Coach ID on this coach, so the app cannot be asked'}
+                                  aria-label="Fill from app"
+                                  disabled={!coach.app_coach_id}
+                                  onClick={() => fillRowFromApp(coach, run, paneId)}
+                                >
+                                  <i className="bx bx-cloud-download"></i>
+                                </button>
                                 <button className="btn-row-icon icon-save" title="Save this score card" aria-label="Save" onClick={() => saveScoreRowEdit(coach, run)}>
                                   <i className="bx bx-check"></i>
                                 </button>
@@ -9398,6 +9898,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 </button>
                               </div>
                             ) : mayEdit ? (
+                              <div className="table-btn-group">
+                              <button
+                                className="btn-row-icon icon-fill"
+                                title={coach.app_coach_id
+                                  ? `Open ${run.period_month} and fill it from the HB+ app`
+                                  : 'No App Coach ID on this coach, so the app cannot be asked'}
+                                aria-label="Fill from app"
+                                disabled={!coach.app_coach_id}
+                                onClick={() => fillRowFromApp(coach, run, paneId)}
+                              >
+                                <i className="bx bx-cloud-download"></i>
+                              </button>
                               <button
                                 className={[
                                   'btn-row-icon',
@@ -9412,6 +9924,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               >
                                 <i className={hasPendingDraft ? 'bx bx-edit-alt' : (row.isBlank ? 'bx bx-plus' : 'bx bx-edit')}></i>
                               </button>
+                              </div>
                             ) : (
                               <span
                                 className="btn-row-icon icon-locked"
@@ -9430,11 +9943,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     })}
                   </tbody>
                 </table>
+                {/* The cells Fill from app writes sit far along a wide,
+                    scrolling table, so without this the write is invisible
+                    from where the button is. */}
+                {applyNote && (
+                  <p className={applyNote.bad ? 'hb-reviews-error' : 'hb-reviews-ok'}>
+                    {applyNote.text}
+                  </p>
+                )}
               </div>
             );
 
-            let statusClass = "badge-muted";
-            if (coach.status === "Active") statusClass = "badge-success";
+            let statusClass = "badge-inactive";
+            if (coach.status === "Active") statusClass = "badge-active";
             if (coach.status === "Suspended") statusClass = "badge-danger";
 
             const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-IN') : '—';
@@ -9593,8 +10114,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       : f === 'band' ? 'from the band'
                       : `carried from ${f}`;
                     const payFrom = src ? fromLabel(src.fixedFrom) : '—';
-                    const threshold = (vConfig.rates?.threshold)
-                      || (vConfig.discipline === 'Yoga' ? 117 : 156);
+                    const threshold = pay?.threshold
+                      ?? (vConfig.rates?.threshold)
+                      ?? (vConfig.discipline === 'Yoga' ? 117 : 156);
 
                     // The stored record holds a total, not its parts, so the
                     // breakdown is recomputed for display. It is the same
@@ -9713,8 +10235,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       <strong>{rupees(pay.basePay)}</strong>
                                     </div>
                                     <div className="hb-pay-row">
-                                      <span>Extra sessions · {pay.extraSessions || 0} beyond {threshold} at {rupees(pay.perSessionRate)} <em className="hb-src">worked out</em></span>
-                                      <strong>{rupees(pay.extraSessionPay)}</strong>
+                                      <span>Beyond availability · {pay.extraSessions || 0} sessions beyond the {threshold} threshold, at {rupees(pay.perSessionRate)} <em className="hb-src">worked out</em></span>
+                                      <strong>{rupees(pay.beyondAvailabilityPay)}</strong>
                                     </div>
                                     <div className="hb-pay-row">
                                       <span>Incentives &amp; bonuses</span>
@@ -9829,6 +10351,95 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             Open the register
                           </button>
                         </div>
+
+                        {/* Availability against logins. A reference check, not
+                            a charge: the feed publishes bookable windows rather
+                            than contracted hours, so it can say whether a coach
+                            logged in when they said they were free, and cannot
+                            say whether they worked long enough. */}
+                        {LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
+                          const q = availSync && availSync.coachId === coach.id ? availSync : null;
+                          const period = currentMonth[0];
+                          const from = period?.period_start || todayWorkingDay;
+                          const to = todayWorkingDay;
+                          const tally = (v) => q?.rows?.filter(r => r.verdict === v).length ?? 0;
+                          return (
+                            <div className="hb-reviews">
+                              <div className="hb-reviews-head">
+                                <strong>Availability vs logins</strong>
+                                <button
+                                  className="hb-btn" disabled={q?.busy || !coach.app_coach_id}
+                                  onClick={() => syncAvailabilityFor(coach, from, to)}
+                                >
+                                  {q?.busy ? 'Fetching…' : `Fetch ${fmtTrackerDay(from)} – ${fmtTrackerDay(to)}`}
+                                </button>
+                              </div>
+
+                              {!coach.app_coach_id && (
+                                <p className="hb-reviews-note">
+                                  No App Coach ID on this coach — set it under Details.
+                                </p>
+                              )}
+                              {q?.error && <p className="hb-reviews-error">{q.error}</p>}
+
+                              {q?.rows && (
+                                <>
+                                  <p className="hb-reviews-note">
+                                    <strong>{tally('logged in, within the window')}</strong> logged in within the window ·{' '}
+                                    <strong>{tally('logged in, outside the window')}</strong> outside it ·{' '}
+                                    <strong>{tally('available, never logged in')}</strong> never logged in ·{' '}
+                                    {tally('no availability published')} with nothing published.
+                                  </p>
+                                  <div className="hb-avail-table">
+                                    <table className="data-table">
+                                      <thead>
+                                        <tr><th>Day</th><th>Published window</th><th className="num-col">Window</th><th className="num-col">Logged</th><th>Outcome</th></tr>
+                                      </thead>
+                                      <tbody>
+                                        {q.rows.map(r => (
+                                          <tr key={r.day} className={r.verdict === 'available, never logged in' ? 'row-unrecorded' : ''}>
+                                            <td>{fmtTrackerDay(r.day)}</td>
+                                            <td>{r.windowLabel || '—'}</td>
+                                            <td className="num-col">{r.hasAvail ? `${r.offered}h` : '—'}</td>
+                                            <td className="num-col">{r.logged}h</td>
+                                            <td>{r.verdict}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                  <p className="hb-reviews-note hb-reviews-meta">
+                                    {q.feed.slotCount} slot{q.feed.slotCount === 1 ? '' : 's'} fetched, read from
+                                    “{q.feed.startField || '?'}” and “{q.feed.endField || '?'}”
+                                    {q.feed.unreadable > 0 && ` · ${q.feed.unreadable} unreadable`}
+                                    {q.feed.pendingDays > 0 && ` · ${q.feed.pendingDays} day(s) not approved, left out`}
+                                    {q.feed.pendingSlots > 0 && ` · ${q.feed.pendingSlots} unapproved slot(s) ignored`}
+                                    . Overlapping slots are merged, not added, and only approved
+                                    availability is counted.
+                                  </p>
+                                  <div className="hb-reviews-note">
+                                    <strong>This is a bookable window, not contracted hours.</strong> The feed
+                                    publishes when a coach can be booked — 11 and 17 hour days are normal in
+                                    it — so hours logged are not measured against it and nothing here is
+                                    charged. It answers whether they logged in when they said they were
+                                    available. Settling a day is unaffected.
+                                  </div>
+                                  <button
+                                    className="hb-btn hb-btn-primary"
+                                    onClick={() => {
+                                      const res = storeAvailability(coach, q.rows);
+                                      window.alert(res.ok
+                                        ? `Stored the published window for ${res.stored} day(s).\n\nKept for reference and for this comparison. Pay and settlement are unchanged.`
+                                        : res.why);
+                                    }}
+                                  >
+                                    Store {q.rows.filter(r => r.hasAvail).length} day{q.rows.filter(r => r.hasAvail).length === 1 ? '' : 's'}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
                         {bals.length > 0 && (
                           <div className="hb-bal">
                             {bals.map(b => (
@@ -9889,6 +10500,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Designation", textField("internal_designation"))}
                           {editItem("Reporting Manager", selectField("reporting_manager_id", REPORTING_MANAGERS))}
                           {editItem("Assigned Property", textField("assigned_property"))}
+                          {/* The id this coach carries in the HB+ app, which is
+                              not the HB+ number — the reviews feed is keyed by
+                              it and cannot be matched without it. */}
+                          {editItem("App Coach ID", textField("app_coach_id"))}
                           {editItem("Date of Joining", textField("date_of_joining", "date"))}
                           {editItem("First Certification", textField("date_of_first_relevant_certification", "date"))}
                           {editItem("Phone", textField("phone"))}
@@ -10098,6 +10713,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {detailRow("Designation", coach.internal_designation)}
                           {detailRow("Reporting Manager", coach.reporting_manager_id)}
                           {detailRow("Assigned Property", coach.assigned_property)}
+                          {detailRow("App Coach ID", coach.app_coach_id || "— not set, reviews cannot be fetched")}
                           {detailRow("Date of Joining", formatDate(coach.date_of_joining))}
                           {detailRow("First Certification", formatDate(coach.date_of_first_relevant_certification))}
                           {detailRow("Phone", coach.phone)}
@@ -10236,6 +10852,61 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         Changing education clears any hand-entered education score on the score cards.
                       </p>
                     )}
+
+                    {/* Removing a coach cascades through their score cards,
+                        incidents, org work and appeals, so it sits apart from
+                        the ordinary edits, says what it costs, and is offered
+                        beside the thing most people actually want. */}
+                    {currentRole === 'Super Admin' && (() => {
+                      const cards = [...historicMonths, ...currentMonth].filter(r => r.coach_id === coach.id).length;
+                      const incidents = violations.filter(v => v.coach_id === coach.id).length;
+                      const held = cards + incidents
+                        + orgWork.filter(o => o.coach_id === coach.id).length
+                        + appeals.filter(a => a.coach_id === coach.id).length;
+                      return (
+                        <div className="coach-danger">
+                          <div>
+                            <strong>Remove {coach.name}</strong>
+                            <p>
+                              {held === 0
+                                ? 'They hold no score cards, incidents, org work or appeals, so deleting them leaves nothing behind.'
+                                : `Deleting them also deletes ${held} record${held === 1 ? '' : 's'} — ` +
+                                  `${cards} score card${cards === 1 ? '' : 's'} and ${incidents} incident${incidents === 1 ? '' : 's'} among them. ` +
+                                  `Payroll already reconciled against those figures will stop reconciling. There is no undo.`}
+                            </p>
+                            <p>
+                              To take someone off the rollover, payroll and the scoring roster while
+                              keeping their history, set their status to Inactive instead.
+                            </p>
+                          </div>
+                          <div className="coach-danger-actions">
+                            {coach.status !== 'Inactive' && (
+                              <button
+                                type="button" className="btn btn-secondary"
+                                onClick={() => {
+                                  if (!window.confirm(`Set ${coach.name} to Inactive?\n\nThey come off the rollover, the payroll run and the scoring roster. Their history is kept and this can be undone.`)) return;
+                                  setCoaches(prev => prev.map(c =>
+                                    c.id === coach.id ? { ...c, status: 'Inactive' } : c));
+                                  logAudit('Coach Retired',
+                                    `${coach.name} (${coach.id}) set to Inactive by ${actorName}. History kept.`);
+                                }}
+                              >
+                                Set Inactive
+                              </button>
+                            )}
+                            <button
+                              type="button" className="btn btn-danger"
+                              onClick={() => {
+                                const res = deleteCoach(coach);
+                                if (!res.ok && res.why !== 'Cancelled.') window.alert(res.why);
+                              }}
+                            >
+                              Delete coach
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <div className="card-header-row" style={{ marginTop: '1.5rem' }}>
                       <h3>Education Certificates</h3>
@@ -10764,6 +11435,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               category: coach.coach_category,
                               score: seedRow.hb_score,
                               sessions: Number(selected.sessions_completed) || 0,
+                              thresholdOverride: selected.threshold_override ?? "",
                               nightSessions: Number(selected.night_sessions) || 0,
                               streak: Number(selected.five_star_streak) || 0,
                               consistency: (Number(selected.attendance_pct) >= 95 && periodVios.length === 0) ? "YES" : "NO",
@@ -10971,10 +11643,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         ? (openRecord.band || getPerformanceBand(openRecord.hb_score).label)
                         : null;
                       const bandMove = openRecord ? bandMoveFor(c.id, openRecord.period_month) : null;
-                      let statusClass = "badge-muted";
-                      if (c.status === "Active") statusClass = "badge-success";
+                      let statusClass = "badge-inactive";
+                      if (c.status === "Active") statusClass = "badge-active";
                       if (c.status === "Suspended") statusClass = "badge-danger";
-                      if (c.status === "Exited") statusClass = "badge-muted";
+                      if (c.status === "Exited") statusClass = "badge-exited";
 
                       return (
                         <tr
@@ -11185,7 +11857,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     team_conduct: num('team_conduct'), communication: num('communication'),
                     meetings_scheduled: scheduled, meetings_attended: attended,
                     attendance_pct: scheduled > 0 ? (attended / scheduled) * 100 : 0,
-                    sessions_completed: num('sessions'), night_sessions: num('night_sessions'),
+                    sessions_completed: num('sessions'),
+                    night_sessions: num('night_sessions'),
                     five_star_streak: num('streak'), missed_sessions: num('missed_sessions'),
                     lop_days: num('lop_days'),
                     hb_score: null, band: null
@@ -11348,6 +12021,264 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </div>
                               {liveScore != null && <span className="badge badge-warning">{liveBand}</span>}
                             </div>
+
+                            {/* The 5-Star Streak is the one manual cell that is
+                                countable rather than judged, so it can come
+                                from the reviews feed. It is counted and shown
+                                first; writing it is a separate click. */}
+                            {(() => {
+                              const r = reviewSync && reviewSync.coachId === picked.id
+                                && reviewSync.period === run.period_month ? reviewSync : null;
+                              const sq = sessionSync && sessionSync.coachId === picked.id
+                                && sessionSync.period === run.period_month ? sessionSync : null;
+                              const busy = Boolean(r?.busy || sq?.busy);
+                              // Only offer the single confirm when there is
+                              // something from both feeds to confirm.
+                              const bothIn = Boolean(sq?.summary && r?.counted);
+                              const applyAll = () => {
+                                if (!open) {
+                                  setApplyNote({ bad: true, text:
+                                    'Not written. This row is not being recorded, so there is no draft to '
+                                    + 'write into — press Start recording first.' });
+                                  return;
+                                }
+                                if (!mayEdit) {
+                                  setApplyNote({ bad: true, text: locked
+                                    ? 'Not written. This month is finance-locked.'
+                                    : (vCfg?.placeholder
+                                      ? 'Not written. This coach has no pay policy set, so nothing can be scored yet.'
+                                      : `Not written. The ${currentRole} role cannot edit score cards.`) });
+                                  return;
+                                }
+                                const sum = sq.summary;
+                                const was = { ...scoreDraft };
+                                const changes = [];
+                                if (sum.completed != null)
+                                  changes.push(`sessions ${was.sessions ?? run.sessions_completed ?? 0} → ${sum.completed}`);
+                                if (sum.coachMissed != null)
+                                  changes.push(`missed ${was.missed_sessions ?? run.missed_sessions ?? 0} → ${sum.coachMissed}`);
+                                changes.push(`streak ${was.streak ?? run.five_star_streak ?? 0} → ${r.counted.streak}`);
+                                setScoreDraft(prev => ({
+                                  ...prev,
+                                  ...(sum.completed != null ? { sessions: sum.completed } : {}),
+                                  ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {}),
+                                  streak: r.counted.streak
+                                }));
+                                setApplyNote({ text: `Written into the form: ${changes.join(' · ')}. `
+                                  + 'Nothing is stored until you save the row.' });
+                                logAudit('Filled From App',
+                                  `${picked.name} (${picked.id}) — ${run.period_month}: sessions ` +
+                                  `${sum.completed ?? 'unchanged'}, missed ${sum.coachMissed ?? 'unchanged'}, ` +
+                                  `streak ${r.counted.streak}. ${sum.memberMissed ?? 0} member no-show(s) not carried.`);
+                              };
+                              return (
+                                <div className="hb-reviews">
+                                  {/* One fetch for both feeds, then one confirm.
+                                      Still a confirm: these are payroll inputs,
+                                      so nothing is written unseen. */}
+                                  <div className="hb-reviews-head">
+                                    <strong>From the HB+ app</strong>
+                                    <button
+                                      className="hb-btn hb-btn-primary"
+                                      disabled={busy || !picked.app_coach_id}
+                                      onClick={() => fillAllFromApp(picked, run)}
+                                    >
+                                      {busy ? 'Fetching…' : 'Fill from app'}
+                                    </button>
+                                  </div>
+
+                                  {bothIn && (
+                                    <div className="hb-reviews-apply">
+                                      <p className="hb-reviews-note">
+                                        Ready to write:{' '}
+                                        <strong>{sq.summary.completed ?? '—'}</strong> sessions ·{' '}
+                                        <strong>{sq.summary.coachMissed ?? '—'}</strong> missed ·{' '}
+                                        <strong>{r.counted.streak}</strong> streak.
+                                        {sq.summary.memberMissed ? ` ${sq.summary.memberMissed} member no-show(s) not included.` : ''}
+                                      </p>
+                                      {open && mayEdit ? (
+                                        <button className="hb-btn hb-btn-primary" onClick={applyAll}>
+                                          Use all three
+                                        </button>
+                                      ) : (
+                                        <p className="hb-reviews-error">
+                                          {!open
+                                            ? 'Cannot write these yet — this row is not being recorded. '
+                                              + 'Press Start recording, then come back.'
+                                            : locked
+                                              ? 'Cannot write these — the month is finance-locked.'
+                                              : vCfg?.placeholder
+                                                ? 'Cannot write these — this coach has no pay policy set.'
+                                                : `Cannot write these — the ${currentRole} role cannot edit score cards.`}
+                                        </p>
+                                      )}
+                                      {applyNote && (
+                                        <p className={applyNote.bad ? 'hb-reviews-error' : 'hb-reviews-ok'}>
+                                          {applyNote.text}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Sessions first: completed and missed are what
+                                      most of this cycle's pay turns on. */}
+                                  {(() => {
+                                    const q = sq;
+                                    const sum = q?.summary;
+                                    return (
+                                      <div className="hb-reviews-block">
+                                        <div className="hb-reviews-head">
+                                          <strong>Sessions from the app</strong>
+                                          <button
+                                            className="hb-btn" disabled={q?.busy || !picked.app_coach_id}
+                                            onClick={() => syncSessionsFor(picked, run)}
+                                          >
+                                            {q?.busy ? 'Fetching…' : 'Fetch sessions'}
+                                          </button>
+                                        </div>
+
+                                        {q?.error && (
+                                          <p className={q.empty ? 'hb-reviews-note' : 'hb-reviews-error'}>
+                                            {q.error}
+                                          </p>
+                                        )}
+
+                                        {sum && (
+                                          <>
+                                            <p className="hb-reviews-note">
+                                              <strong>{sum.completed ?? '—'}</strong> completed ·{' '}
+                                              <strong>{sum.coachMissed ?? '—'}</strong> missed by the coach
+                                              {sum.memberMissed != null && <> ·{' '}
+                                                <strong>{sum.memberMissed}</strong> missed by the member</>}
+                                              {sum.cancelled != null && <> · <strong>{sum.cancelled}</strong> cancelled</>}
+                                              {sum.total != null && <> · {sum.total} in all</>},
+                                              between {fmtTrackerDay(run.period_start)} and {fmtTrackerDay(run.period_end)}.
+                                            </p>
+                                            <p className="hb-reviews-note hb-reviews-meta">
+                                              read from “{sum.fields.completed || '?'}” and “{sum.fields.coachMissed || '?'}”
+                                              {sum.fields.memberMissed && ` · member no-shows from “${sum.fields.memberMissed}”`}
+                                              {sum.missing.length > 0 && ` · ${sum.missing.join(' and ')} not in the summary, left alone rather than written as zero`}
+                                            </p>
+                                            {sum.memberMissed != null && (
+                                              <p className="hb-reviews-note">
+                                                Only the coach's own no-shows are carried across. A session the
+                                                member missed is not the coach's fault — they held the slot — so
+                                                it is shown here and left out of the missed count.
+                                              </p>
+                                            )}
+                                            {open && mayEdit ? (
+                                              <button
+                                                className="hb-btn hb-btn-primary"
+                                                onClick={() => {
+                                                  setScoreDraft(prev => ({
+                                                    ...prev,
+                                                    ...(sum.completed != null ? { sessions: sum.completed } : {}),
+                                                    ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {})
+                                                  }));
+                                                  logAudit('Sessions From App',
+                                                    `${picked.name} (${picked.id}) — ${run.period_month}: sessions ` +
+                                                    `${sum.completed ?? 'unchanged'}, missed ${sum.coachMissed ?? 'unchanged'} ` +
+                                                    `(${sum.memberMissed ?? 0} missed by members, not carried) ` +
+                                                    `from the app's session summary.`);
+                                                }}
+                                              >
+                                                Use these figures
+                                              </button>
+                                            ) : (
+                                              <p className="hb-reviews-note">Start recording to apply them.</p>
+                                            )}
+                                          </>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+
+                                  <div className="hb-reviews-head">
+                                    <strong>5-Star Streak from reviews</strong>
+                                    <button
+                                      className="hb-btn" disabled={r?.busy}
+                                      onClick={() => syncReviewsFor(picked, run)}
+                                    >
+                                      {r?.busy ? 'Fetching…' : 'Fetch reviews'}
+                                    </button>
+                                  </div>
+
+                                  {!picked.app_coach_id && (
+                                    <p className="hb-reviews-note">
+                                      No App Coach ID on this coach. The feed is keyed by it —
+                                      set it on their profile, under Details.
+                                    </p>
+                                  )}
+
+                                  {r?.error && <p className="hb-reviews-error">{r.error}</p>}
+
+                                  {r?.counted && (
+                                    <>
+                                      <p className="hb-reviews-note">
+                                        <strong>{r.counted.streak}</strong> consecutive 5-star reviews —
+                                        the longest run between {fmtTrackerDay(run.period_start)} and{' '}
+                                        {fmtTrackerDay(run.period_end)}.{' '}
+                                        {r.counted.considered} review{r.counted.considered === 1 ? '' : 's'} in
+                                        the cycle, {r.counted.fiveStars} of them five stars
+                                        {r.counted.breaks > 0 && `, broken ${r.counted.breaks} time${r.counted.breaks === 1 ? '' : 's'} by an incident`}
+                                        {r.counted.runs.length > 1 && ` · runs of ${r.counted.runs.join(', ')}`}.
+                                      </p>
+                                      <p className="hb-reviews-note hb-reviews-meta">
+                                        {r.feed.total} fetched · read the rating from
+                                        “{r.feed.ratingField || '?'}” and the date from
+                                        “{r.feed.dateField || '?'}”
+                                        {r.feed.unreadable > 0 && ` · ${r.feed.unreadable} had no readable rating`}
+                                        {r.feed.undated > 0 && ` · ${r.feed.undated} had no date and were left out`}
+                                        {r.feed.maxSeen > 5 && ` · ratings go up to ${r.feed.maxSeen}, so this feed may not be out of five`}
+                                        {r.feed.truncated && ' · stopped at the page guard, there may be more'}
+                                      </p>
+                                      {r.feed.maxSeen > 5 ? (
+                                        <p className="hb-reviews-error">
+                                          Not applied. This feed has ratings up to {r.feed.maxSeen}, so it
+                                          is not scored out of five — a 9 out of 10 is not a five-star
+                                          review, and counting it as one would inflate the streak and the
+                                          bonus. Tell me the scale and I will convert it.
+                                        </p>
+                                      ) : open && mayEdit ? (
+                                        <button
+                                          className="hb-btn hb-btn-primary"
+                                          onClick={() => {
+                                            setScoreDraft(prev => ({ ...prev, streak: r.counted.streak }));
+                                            logAudit('Streak From Reviews',
+                                              `${picked.name} (${picked.id}) — 5-Star Streak for ${run.period_month} ` +
+                                              `set to ${r.counted.streak} from ${r.counted.considered} reviews in the cycle.`);
+                                          }}
+                                        >
+                                          Use {r.counted.streak} as the streak
+                                        </button>
+                                      ) : (
+                                        <p className="hb-reviews-note">Start recording to apply it.</p>
+                                      )}
+                                    </>
+                                  )}
+
+                                  <details className="hb-reviews-auth">
+                                    <summary>API access</summary>
+                                    <p className="hb-reviews-note">
+                                      The browser sends your admin cookie where the API allows this
+                                      origin. Where it does not, paste a token — it is held for this
+                                      tab only and never saved or built into the app.
+                                    </p>
+                                    <input
+                                      type="password" className="calc-input" placeholder="Bearer token (optional)"
+                                      value={reviewToken}
+                                      onChange={(e) => {
+                                        setReviewToken(e.target.value);
+                                        try {
+                                          if (e.target.value) sessionStorage.setItem('hb_review_token', e.target.value);
+                                          else sessionStorage.removeItem('hb_review_token');
+                                        } catch { /* private window: it just will not persist */ }
+                                      }}
+                                    />
+                                  </details>
+                                </div>
+                              );
+                            })()}
 
                             {!open && (
                               <div className="hb-notice">
@@ -11776,7 +12707,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const totals = {
               base: sum(r => r.pay.basePay),
               extraSessions: sum(r => r.pay.extraSessions),
-              extraSessionPay: sum(r => r.pay.extraSessionPay),
+              beyondAvailabilitySessions: sum(r => r.pay.beyondAvailabilitySessions),
+              beyondAvailabilityPay: sum(r => r.pay.beyondAvailabilityPay),
               sessionPay: sum(r => r.pay.sessionPay),
               night: sum(r => r.pay.nightSessionPay),
               milestone: sum(r => r.pay.milestoneIncentive),
@@ -11785,7 +12717,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
               deductions: sum(r => r.pay.penaltyDeductions),
               gross: sum(r => r.pay.grossPay)
             };
-            totals.sessions = totals.extraSessionPay + totals.sessionPay;
+            totals.sessions = totals.beyondAvailabilityPay + totals.sessionPay;
             totals.incentives = totals.milestone + totals.consistency + totals.streakOrg + totals.night;
 
             const selected = run.find(r => r.coach.id === payCalcCoachId);
@@ -12144,7 +13076,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <th className="group-tint-blue num-col">Per-Session Rate</th>
                           <th className="group-tint-blue num-col">Base / Fixed Pay</th>
                           <th className="group-tint-blue num-col">Extra Sessions</th>
-                          <th className="group-tint-blue num-col">Extra Session Pay</th>
+                          <th className="group-tint-blue num-col">Beyond Availability</th>
+                          <th className="group-tint-blue num-col">Beyond-Availability Pay</th>
                           <th className="group-tint-blue num-col">Per-Session Pay</th>
                           <th className="group-tint-green num-col">Night Premium</th>
                           <th className="group-tint-green num-col">Milestone</th>
@@ -12156,7 +13089,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </thead>
                       <tbody>
                         {run.length === 0 && (
-                          <tr><td colSpan={17} className="text-muted">No score records for {period}.</td></tr>
+                          <tr><td colSpan={18} className="text-muted">No score records for {period}.</td></tr>
                         )}
                         {run.map(r => (
                           <tr
@@ -12176,7 +13109,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <td className="num-col">{rupees(r.pay.perSessionRate)}</td>
                             <td className="num-col">{rupees(r.pay.basePay)}</td>
                             <td className="num-col">{r.pay.extraSessions}</td>
-                            <td className="num-col">{rupees(r.pay.extraSessionPay)}</td>
+                            <td className="num-col">{r.pay.beyondAvailabilitySessions}</td>
+                            <td className="num-col">{rupees(r.pay.beyondAvailabilityPay)}</td>
                             <td className="num-col">{rupees(r.pay.sessionPay)}</td>
                             <td className="num-col">{rupees(r.pay.nightSessionPay)}</td>
                             <td className="num-col">{rupees(r.pay.milestoneIncentive)}</td>
@@ -12194,7 +13128,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <td colSpan={6}>{run.length} coaches</td>
                             <td className="num-col">{rupees(totals.base)}</td>
                             <td className="num-col">{totals.extraSessions}</td>
-                            <td className="num-col">{rupees(totals.extraSessionPay)}</td>
+                            <td className="num-col">{totals.beyondAvailabilitySessions}</td>
+                            <td className="num-col">{rupees(totals.beyondAvailabilityPay)}</td>
                             <td className="num-col">{rupees(totals.sessionPay)}</td>
                             <td className="num-col">{rupees(totals.night)}</td>
                             <td className="num-col">{rupees(totals.milestone)}</td>
@@ -12264,6 +13199,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       category: selected.coach.coach_category,
                       score: selected.score,
                       sessions: Number(selected.record.sessions_completed) || 0,
+                      thresholdOverride: selected.record.threshold_override ?? "",
                       nightSessions: Number(selected.record.night_sessions) || 0,
                       streak: Number(selected.record.five_star_streak) || 0,
                       consistency: selected.pay.consistencyEligible ? "YES" : "NO",
@@ -15353,7 +16289,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <td>{coach.coach_category}</td>
                                 <td>{(calcScoreObj.hbScore || calcScoreObj.hb_score).toFixed(2)}</td>
                                 <td>₹{pay.basePay.toLocaleString('en-IN')}</td>
-                                <td>₹{(pay.extraSessionPay + pay.sessionPay).toLocaleString('en-IN')}</td>
+                                <td>₹{(pay.beyondAvailabilityPay + pay.sessionPay).toLocaleString('en-IN')}</td>
                                 <td>₹{incSum.toLocaleString('en-IN')}</td>
                                 <td className="text-red">₹{pay.penaltyDeductions.toLocaleString('en-IN')}</td>
                                 <td><strong>₹{pay.grossPay.toLocaleString('en-IN')}</strong></td>
@@ -17585,7 +18521,8 @@ HB+_030,185,0,96`} />
         const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
         const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
-        const earningsSum = pay.basePay + pay.extraSessionPay + pay.sessionPay + pay.nightSessionPay + pay.milestoneIncentive + 
+        const earningsSum = pay.basePay + pay.beyondAvailabilityPay +
+                            pay.sessionPay + pay.nightSessionPay + pay.milestoneIncentive + 
                             pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + 
                             pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
 

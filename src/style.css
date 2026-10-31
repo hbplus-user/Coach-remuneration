@@ -1420,6 +1420,19 @@ button, input, select, textarea {
   background-color: var(--accent-teal);
   color: var(--brand-bone);
 }
+.btn-row-icon.icon-fill {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background-color: var(--accent-blue-glow);
+}
+.btn-row-icon.icon-fill:hover {
+  background-color: var(--accent-blue);
+  color: var(--brand-bone);
+}
+.btn-row-icon.icon-fill:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
 .btn-row-icon.icon-save {
   color: var(--brand-bone);
   background-color: var(--accent-teal);
@@ -5029,3 +5042,90 @@ form {
 }
 .hb-open-months p { margin: 0 0 0.8rem; font-size: 0.86rem; line-height: 1.5; }
 .hb-open-months > div { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+/* Reviews feed → 5-Star Streak. What the feed said is shown before anything
+   is written: a parse failure and a genuine zero look identical on a card. */
+.hb-reviews {
+  margin: 0.9rem 0; padding: 1rem 1.1rem; border-radius: 12px;
+  background: var(--brand-cream); border: 1px solid var(--border-strong);
+}
+.hb-reviews-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.hb-reviews-note { margin: 0.6rem 0 0; font-size: 0.84rem; line-height: 1.55; }
+.hb-reviews-meta { opacity: 0.75; font-size: 0.78rem; }
+.hb-reviews-ok {
+  margin: 0.6rem 0 0; font-size: 0.84rem; line-height: 1.55;
+  color: var(--success, #2e6b4f); font-weight: 600;
+}
+.hb-reviews-error { margin: 0.6rem 0 0; font-size: 0.84rem; line-height: 1.55; color: var(--danger, #b3261e); }
+.hb-reviews .hb-btn-primary { margin-top: 0.7rem; }
+.hb-reviews-auth { margin-top: 0.8rem; }
+.hb-reviews-auth summary { cursor: pointer; font-size: 0.8rem; opacity: 0.8; }
+.hb-reviews-auth .calc-input { margin-top: 0.5rem; width: 100%; }
+
+/* Deleting a coach cascades through their score cards, incidents, org work
+   and appeals. It sits apart from the ordinary profile edits and says so. */
+.coach-danger {
+  margin-top: 1.5rem; padding: 1rem 1.1rem; border-radius: 12px;
+  border: 1px solid rgba(159, 64, 34, 0.35);
+  background: rgba(159, 64, 34, 0.05);
+  display: flex; flex-wrap: wrap; gap: 1rem;
+  align-items: flex-start; justify-content: space-between;
+}
+.coach-danger > div:first-child { flex: 1 1 22rem; }
+.coach-danger strong { color: var(--brand-rust); }
+.coach-danger p { margin: 0.45rem 0 0; font-size: 0.84rem; line-height: 1.55; }
+.coach-danger-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+@media (max-width: 640px) {
+  .coach-danger-actions { width: 100%; }
+  .coach-danger-actions .btn { flex: 1 1 auto; }
+}
+
+/* Coach status. Active and Inactive were both landing on warm cream washes —
+   badge-success and badge-muted — and at a glance they read as the same chip.
+   These separate them on three counts at once, so the difference survives a
+   monochrome screen and the eight percent of men who cannot tell the two
+   hues apart: a filled green against an unfilled grey, a solid border
+   against a dashed one, and weight. */
+.badge-active {
+  background-color: rgba(116, 116, 64, 0.22);
+  color: #41411f;
+  border: 1px solid rgba(116, 116, 64, 0.75);
+  font-weight: 650;
+}
+.badge-inactive {
+  background-color: transparent;
+  color: #8a8a94;
+  border: 1px dashed rgba(100, 100, 112, 0.5);
+  font-weight: 500;
+}
+/* Exited is final rather than paused, so it is flatter still. */
+.badge-exited {
+  background-color: rgba(100, 100, 112, 0.08);
+  color: #80808c;
+  border: 1px solid rgba(100, 100, 112, 0.3);
+  font-weight: 500;
+  text-decoration: line-through;
+}
+/* The session summary sits above the streak in the same panel; a rule keeps
+   the two fetches from reading as one block of text. */
+/* The one-step confirm. Set apart from the two feed blocks below it, because
+   pressing it writes all three figures at once. */
+.hb-reviews-apply {
+  margin: 0.8rem 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent, #6b4f3a);
+  border-radius: 0.5rem;
+  background: var(--surface-2, rgba(0, 0, 0, 0.02));
+}
+.hb-reviews-apply .hb-reviews-note:first-child { margin-top: 0; }
+
+.hb-reviews-block {
+  padding-bottom: 0.9rem; margin-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border-color);
+}
+/* The availability comparison can run a whole cycle, so it scrolls rather
+   than pushing the leave register off the screen. */
+.hb-avail-table { max-height: 20rem; overflow: auto; margin: 0.7rem 0; }
+.hb-avail-table table { font-size: 0.82rem; }
+.hb-avail-table thead th { position: sticky; top: 0; background: var(--surface, #fff); z-index: 1; }

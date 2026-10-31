@@ -493,6 +493,16 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   let effectiveRate = setRate ?? (rates.per_session || 0);
   const rateIsOverridden = setRate !== null;
 
+  // The session threshold. The band's table sets one, but it is a judgement
+  // about what a particular coach's salary already covers, so a figure set for
+  // the month wins — the same precedence the pay fields follow, and for the
+  // same reason: this month's decision must not reach back or be reached into.
+  const defaultThreshold = coach.coach_category === 'Fixed'
+    ? (rates.threshold || (variantConfig.discipline === 'Yoga' ? 117 : 156))
+    : (rates.threshold || 96);
+  const threshold = positive(monthData.threshold_override) ?? defaultThreshold;
+  const thresholdIsOverridden = positive(monthData.threshold_override) !== null;
+
   let basePay = 0;
   let extraSessions = 0;
   let extraSessionPay = 0;
@@ -505,16 +515,13 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
       ?? positive(coach.fixed_salary_override)
       ?? rates.std_fixed ?? 0;
 
-    // extra sessions
-    const threshold = rates.threshold || (variantConfig.discipline === 'Yoga' ? 117 : 156);
+    // Sessions taken beyond the availability the salary covers: the month's
+    // total less the threshold. Paid separately, below, so the two names for
+    // the one quantity cannot drift apart or be paid twice.
     extraSessions = Math.max(0, sessionsCompleted - threshold);
     // Costed from this coach's own monthly pay, not the band's session rate.
     if (!rateIsOverridden) effectiveRate = fixedPerSessionRate(basePay);
-    // Reference Table A, band 0–30: "No per sessions pay. Only Fixed Pay." The
-    // count is still reported — the sessions happened — but none of them are
-    // paid at the per-session rate.
-    const nonFunctional = bandLabel.startsWith('0–30') || bandLabel.startsWith('0-30');
-    extraSessionPay = nonFunctional ? 0 : extraSessions * effectiveRate;
+    extraSessionPay = 0;
   } else if (coach.coach_category === 'Flexi-Fixed') {
     // Flexi-Fixed has a fixed pay component + per-session for all sessions
     basePay = positive(monthData.fixed_pay_override)
@@ -660,6 +667,22 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const missedSessionTierApplied = missedSessionTier(missedSessions);
   const missedSessionDeduction = missedSessionPenalty(missedSessionRate, missedSessions);
 
+  // 7c. Sessions taken beyond availability — a Fixed coach's month less the
+  //     threshold their salary already covers. Extra work, so it is paid on
+  //     top of the salary at the coach's own per-session rate.
+  //
+  //     This is the same quantity the extra-session line used to carry, and it
+  //     is paid here instead of there. Two names for one count is how a figure
+  //     gets paid twice, so there is now one: extraSessionPay is held at zero
+  //     and this is the payment.
+  //
+  //     It is paid on every band. Reference Table A withholds per-session pay
+  //     from 0–30 Non-Functional, but that is about the sessions the salary
+  //     already covers; work taken beyond the agreed availability was never
+  //     covered by it.
+  const beyondAvailabilitySessions = coach.coach_category === 'Fixed' ? extraSessions : 0;
+  const beyondAvailabilityPay = beyondAvailabilitySessions * effectiveRate;
+
   // 8. Total penalty from active violations this month.
   //    A waived incident stays on the record — it still counts towards the
   //    occurrence history that sets the next one's consequence — but waiving it
@@ -675,7 +698,8 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   // 9. GROSS PAY CALCULATION
   // Loss of Pay comes off before tax, as the policy requires: the withholding
   // is on what was actually earned, not on days that were never worked.
-  const grossPay = basePay + extraSessionPay + sessionPay + nightSessionPay + 
+  const grossPay = basePay + extraSessionPay + beyondAvailabilityPay + sessionPay +
+                   nightSessionPay +
                    milestoneIncentive + consistencyBonus + streakBonusPay + 
                    orgWorkPay + trialIncentive + eventIncentive + 
                    hopOohPremium + hopPtHomePremium + hopPerformanceCreditsPay - 
@@ -684,8 +708,13 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   return {
     perSessionRate: effectiveRate,
     basePay,
+    threshold,
+    defaultThreshold,
+    thresholdIsOverridden,
     extraSessions,
     extraSessionPay,
+    beyondAvailabilitySessions,
+    beyondAvailabilityPay,
     sessionPay,
     nightSessionPay,
     milestoneIncentive,

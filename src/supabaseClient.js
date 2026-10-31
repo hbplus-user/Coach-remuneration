@@ -47,6 +47,7 @@ const PERIOD_COLS = [
   'coach_id', 'period_month', 'period_start', 'period_end', 'prof_appearance',
   'client_engagement', 'safety', 'punctuality', 'team_conduct', 'communication',
   'meetings_scheduled', 'meetings_attended', 'attendance_pct', 'sessions_completed',
+  'threshold_override',
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
   'five_star_streak', 'missed_sessions', 'hb_score', 'band', 'status', 'overrides',
   // Pay set for this month specifically, which the band must not overwrite.
@@ -67,7 +68,7 @@ const COACH_COLS = [
   'date_of_first_relevant_certification', 'freelance_past_exp_with_document',
   'freelance_past_exp_without_document', 'non_coaching_exp_years',
   'education_score_override', 'education_qualification', 'education_type',
-  'reporting_manager_id', 'assigned_property', 'status', 'bank_account',
+  'reporting_manager_id', 'assigned_property', 'app_coach_id', 'status', 'bank_account',
   'bank_holder_name', 'bank_name', 'bank_ifsc', 'bank_branch',
   'bank_account_type', 'bank_upi', 'pan_number',
   'fixed_salary_override', 'flexi_fixed_base_salary', 'per_session_override', 'certifications',
@@ -87,7 +88,7 @@ const blanksToNull = (row, keys) => {
 const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
-  'per_session_override', 'fixed_pay_override',
+  'per_session_override', 'fixed_pay_override', 'threshold_override',
   'training_end_date', 'probation_start_date', 'probation_end_date', 'weekly_off_day',
   'penalty_waiver',
   'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'
@@ -191,6 +192,17 @@ const MAPPERS = {
       'coach_id', 'working_day', 'expected_hours', 'logged_hours', 'shortfall_hours',
       'outcome', 'lop_days', 'planned', 'disputed', 'dispute_note', 'resolved_by',
       'cover_type_id'
+    ]), DATE_ISH),
+    fromRow: r => r,
+    deleteBy: 'compound',
+    keyColumns: ['coach_id', 'working_day']
+  },
+  availability: {
+    table: 'coach_availability',
+    key: a => `${a.coach_id}|${a.working_day}`,
+    onConflict: 'coach_id,working_day',
+    toRow: a => blanksToNull(pick(a, [
+      'coach_id', 'working_day', 'start_time', 'end_time', 'hours', 'source'
     ]), DATE_ISH),
     fromRow: r => r,
     deleteBy: 'compound',
@@ -437,7 +449,8 @@ export async function loadState() {
   if (!supabase) return null;
 
   const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
-         attendanceLogs, attendanceDays, leaveBalances, leaveApplications, regularisations, holidays,
+         attendanceLogs, attendanceDays, availability,
+         leaveBalances, leaveApplications, regularisations, holidays,
          violations, appeals, auditLog, cycles] =
     await Promise.all([
       supabase.from('variants').select('*').order('id'),
@@ -449,6 +462,7 @@ export async function loadState() {
       fetchAll('org_work'),
       fetchAll('attendance_logs', q => q.order('logged_in_at', { ascending: false })),
       fetchAll('attendance_days'),
+      fetchAll('coach_availability'),
       fetchAll('leave_balances'),
       fetchAll('leave_applications', q => q.order('applied_at', { ascending: false })),
       fetchAll('attendance_regularisations', q => q.order('working_day', { ascending: false })),
@@ -462,7 +476,7 @@ export async function loadState() {
     ]);
 
   const failed = [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
-                  attendanceLogs, attendanceDays, leaveBalances, leaveApplications, holidays,
+                  attendanceLogs, attendanceDays, availability, leaveBalances, leaveApplications, holidays,
                   violations, appeals, auditLog, cycles]
     .find(r => r.error);
   if (failed) throw failed.error;
@@ -492,6 +506,7 @@ export async function loadState() {
     orgWork: orgWork.data ?? [],
     attendanceLogs: attendanceLogs.data ?? [],
     attendanceDays: attendanceDays.data ?? [],
+    availability: availability.data ?? [],
     leaveBalances: leaveBalances.data ?? [],
     leaveApplications: leaveApplications.data ?? [],
     regularisations: regularisations.error ? [] : (regularisations.data ?? []),
