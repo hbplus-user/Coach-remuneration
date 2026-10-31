@@ -67,11 +67,22 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'This proxy only reads.' });
   }
 
-  const parts = [].concat(req.query.path || []);
+  // Where the route name comes from, and why not req.query.path: the catch-all
+  // file name promises Vercel will fill that in, and on this deployment it did
+  // not — so every path fell through to the 404 below and the dashboard was
+  // told the admin API had answered 404 when the admin API had never been
+  // asked. The URL is the one thing always present, so it is read first and
+  // the route param is only a fallback.
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const fromPath = url.pathname.replace(/^\/+api\/+hb\/*/, '').split('/').filter(Boolean);
+  const parts = fromPath.length ? fromPath : [].concat(req.query?.path || []);
   const route = ROUTES[parts[0]];
   if (!route) {
+    // Name what was asked for. A 404 that does not say what it did not find
+    // is a morning lost to guessing.
     return res.status(404).json({
-      error: `Unknown route. This proxy serves: ${Object.keys(ROUTES).join(', ')}.`
+      error: `Unknown route ${JSON.stringify(parts[0] ?? url.pathname)}. `
+        + `This proxy serves: ${Object.keys(ROUTES).join(', ')}.`
     });
   }
 
@@ -88,11 +99,10 @@ export default async function handler(req, res) {
 
   // Forward the query string as given — coach_id, start_date, limit and the
   // rest are the admin API's business, not this function's.
-  const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(req.query)) {
-    if (k === 'path') continue;
-    for (const one of [].concat(v)) qs.append(k, one);
-  }
+  // From the URL for the same reason as the route above, so the two cannot
+  // disagree about what was asked for.
+  const qs = new URLSearchParams(url.search);
+  qs.delete('path');
 
   let upstream;
   try {
