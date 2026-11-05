@@ -67,7 +67,7 @@ import {
 } from './calculations.js';
 import {
   fetchReviews, fiveStarStreak, REVIEW_API_DEFAULT,
-  fetchSessionSummary, SESSION_API_DEFAULT,
+  fetchSessionSummary, SESSION_API_DEFAULT, fetchNightSessions,
   fetchAvailability, AVAILABILITY_API_DEFAULT, istTimeOf
 } from './reviews.js';
 
@@ -4057,8 +4057,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
       token: await apiTokenFor(base)
     });
 
+    // Night sessions cannot come from the same answer: the summary carries
+    // counts and no times. They are counted by asking the same endpoint about
+    // the nights only, which is why this is a second call and a slower one.
+    const night = res.ok
+      ? await fetchNightSessions(coach.app_coach_id, {
+          base, fromDay: run.period_start, toDay: run.period_end,
+          token: await apiTokenFor(base)
+        })
+      : null;
+
     setSessionSync(res.ok
-      ? { coachId: coach.id, period: run.period_month, summary: res }
+      ? { coachId: coach.id, period: run.period_month, summary: res, night }
       : { coachId: coach.id, period: run.period_month, error: res.why, empty: res.empty });
   };
 
@@ -4126,12 +4136,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     const sBase = import.meta.env.VITE_SESSION_API_BASE || SESSION_API_DEFAULT;
     const rBase = import.meta.env.VITE_REVIEW_API_BASE || REVIEW_API_DEFAULT;
-    const [sRes, rRes] = await Promise.all([
+    const sToken = await apiTokenFor(sBase);
+    const [sRes, rRes, nRes] = await Promise.all([
       fetchSessionSummary(coach.app_coach_id, {
         base: sBase, fromDay: run.period_start, toDay: run.period_end,
-        token: await apiTokenFor(sBase)
+        token: sToken
       }),
-      fetchReviews(coach.app_coach_id, { base: rBase, token: await apiTokenFor(rBase) })
+      fetchReviews(coach.app_coach_id, { base: rBase, token: await apiTokenFor(rBase) }),
+      // Its own call, and about thirty requests behind it: see fetchNightSessions.
+      fetchNightSessions(coach.app_coach_id, {
+        base: sBase, fromDay: run.period_start, toDay: run.period_end, token: sToken
+      })
     ]);
 
     // One feed being down must not hide the other's numbers, so each is
@@ -4151,6 +4166,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
       }
     } else {
       failed.push(`sessions — ${sRes.why}`);
+    }
+
+    if (nRes.ok) {
+      changes.push(`night ${run.night_sessions ?? 0} → ${nRes.completed}`);
+      patch.night_sessions = nRes.completed;
+    } else {
+      failed.push(`night sessions — ${nRes.why}`);
     }
 
     if (rRes.ok) {
@@ -12118,11 +12140,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   changes.push(`sessions ${was.sessions ?? run.sessions_completed ?? 0} → ${sum.completed}`);
                                 if (sum.coachMissed != null)
                                   changes.push(`missed ${was.missed_sessions ?? run.missed_sessions ?? 0} → ${sum.coachMissed}`);
+                                if (sq.night?.ok)
+                                  changes.push(`night ${was.night_sessions ?? run.night_sessions ?? 0} → ${sq.night.completed}`);
                                 changes.push(`streak ${was.streak ?? run.five_star_streak ?? 0} → ${r.counted.streak}`);
                                 setScoreDraft(prev => ({
                                   ...prev,
                                   ...(sum.completed != null ? { sessions: sum.completed } : {}),
                                   ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {}),
+                                  ...(sq.night?.ok ? { night_sessions: sq.night.completed } : {}),
                                   streak: r.counted.streak
                                 }));
                                 setApplyNote({ text: `Written into the form: ${changes.join(' · ')}. `
@@ -12130,6 +12155,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 logAudit('Filled From App',
                                   `${picked.name} (${picked.id}) — ${run.period_month}: sessions ` +
                                   `${sum.completed ?? 'unchanged'}, missed ${sum.coachMissed ?? 'unchanged'}, ` +
+                                  `night ${sq.night?.ok ? sq.night.completed : 'unchanged'}, ` +
                                   `streak ${r.counted.streak}. ${sum.memberMissed ?? 0} member no-show(s) not carried.`);
                               };
                               return (
@@ -12154,12 +12180,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         Ready to write:{' '}
                                         <strong>{sq.summary.completed ?? '—'}</strong> sessions ·{' '}
                                         <strong>{sq.summary.coachMissed ?? '—'}</strong> missed ·{' '}
+                                        <strong>{sq.night?.ok ? sq.night.completed : '—'}</strong> night ·{' '}
                                         <strong>{r.counted.streak}</strong> streak.
                                         {sq.summary.memberMissed ? ` ${sq.summary.memberMissed} member no-show(s) not included.` : ''}
+                                        {sq.night && !sq.night.ok ? ` Night sessions could not be counted: ${sq.night.why}` : ''}
                                       </p>
                                       {open && mayEdit ? (
                                         <button className="hb-btn hb-btn-primary" onClick={applyAll}>
-                                          Use all three
+                                          Use all four
                                         </button>
                                       ) : (
                                         <p className="hb-reviews-error">

@@ -709,3 +709,139 @@ export async function fetchAvailability(appCoachId, {
   }
   return { ok: true, ...parsed, window: { from: fromDay, to: toDay } };
 }
+
+/* -------------------------------------------------------------------------
+ * Night sessions
+ * ---------------------------------------------------------------------- */
+
+// A night session is one taken between 10pm and 4am. Both ends are IST hours
+// on the clock, not a duration: 22:00 to 24:00 belongs to the evening's date,
+// 00:00 to 04:00 to the next morning's.
+export const NIGHT_FROM_HOUR = 22;
+export const NIGHT_TO_HOUR = 4;
+
+const HOUR = 3600 * 1000;
+const DAY_MS = 24 * HOUR;
+
+/** The ISO day `n` days after `isoDay`, in IST. */
+const addDays = (isoDay, n) =>
+  new Date(istDayStart(isoDay) + n * DAY_MS + 12 * HOUR)
+    .toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+/**
+ * The night windows covering a cycle, as [startMs, endMs] pairs.
+ *
+ * Every instant inside the cycle's own dates whose IST clock reads 22:00-04:00,
+ * and no instant outside them. The bulk of it is one window per night, each
+ * running from 22:00 across midnight to 04:00 — which is both how a night is
+ * actually worked and half the requests of asking for the two halves apart.
+ *
+ * The two ends need their own windows. The cycle's first morning has no
+ * preceding evening inside the cycle, and the last evening has no morning
+ * after it, so without them the first 00:00-04:00 and the last 22:00-24:00
+ * would be dropped — the exact small, invisible undercount that this kind of
+ * window arithmetic is prone to.
+ */
+export const nightWindows = (fromDay, toDay) => {
+  const out = [];
+  if (!fromDay || !toDay) return out;
+  const last = istDayStart(toDay);
+
+  // The cycle's first morning, 00:00-04:00.
+  out.push([istDayStart(fromDay), istDayStart(fromDay) + NIGHT_TO_HOUR * HOUR - 1]);
+
+  for (let day = fromDay; istDayStart(day) < last; day = addDays(day, 1)) {
+    const start = istDayStart(day) + NIGHT_FROM_HOUR * HOUR;
+    const end = istDayStart(addDays(day, 1)) + NIGHT_TO_HOUR * HOUR - 1;
+    out.push([start, end]);
+  }
+
+  // The cycle's last evening, 22:00 to the end of the day.
+  out.push([last + NIGHT_FROM_HOUR * HOUR, istDayEnd(toDay)]);
+  return out;
+};
+
+/**
+ * One session-summary call over an arbitrary window.
+ *
+ * The admin API filters on the exact timestamps given, not on whole days —
+ * asking for 12:00-14:00 really does answer for those two hours. That is what
+ * makes counting night sessions possible at all from an endpoint that returns
+ * no session times: ask only about the night, and the count that comes back is
+ * the night's.
+ *
+ * An empty answer is a zero here, not an error. Most nights have no sessions.
+ */
+const countsInWindow = async (appCoachId, base, token, [start, end], signal) => {
+  const url = apiURL(base);
+  url.searchParams.set('start_date', String(start));
+  url.searchParams.set('end_date', String(end));
+  url.searchParams.set('coach_id', appCoachId);
+
+  const headers = { Accept: 'application/json' };
+  if (token) headers.Authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+
+  const res = await fetch(url.toString(), {
+    headers, credentials: token ? 'omit' : 'include', signal
+  });
+  if (!res.ok) throw new Error(`The API answered ${res.status} ${res.statusText}.`);
+
+  const parsed = parseSessionSummary(await res.json());
+  if (parsed.empty) return { completed: 0, total: 0 };
+  if (!parsed.ok) throw new Error(parsed.why);
+  return { completed: Number(parsed.completed) || 0, total: Number(parsed.total) || 0 };
+};
+
+/**
+ * How many sessions a coach took between 10pm and 4am across a pay cycle.
+ *
+ * The summary endpoint returns counts and no times, so there is no single call
+ * that answers this. It is asked one night at a time and added up — about
+ * thirty requests for a cycle, run a few at once rather than all at once so a
+ * fill does not arrive as a burst on the admin API.
+ *
+ * Completed sessions only. The night premium pays for having worked the
+ * night; a session nobody turned up to was not worked.
+ */
+export async function fetchNightSessions(appCoachId, {
+  base = SESSION_API_DEFAULT,
+  fromDay,
+  toDay,
+  token = null,
+  signal,
+  concurrency = 5
+} = {}) {
+  if (!appCoachId) return { ok: false, why: 'This coach has no app ID set.' };
+  if (!fromDay || !toDay) return { ok: false, why: 'No period to fetch.' };
+
+  const windows = nightWindows(fromDay, toDay);
+  let completed = 0;
+  let total = 0;
+  let next = 0;
+
+  const worker = async () => {
+    while (next < windows.length) {
+      const mine = windows[next++];
+      const c = await countsInWindow(appCoachId, base, token, mine, signal);
+      completed += c.completed;
+      total += c.total;
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, windows.length) }, worker));
+  } catch (e) {
+    return {
+      ok: false,
+      why: `Could not count night sessions from ${apiHost(base)}: ${e.message}`
+    };
+  }
+
+  return {
+    ok: true,
+    completed,
+    total,
+    nights: windows.length,
+    window: { from: fromDay, to: toDay }
+  };
+}
