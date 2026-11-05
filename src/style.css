@@ -5129,3 +5129,18 @@ form {
 .hb-avail-table { max-height: 20rem; overflow: auto; margin: 0.7rem 0; }
 .hb-avail-table table { font-size: 0.82rem; }
 .hb-avail-table thead th { position: sticky; top: 0; background: var(--surface, #fff); z-index: 1; }
+
+/* Sessions Completed carries the member no-shows inside it. The total reads
+   as the number it is; the parts sit under it, quiet enough not to be mistaken
+   for a figure of their own. */
+.cell-split {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.15;
+}
+.cell-split small {
+  font-size: 0.72em;
+  color: var(--text-muted, #8a8578);
+  font-variant-numeric: tabular-nums;
+}

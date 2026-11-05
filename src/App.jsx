@@ -457,10 +457,6 @@ const COACH_SCORECARD_GROUPS = [
     key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
-      // Part of the figure above, not an addition to it: the coach held the
-      // slot and is paid, so it is counted in Sessions Completed and shown
-      // here so the total can be broken back down.
-      { key: "member_missed", label: "Of Which Member No-Show", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "beyond_sessions", label: "Beyond Availability", entry: "manual", source: "This screen", max: 999, decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
@@ -9975,6 +9971,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       </span>
                                     )}
                                   </div>
+                                ) : col.key === 'sessions' && Number(row.member_missed) > 0 ? (
+                                  // The member no-shows are inside this total,
+                                  // not beside it. Shown as the sum they make
+                                  // so the figure can be read back apart
+                                  // without a column of its own.
+                                  <span className="cell-split"
+                                    title={`${Number(row.sessions) - Number(row.member_missed)} worked, `
+                                      + `${row.member_missed} the member did not turn up for — the coach held `
+                                      + `the slot, so those are paid too.`}>
+                                    <strong>{scoreCellValue(col, row)}</strong>
+                                    <small>{Number(row.sessions) - Number(row.member_missed)} + {row.member_missed}</small>
+                                  </span>
                                 ) : (
                                   scoreCellValue(col, row)
                                 )}
