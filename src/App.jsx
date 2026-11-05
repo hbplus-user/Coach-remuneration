@@ -59,6 +59,7 @@ import {
   getHighestEducationEntry,
   amountInWords,
   fixedPerSessionRate,
+  BEYOND_AVAILABILITY_RATE,
   payslipEarnings,
   getPeriodForDate,
   getNextPeriod,
@@ -624,6 +625,11 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
   const [rateOverride, setRateOverride] = useState(seed?.rateOverride ?? "");
   // Blank means "use the band's threshold"; a number sets it for this month.
   const [thresholdOverride, setThresholdOverride] = useState(seed?.thresholdOverride ?? "");
+  // Sessions taken outside the hours the coach published. Recorded, not
+  // derived: the threshold cannot tell you which sessions fell outside them.
+  const [beyondSessions, setBeyondSessions] = useState(seed?.beyondSessions ?? 0);
+  // Blank means the flat default; a number sets this coach's own rate.
+  const [beyondRate, setBeyondRate] = useState(seed?.beyondRate ?? "");
   // Both pay fields start locked. Taking one over is a deliberate act, as it is
   // for a calculated cell on the score card.
   const [unlockedPay, setUnlockedPay] = useState({ rate: false, base: false });
@@ -640,7 +646,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
         seed.key, seed.coachName, seed.variantId, seed.category, seed.score,
         seed.sessions, seed.nightSessions, seed.streak, seed.consistency,
         seed.orgWorkPay, seed.penalties, seed.missedSessions, seed.lopDays,
-        seed.baseOverride, seed.rateOverride, seed.thresholdOverride
+        seed.baseOverride, seed.rateOverride, seed.thresholdOverride,
+        seed.beyondSessions, seed.beyondRate
       ].join('|')
     : '';
   useEffect(() => {
@@ -661,6 +668,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setBaseOverride(seed.baseOverride ?? "");
     setRateOverride(seed.rateOverride ?? "");
     setThresholdOverride(seed.thresholdOverride ?? "");
+    setBeyondSessions(seed.beyondSessions ?? 0);
+    setBeyondRate(seed.beyondRate ?? "");
     // A different coach or period is a different pay decision, so both lock again.
     setUnlockedPay({ rate: false, base: false });
   }, [seedSignature]);
@@ -731,7 +740,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work', null, null],
       ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null],
       ['Penalty Waived', penaltyWaiver, seed.penaltyWaiver ?? 0, 'this screen', 'penaltyWaiver', 'period'],
-      ['Session Threshold', thresholdOverride, seed.thresholdOverride ?? "", 'this screen', 'thresholdOverride', 'period']
+      ['Session Threshold', thresholdOverride, seed.thresholdOverride ?? "", 'this screen', 'thresholdOverride', 'period'],
+      ['Sessions Beyond Availability', beyondSessions, seed.beyondSessions ?? 0, 'this screen', 'beyondSessions', 'period'],
+      ['Beyond-Availability Rate', beyondRate, seed.beyondRate ?? "", 'this screen', 'beyondRate', 'profile']
     ].filter(([, now, was]) => !same(now, was))
      .map(([label, now, was, where, commit, scope]) => ({ label, now, was, where, commit, scope }));
   })();
@@ -784,6 +795,8 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     setPenalties(seed.penalties ?? 0);
     setPenaltyWaiver(seed.penaltyWaiver ?? 0);
     setThresholdOverride(seed.thresholdOverride ?? "");
+    setBeyondSessions(seed.beyondSessions ?? 0);
+    setBeyondRate(seed.beyondRate ?? "");
   };
 
   const forecastNow = forecastFor(band.label);
@@ -806,7 +819,9 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
     variant_id: vConfig.id,
     ...(baseOverride !== "" && category === "Fixed" ? { fixed_salary_override: Number(baseOverride) } : {}),
     ...(baseOverride !== "" && category === "Flexi-Fixed" ? { flexi_fixed_base_salary: Number(baseOverride) } : {}),
-    ...(rateOverrideNum !== null ? { per_session_override: rateOverrideNum } : {})
+    ...(rateOverrideNum !== null ? { per_session_override: rateOverrideNum } : {}),
+    ...(beyondRate !== "" && Number(beyondRate) > 0
+      ? { beyond_availability_rate_override: Number(beyondRate) } : {})
   };
   const thresholdOverrideNum = thresholdOverride !== "" && Number.isFinite(Number(thresholdOverride))
     ? Math.max(0, Math.floor(Number(thresholdOverride)))
@@ -814,6 +829,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
 
   const syntheticMonth = {
     ...(thresholdOverrideNum !== null ? { threshold_override: thresholdOverrideNum } : {}),
+    beyond_availability_sessions: Number(beyondSessions) || 0,
     lop_days: Number(lopDays) || 0,
     missed_sessions: Number(missedSessions) || 0,
     sessions_completed: Number(sessions) || 0,
@@ -1177,6 +1193,24 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                  ? `set for this month · the band's own is ${pay.defaultThreshold}`
                  : `blank uses the band's ${pay.defaultThreshold} · extra-session pay starts past this`)}
             {inputRow("Sessions Completed This Month", num(sessions, setSessions))}
+            {/* Recorded, not worked out. The threshold asks whether the month
+                ran long; this asks how much of it fell outside the hours the
+                coach offered, and only the person entering it knows that. */}
+            {category === 'Fixed' && inputRow("Sessions Beyond Availability",
+              num(beyondSessions, setBeyondSessions),
+              pay.beyondAvailabilityOverlap > 0
+                ? `⚠ ${pay.beyondAvailabilityOverlap} of these are also past the threshold — those are paid on both lines`
+                : `taken outside published hours · paid at ${rupees(pay.beyondAvailabilityRate)} each, on top`)}
+            {category === 'Fixed' && inputRow("Beyond-Availability Rate (₹)", (
+              <input
+                type="number" className="calc-input" min="0"
+                value={beyondRate}
+                placeholder={String(BEYOND_AVAILABILITY_RATE)}
+                onChange={(e) => setBeyondRate(e.target.value)}
+              />
+            ), beyondRate !== "" && Number(beyondRate) > 0
+                 ? 'set on this coach — applies to every month, including settled ones'
+                 : `blank uses the standard ${rupees(BEYOND_AVAILABILITY_RATE)}`)}
             {inputRow("Night Sessions Count", num(nightSessions, setNightSessions), "10 PM – 4 AM")}
             {inputRow("5-Star Streak Count", num(streak, setStreak), "consecutive")}
             {inputRow("Consistency Bonus Eligible?", (
@@ -1337,12 +1371,26 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               category === 'Fixed'
                 ? `${Number(sessions) || 0} completed − ${pay.threshold} threshold`
                 : "Fixed only — the flexible categories are paid per session")}
+            {outputRow("Extra-Session Pay (₹)", rupees(pay.extraSessionPay),
+              category === 'Fixed'
+                ? (pay.extraSessionPay === 0 && pay.extraSessions > 0
+                    ? `${pay.extraSessions} × ${rupees(pay.perSessionRate)} withheld — 0–30 Non-Functional is fixed pay only`
+                    : `${pay.extraSessions} × ${rupees(pay.perSessionRate)}`)
+                : "Fixed only")}
             {outputRow("Sessions Beyond Availability", pay.beyondAvailabilitySessions,
-              "the same sessions, under the name they are paid by")}
+              category === 'Fixed'
+                ? "taken outside published hours — keyed in on the left, not worked out"
+                : "Fixed only")}
             {outputRow("Beyond-Availability Pay (₹)", rupees(pay.beyondAvailabilityPay),
               pay.beyondAvailabilitySessions > 0
-                ? `${pay.beyondAvailabilitySessions} × ${rupees(pay.perSessionRate)}, on top of the salary — paid once, on this row only`
+                ? `${pay.beyondAvailabilitySessions} × ${rupees(pay.beyondAvailabilityRate)}, on top of the salary`
                 : null)}
+            {pay.beyondAvailabilityOverlap > 0 && outputRow(
+              "⚠ Counted on both lines",
+              pay.beyondAvailabilityOverlap,
+              `up to ${pay.beyondAvailabilityOverlap} session(s) are past the threshold AND outside the offered `
+                + `hours, so they are paid twice — once at ${rupees(pay.perSessionRate)}, once at `
+                + `${rupees(pay.beyondAvailabilityRate)}. Lower one of the two counts if that is not intended.`)}
             {outputRow("Session Threshold", pay.threshold,
               pay.thresholdIsOverridden ? "set for this month" : null)}
 
@@ -3745,6 +3793,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
         ? null
         : Math.max(0, Math.floor(Number(values.thresholdOverride) || 0));
     }
+    if (values.beyondSessions !== undefined) {
+      periodPatch.beyond_availability_sessions = Math.max(0, Math.floor(Number(values.beyondSessions) || 0));
+    }
     // Loss of Pay is normally written by settling a day, so only the roles
     // that own pay may correct it here — which is already the gate above.
     if (values.lopDays !== undefined) periodPatch.lop_days = Number(values.lopDays) || 0;
@@ -3760,6 +3811,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     if (values.variantId !== undefined && values.variantId !== coach.variant_id) {
       coachPatch.variant_id = values.variantId;
+    }
+    // On the coach, not the month, so it re-prices every month they have —
+    // settled ones included. Blank hands them back to the standard rate.
+    if (values.beyondRate !== undefined) {
+      coachPatch.beyond_availability_rate_override =
+        values.beyondRate === "" || values.beyondRate === null
+          ? null
+          : Math.max(0, Number(values.beyondRate) || 0);
     }
 
     if (Object.keys(periodPatch).length) {
@@ -11436,6 +11495,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               score: seedRow.hb_score,
                               sessions: Number(selected.sessions_completed) || 0,
                               thresholdOverride: selected.threshold_override ?? "",
+                              beyondSessions: Number(selected.beyond_availability_sessions) || 0,
+                              beyondRate: coach.beyond_availability_rate_override ?? "",
                               nightSessions: Number(selected.night_sessions) || 0,
                               streak: Number(selected.five_star_streak) || 0,
                               consistency: (Number(selected.attendance_pct) >= 95 && periodVios.length === 0) ? "YES" : "NO",
@@ -13200,6 +13261,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       score: selected.score,
                       sessions: Number(selected.record.sessions_completed) || 0,
                       thresholdOverride: selected.record.threshold_override ?? "",
+                      beyondSessions: Number(selected.record.beyond_availability_sessions) || 0,
+                      beyondRate: selected.coach.beyond_availability_rate_override ?? "",
                       nightSessions: Number(selected.record.night_sessions) || 0,
                       streak: Number(selected.record.five_star_streak) || 0,
                       consistency: selected.pay.consistencyEligible ? "YES" : "NO",

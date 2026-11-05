@@ -47,7 +47,7 @@ const PERIOD_COLS = [
   'coach_id', 'period_month', 'period_start', 'period_end', 'prof_appearance',
   'client_engagement', 'safety', 'punctuality', 'team_conduct', 'communication',
   'meetings_scheduled', 'meetings_attended', 'attendance_pct', 'sessions_completed',
-  'threshold_override',
+  'threshold_override', 'beyond_availability_sessions',
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
   'five_star_streak', 'missed_sessions', 'hb_score', 'band', 'status', 'overrides',
   // Pay set for this month specifically, which the band must not overwrite.
@@ -68,6 +68,7 @@ const COACH_COLS = [
   'date_of_first_relevant_certification', 'freelance_past_exp_with_document',
   'freelance_past_exp_without_document', 'non_coaching_exp_years',
   'education_score_override', 'education_qualification', 'education_type',
+  'beyond_availability_rate_override',
   'reporting_manager_id', 'assigned_property', 'app_coach_id', 'status', 'bank_account',
   'bank_holder_name', 'bank_name', 'bank_ifsc', 'bank_branch',
   'bank_account_type', 'bank_upi', 'pan_number',
@@ -89,6 +90,7 @@ const DATE_ISH = [
   'date_of_joining', 'date_of_first_relevant_certification', 'incident_date',
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
   'per_session_override', 'fixed_pay_override', 'threshold_override',
+  'beyond_availability_sessions', 'beyond_availability_rate_override',
   'training_end_date', 'probation_start_date', 'probation_end_date', 'weekly_off_day',
   'penalty_waiver',
   'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'

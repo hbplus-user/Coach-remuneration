@@ -422,6 +422,13 @@ export const FIXED_WORKING_DAYS = 26;
 export const FIXED_SESSIONS_PER_DAY = 6;
 export const FIXED_PER_SESSION_FLOOR = 200;
 
+// What a Fixed coach is paid for a session taken outside the hours they
+// published. Flat, and deliberately not the salary-derived rate: it pays for
+// being called on outside the agreed availability, which is the same
+// imposition whatever the coach earns. A figure on the coach's profile
+// overrides it.
+export const BEYOND_AVAILABILITY_RATE = 150;
+
 export function fixedPerSessionRate(monthlyBasicPay) {
   const derived = (Number(monthlyBasicPay) || 0) / FIXED_WORKING_DAYS / FIXED_SESSIONS_PER_DAY;
   return Math.max(FIXED_PER_SESSION_FLOOR, Math.round(derived * 100) / 100);
@@ -515,13 +522,17 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
       ?? positive(coach.fixed_salary_override)
       ?? rates.std_fixed ?? 0;
 
-    // Sessions taken beyond the availability the salary covers: the month's
-    // total less the threshold. Paid separately, below, so the two names for
-    // the one quantity cannot drift apart or be paid twice.
+    // Sessions past the threshold the salary already covers.
     extraSessions = Math.max(0, sessionsCompleted - threshold);
     // Costed from this coach's own monthly pay, not the band's session rate.
     if (!rateIsOverridden) effectiveRate = fixedPerSessionRate(basePay);
-    extraSessionPay = 0;
+    // Reference Table A, band 0–30: "No per sessions pay. Only Fixed Pay." The
+    // count is still reported — the sessions happened — but none of them are
+    // paid at the per-session rate. Beyond-availability pay, below, is not
+    // governed by this: that is work outside the offered hours, which the
+    // salary never covered on any band.
+    const nonFunctional = bandLabel.startsWith('0–30') || bandLabel.startsWith('0-30');
+    extraSessionPay = nonFunctional ? 0 : extraSessions * effectiveRate;
   } else if (coach.coach_category === 'Flexi-Fixed') {
     // Flexi-Fixed has a fixed pay component + per-session for all sessions
     basePay = positive(monthData.fixed_pay_override)
@@ -667,21 +678,35 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   const missedSessionTierApplied = missedSessionTier(missedSessions);
   const missedSessionDeduction = missedSessionPenalty(missedSessionRate, missedSessions);
 
-  // 7c. Sessions taken beyond availability — a Fixed coach's month less the
-  //     threshold their salary already covers. Extra work, so it is paid on
-  //     top of the salary at the coach's own per-session rate.
+  // 7c. Sessions taken outside the hours the coach offered.
   //
-  //     This is the same quantity the extra-session line used to carry, and it
-  //     is paid here instead of there. Two names for one count is how a figure
-  //     gets paid twice, so there is now one: extraSessionPay is held at zero
-  //     and this is the payment.
+  //     Not the threshold, and not derived from it. The threshold asks whether
+  //     the month's total ran past what the salary covers; this asks how much
+  //     of the work was taken outside the published availability. A month can
+  //     fall short of the threshold and still carry these, so it is a figure
+  //     that is recorded, not one that is worked out.
   //
-  //     It is paid on every band. Reference Table A withholds per-session pay
-  //     from 0–30 Non-Functional, but that is about the sessions the salary
-  //     already covers; work taken beyond the agreed availability was never
-  //     covered by it.
-  const beyondAvailabilitySessions = coach.coach_category === 'Fixed' ? extraSessions : 0;
-  const beyondAvailabilityPay = beyondAvailabilitySessions * effectiveRate;
+  //     Paid at a flat rate rather than the coach's salary-derived one: it is
+  //     compensation for being called on outside the agreed hours, the same
+  //     inconvenience whatever the salary. Set on the coach's profile, else
+  //     BEYOND_AVAILABILITY_RATE.
+  //
+  //     Paid on every band, 0–30 included. Reference Table A withholds
+  //     per-session pay there, but that is about sessions the salary already
+  //     covers; these were never covered by it.
+  const beyondAvailabilitySessions = coach.coach_category === 'Fixed'
+    ? Math.max(0, Number(monthData.beyond_availability_sessions) || 0)
+    : 0;
+  const beyondAvailabilityRate = positive(coach.beyond_availability_rate_override)
+    ?? BEYOND_AVAILABILITY_RATE;
+  const beyondAvailabilityPay = beyondAvailabilitySessions * beyondAvailabilityRate;
+
+  // These are two counts of two different things, but a session can honestly
+  // belong to both: taken outside the offered hours AND past the threshold.
+  // Paid on both lines, it is paid twice. Nothing here can tell them apart —
+  // only the person entering the figure can — so the overlap is reported and
+  // left to them rather than silently netted off.
+  const beyondAvailabilityOverlap = Math.min(beyondAvailabilitySessions, extraSessions);
 
   // 8. Total penalty from active violations this month.
   //    A waived incident stays on the record — it still counts towards the
@@ -714,7 +739,9 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
     extraSessions,
     extraSessionPay,
     beyondAvailabilitySessions,
+    beyondAvailabilityRate,
     beyondAvailabilityPay,
+    beyondAvailabilityOverlap,
     sessionPay,
     nightSessionPay,
     milestoneIncentive,
