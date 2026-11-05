@@ -47,7 +47,7 @@ const PERIOD_COLS = [
   'coach_id', 'period_month', 'period_start', 'period_end', 'prof_appearance',
   'client_engagement', 'safety', 'punctuality', 'team_conduct', 'communication',
   'meetings_scheduled', 'meetings_attended', 'attendance_pct', 'sessions_completed',
-  'threshold_override', 'beyond_availability_sessions',
+  'threshold_override', 'beyond_availability_sessions', 'member_missed_sessions',
   'night_sessions', 'ooh_sessions_completed', 'pt_home_sessions_completed',
   'five_star_streak', 'missed_sessions', 'hb_score', 'band', 'status', 'overrides',
   // Pay set for this month specifically, which the band must not overwrite.
@@ -91,6 +91,7 @@ const DATE_ISH = [
   'education_score_override', 'fixed_salary_override', 'flexi_fixed_base_salary',
   'per_session_override', 'fixed_pay_override', 'threshold_override',
   'beyond_availability_sessions', 'beyond_availability_rate_override',
+  'member_missed_sessions',
   'training_end_date', 'probation_start_date', 'probation_end_date', 'weekly_off_day',
   'penalty_waiver',
   'centre_lat', 'centre_lng', 'lop_days', 'unplanned_lop_days'

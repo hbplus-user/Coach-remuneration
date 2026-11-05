@@ -457,6 +457,10 @@ const COACH_SCORECARD_GROUPS = [
     key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
+      // Part of the figure above, not an addition to it: the coach held the
+      // slot and is paid, so it is counted in Sessions Completed and shown
+      // here so the total can be broken back down.
+      { key: "member_missed", label: "Of Which Member No-Show", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "beyond_sessions", label: "Beyond Availability", entry: "manual", source: "This screen", max: 999, decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
@@ -4166,6 +4170,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         changes.push(`sessions ${run.sessions_completed ?? 0} → ${sRes.payable}${split}`);
         patch.sessions = sRes.payable;
       }
+      if (sRes.memberMissed != null) patch.member_missed = sRes.memberMissed;
       if (sRes.coachMissed != null) {
         changes.push(`missed ${run.missed_sessions ?? 0} → ${sRes.coachMissed}`);
         patch.missed_sessions = sRes.coachMissed;
@@ -6601,6 +6606,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       streak: run.five_star_streak ?? 0,
       missed_sessions: run.missed_sessions ?? 0,
       beyond_sessions: run.beyond_availability_sessions ?? 0,
+      member_missed: run.member_missed_sessions ?? 0,
       lop_days: run.lop_days ?? 0,
       exp_doc: coach.freelance_past_exp_with_document ?? 0,
       exp_nodoc: coach.freelance_past_exp_without_document ?? 0,
@@ -6802,7 +6808,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const manualDraftKeys = ['prof_appearance', 'client_engagement', 'safety', 'punctuality',
       'team_conduct', 'communication', 'meetings_scheduled', 'meetings_attended',
       'sessions', 'night_sessions', 'streak', 'missed_sessions', 'beyond_sessions',
-      'lop_days'];
+      'member_missed', 'lop_days'];
     const allBlank = manualDraftKeys.every(k => {
       const v = draft[k];
       return v === null || v === undefined || v === '' || Number(v) === 0;
@@ -6837,6 +6843,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       five_star_streak: Number(draft.streak) || 0,
       missed_sessions: Number(draft.missed_sessions) || 0,
       beyond_availability_sessions: Number(draft.beyond_sessions) || 0,
+      member_missed_sessions: Number(draft.member_missed) || 0,
       // Normally written by settling a day. Only the roles that own pay may
       // correct it; for everyone else the recorded figure stands, so opening
       // a card cannot quietly reset what attendance worked out.
@@ -9734,6 +9741,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // and showed a dash on every row however much was stored — the
                 // figures were saved and settled, and simply never displayed.
                 missed_sessions: run.missed_sessions,
+                member_missed: run.member_missed_sessions,
                 lop_days: run.lop_days,
                 threshold: finalThreshold,
                 extra_sessions: pick("extra_sessions", Math.max(0, periodSessions - finalThreshold)),
@@ -9779,6 +9787,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   missed_sessions: Number(scoreDraft.missed_sessions) || 0,
                   beyond_availability_sessions: Number(scoreDraft.beyond_sessions) || 0,
                   lop_days: Number(scoreDraft.lop_days) || 0,
+                  member_missed_sessions: Number(scoreDraft.member_missed) || 0,
                   overrides: scoreDraft.overrides || {}
                 }
               };
@@ -12167,6 +12176,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 setScoreDraft(prev => ({
                                   ...prev,
                                   ...(sum.payable != null ? { sessions: sum.payable } : {}),
+                                  ...(sum.memberMissed != null ? { member_missed: sum.memberMissed } : {}),
                                   ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {}),
                                   ...(sq.night?.ok ? { night_sessions: sq.night.completed } : {}),
                                   streak: r.counted.streak
@@ -12295,6 +12305,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                                   setScoreDraft(prev => ({
                                                     ...prev,
                                                     ...(sum.payable != null ? { sessions: sum.payable } : {}),
+                                                    ...(sum.memberMissed != null ? { member_missed: sum.memberMissed } : {}),
                                                     ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {})
                                                   }));
                                                   logAudit('Sessions From App',
