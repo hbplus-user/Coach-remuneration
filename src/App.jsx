@@ -4158,9 +4158,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const patch = {};
 
     if (sRes.ok) {
-      if (sRes.completed != null) {
-        changes.push(`sessions ${run.sessions_completed ?? 0} → ${sRes.completed}`);
-        patch.sessions = sRes.completed;
+      if (sRes.payable != null) {
+        // Completed plus the members who did not turn up: the slot was held
+        // and the coach is paid for it either way.
+        const split = sRes.memberMissed
+          ? ` (${sRes.completed} worked + ${sRes.memberMissed} member no-show)` : '';
+        changes.push(`sessions ${run.sessions_completed ?? 0} → ${sRes.payable}${split}`);
+        patch.sessions = sRes.payable;
       }
       if (sRes.coachMissed != null) {
         changes.push(`missed ${run.missed_sessions ?? 0} → ${sRes.coachMissed}`);
@@ -12152,8 +12156,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 const sum = sq.summary;
                                 const was = { ...scoreDraft };
                                 const changes = [];
-                                if (sum.completed != null)
-                                  changes.push(`sessions ${was.sessions ?? run.sessions_completed ?? 0} → ${sum.completed}`);
+                                if (sum.payable != null)
+                                  changes.push(`sessions ${was.sessions ?? run.sessions_completed ?? 0} → ${sum.payable}`
+                                    + (sum.memberMissed ? ` (${sum.completed} worked + ${sum.memberMissed} member no-show)` : ''));
                                 if (sum.coachMissed != null)
                                   changes.push(`missed ${was.missed_sessions ?? run.missed_sessions ?? 0} → ${sum.coachMissed}`);
                                 if (sq.night?.ok)
@@ -12161,7 +12166,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 changes.push(`streak ${was.streak ?? run.five_star_streak ?? 0} → ${r.counted.streak}`);
                                 setScoreDraft(prev => ({
                                   ...prev,
-                                  ...(sum.completed != null ? { sessions: sum.completed } : {}),
+                                  ...(sum.payable != null ? { sessions: sum.payable } : {}),
                                   ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {}),
                                   ...(sq.night?.ok ? { night_sessions: sq.night.completed } : {}),
                                   streak: r.counted.streak
@@ -12172,7 +12177,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   `${picked.name} (${picked.id}) — ${run.period_month}: sessions ` +
                                   `${sum.completed ?? 'unchanged'}, missed ${sum.coachMissed ?? 'unchanged'}, ` +
                                   `night ${sq.night?.ok ? sq.night.completed : 'unchanged'}, ` +
-                                  `streak ${r.counted.streak}. ${sum.memberMissed ?? 0} member no-show(s) not carried.`);
+                                  `streak ${r.counted.streak}. Sessions = ${sum.completed ?? 0} worked + ` +
+                                  `${sum.memberMissed ?? 0} member no-show(s), which the coach is paid for.`);
                               };
                               return (
                                 <div className="hb-reviews">
@@ -12194,11 +12200,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <div className="hb-reviews-apply">
                                       <p className="hb-reviews-note">
                                         Ready to write:{' '}
-                                        <strong>{sq.summary.completed ?? '—'}</strong> sessions ·{' '}
+                                        <strong>{sq.summary.payable ?? '—'}</strong> sessions ·{' '}
                                         <strong>{sq.summary.coachMissed ?? '—'}</strong> missed ·{' '}
                                         <strong>{sq.night?.ok ? sq.night.completed : '—'}</strong> night ·{' '}
                                         <strong>{r.counted.streak}</strong> streak.
-                                        {sq.summary.memberMissed ? ` ${sq.summary.memberMissed} member no-show(s) not included.` : ''}
+                                        {sq.summary.memberMissed
+                                          ? ` Sessions = ${sq.summary.completed} worked + ${sq.summary.memberMissed} member no-show(s); the slot was held, so those are paid.`
+                                          : ''}
                                         {sq.night && !sq.night.ok ? ` Night sessions could not be counted: ${sq.night.why}` : ''}
                                       </p>
                                       {open && mayEdit ? (
@@ -12264,11 +12272,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                               {sum.fields.memberMissed && ` · member no-shows from “${sum.fields.memberMissed}”`}
                                               {sum.missing.length > 0 && ` · ${sum.missing.join(' and ')} not in the summary, left alone rather than written as zero`}
                                             </p>
+                                            {sum.payable != null && (
+                                              <p className="hb-reviews-ok">
+                                                Sessions to record: <strong>{sum.payable}</strong>
+                                                {sum.memberMissed
+                                                  ? <> — {sum.completed} worked + {sum.memberMissed} the member missed.</>
+                                                  : '.'}
+                                              </p>
+                                            )}
                                             {sum.memberMissed != null && (
                                               <p className="hb-reviews-note">
-                                                Only the coach's own no-shows are carried across. A session the
-                                                member missed is not the coach's fault — they held the slot — so
-                                                it is shown here and left out of the missed count.
+                                                A session the member missed still counts: the coach held the slot
+                                                and is paid for it, so it goes into the month's sessions. The
+                                                coach's own no-shows do not — those are the missed count, and
+                                                they are charged.
                                               </p>
                                             )}
                                             {open && mayEdit ? (
@@ -12277,14 +12294,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                                 onClick={() => {
                                                   setScoreDraft(prev => ({
                                                     ...prev,
-                                                    ...(sum.completed != null ? { sessions: sum.completed } : {}),
+                                                    ...(sum.payable != null ? { sessions: sum.payable } : {}),
                                                     ...(sum.coachMissed != null ? { missed_sessions: sum.coachMissed } : {})
                                                   }));
                                                   logAudit('Sessions From App',
                                                     `${picked.name} (${picked.id}) — ${run.period_month}: sessions ` +
-                                                    `${sum.completed ?? 'unchanged'}, missed ${sum.coachMissed ?? 'unchanged'} ` +
-                                                    `(${sum.memberMissed ?? 0} missed by members, not carried) ` +
-                                                    `from the app's session summary.`);
+                                                    `${sum.payable ?? 'unchanged'} (${sum.completed ?? 0} worked + ` +
+                                                    `${sum.memberMissed ?? 0} member no-show), missed ` +
+                                                    `${sum.coachMissed ?? 'unchanged'}, from the app's session summary.`);
                                                 }}
                                               >
                                                 Use these figures

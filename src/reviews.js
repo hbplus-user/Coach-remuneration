@@ -417,9 +417,19 @@ export const parseSessionSummary = (payload) => {
     };
   }
 
+  // What the coach is paid for. A member who does not turn up has still had
+  // the slot held for them and the coach is paid for it, so those sessions
+  // belong in the month's count; the coach's own no-shows do not. The two
+  // parts stay separate as well, because "92 sessions" and "85 worked, 7 stood
+  // up" are different facts about a month and only one of them is a surprise.
+  const payable = c
+    ? c.value + (wm?.value ?? 0)
+    : null;
+
   return {
     ok: true,
     completed: c?.value ?? null,
+    payable,
     coachMissed: im?.value ?? null,
     memberMissed: wm?.value ?? null,
     missed: im?.value ?? null,       // the chargeable one, kept under the old name
