@@ -457,7 +457,7 @@ const COACH_SCORECARD_GROUPS = [
     key: "incentive", label: "Incentive", tone: "green",
     columns: [
       { key: "sessions", label: "Sessions Completed", entry: "manual", source: "From App", max: 999, decimals: 0 },
-      { key: "beyond_sessions", label: "Beyond Availability", entry: "derived", decimals: 0 },
+      { key: "beyond_sessions", label: "Beyond Availability", entry: "manual", source: "This screen", max: 999, decimals: 0 },
       { key: "night_sessions", label: "Night Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "streak", label: "5-Star Streak", entry: "manual", source: "From App", max: 999, decimals: 0 },
       { key: "missed_sessions", label: "Missed Sessions", entry: "manual", source: "From App", max: 999, decimals: 0 },
@@ -506,7 +506,9 @@ const OVERRIDABLE_KEYS = [
   "core_total", "core", "tenure_years", "org",
   "attendance_pct", "attendance_score", "hb_score",
   // Incentive inputs. They drive pay, not the HB+ score.
-  "threshold", "extra_sessions", "beyond_sessions", "violations"
+  // beyond_sessions is not here: it is keyed in, so there is no calculated
+  // value for an override to replace.
+  "threshold", "extra_sessions", "violations"
 ];
 
 // The subset of the above that actually feeds the HB+ score. Overriding an
@@ -6594,6 +6596,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       night_sessions: run.night_sessions ?? 0,
       streak: run.five_star_streak ?? 0,
       missed_sessions: run.missed_sessions ?? 0,
+      beyond_sessions: run.beyond_availability_sessions ?? 0,
       lop_days: run.lop_days ?? 0,
       exp_doc: coach.freelance_past_exp_with_document ?? 0,
       exp_nodoc: coach.freelance_past_exp_without_document ?? 0,
@@ -6794,7 +6797,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // Saving a month into that state is almost always an accident.
     const manualDraftKeys = ['prof_appearance', 'client_engagement', 'safety', 'punctuality',
       'team_conduct', 'communication', 'meetings_scheduled', 'meetings_attended',
-      'sessions', 'night_sessions', 'streak', 'missed_sessions', 'lop_days'];
+      'sessions', 'night_sessions', 'streak', 'missed_sessions', 'beyond_sessions',
+      'lop_days'];
     const allBlank = manualDraftKeys.every(k => {
       const v = draft[k];
       return v === null || v === undefined || v === '' || Number(v) === 0;
@@ -6828,6 +6832,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       night_sessions: Number(draft.night_sessions) || 0,
       five_star_streak: Number(draft.streak) || 0,
       missed_sessions: Number(draft.missed_sessions) || 0,
+      beyond_availability_sessions: Number(draft.beyond_sessions) || 0,
       // Normally written by settling a day. Only the roles that own pay may
       // correct it; for everyone else the recorded figure stands, so opening
       // a card cannot quietly reset what attendance worked out.
@@ -9721,9 +9726,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 sessions: run.sessions_completed,
                 night_sessions: run.night_sessions,
                 streak: run.five_star_streak,
+                // Both were missing entirely, so their columns read undefined
+                // and showed a dash on every row however much was stored — the
+                // figures were saved and settled, and simply never displayed.
+                missed_sessions: run.missed_sessions,
+                lop_days: run.lop_days,
                 threshold: finalThreshold,
                 extra_sessions: pick("extra_sessions", Math.max(0, periodSessions - finalThreshold)),
-                beyond_sessions: pick("beyond_sessions", Math.max(0, periodSessions - finalThreshold)),
+                // The recorded figure, not the threshold arithmetic. These are
+                // sessions taken outside the coach's published hours, which the
+                // month's total minus the threshold cannot tell you.
+                beyond_sessions: run.beyond_availability_sessions,
                 violations: pick("violations", coachVios.filter(v =>
                   v.status !== 'Appeal_Approved' &&
                   new Date(v.incident_date) >= new Date(run.period_start) &&
@@ -9759,6 +9772,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   sessions_completed: Number(scoreDraft.sessions) || 0,
                   night_sessions: Number(scoreDraft.night_sessions) || 0,
                   five_star_streak: Number(scoreDraft.streak) || 0,
+                  missed_sessions: Number(scoreDraft.missed_sessions) || 0,
+                  beyond_availability_sessions: Number(scoreDraft.beyond_sessions) || 0,
+                  lop_days: Number(scoreDraft.lop_days) || 0,
                   overrides: scoreDraft.overrides || {}
                 }
               };
