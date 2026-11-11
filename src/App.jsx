@@ -38,7 +38,7 @@ const APPEAL_UI = {
   WITHDRAWN:  ['Withdrawn',                  'badge-muted']
 };
 import {
-  supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty,
+  supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty, saveSetting,
   listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES,
   uploadAttendancePhoto, signedPhotoUrls, deleteAttendancePhotos, getSession
 } from './supabaseClient.js';
@@ -2318,6 +2318,57 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // reaching into a state updater to do it.
   const scoreDraftRef = useRef({});
 
+  // Whether Loss of Pay is deducted at all.
+  //
+  // Off while coaches are still being moved onto the app: until they are
+  // logging in and out, a day with no login means nothing was recorded, not
+  // that nobody worked, and charging it would dock people for the rollout.
+  // Organisation-wide and held in the database, because one admin's browser
+  // must not decide whether payroll deducts from everybody.
+  const [chargeLop, setChargeLop] = useState(false);
+  const [lopSwitchBusy, setLopSwitchBusy] = useState(false);
+  const [lopSwitchNote, setLopSwitchNote] = useState(null);
+
+  /**
+   * Turn Loss of Pay charging on or off for the organisation.
+   *
+   * Written to the database before the screen changes, not after. A switch
+   * that flips locally and fails to save would have one admin believing
+   * nobody is being charged while everyone else's settling still charges
+   * them.
+   */
+  const toggleChargeLop = async (next) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      setLopSwitchNote({ bad: true, text: `The ${currentRole} role cannot change what is deducted from pay.` });
+      return;
+    }
+    if (!window.confirm(next
+      ? 'Turn Loss of Pay ON?\n\nFrom now on, settling a day nobody logged in '
+        + 'for will take one day\u2019s pay from that coach, after any Holiday '
+        + 'or Paid leave balance has been used.\n\nMonths already settled are '
+        + 'not changed.'
+      : 'Turn Loss of Pay OFF?\n\nDays with no login will stop being settled '
+        + 'and nothing further will be deducted.\n\nDeductions already made '
+        + 'stay as they are \u2014 this does not refund them.')) return;
+
+    setLopSwitchBusy(true);
+    setLopSwitchNote(null);
+    const res = await saveSetting('charge_lop', next, actorName);
+    setLopSwitchBusy(false);
+
+    if (!res.ok) {
+      setLopSwitchNote({ bad: true, text: `Not saved \u2014 ${res.why} Nothing has changed.` });
+      return;
+    }
+    setChargeLop(next);
+    setLopSwitchNote({ text: next
+      ? 'Loss of Pay is now charged when a day is settled.'
+      : 'Loss of Pay is off. Nothing further will be deducted.' });
+    logAudit('Loss of Pay Switch',
+      `${actorName} turned Loss of Pay ${next ? 'ON' : 'OFF'} for the organisation.`);
+    showToast(`Loss of Pay ${next ? 'on' : 'off'}.`, next ? 'warning' : 'success');
+  };
+
   const applyState = (next) => {
     setVariants(withSeedVariants(next.variants));
     setCertifications(next.certifications || []);
@@ -2338,6 +2389,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setAppeals(next.appeals || []);
     setAuditLog(next.auditLog || []);
     setPayrollLocked(next.payrollLocked || false);
+    // Off unless the database says otherwise. A missing table or a failed read
+    // must not start charging people.
+    setChargeLop(next.settings?.charge_lop === true);
     if (next.openPeriodMonth !== undefined) setOpenPeriodMonth(next.openPeriodMonth);
     if (!profile?.coach_id && next.coaches?.length > 0) {
       setCurrentCoachContext(next.coaches[0].id);
@@ -4432,6 +4486,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
           availabilityMissing: avail.missing
         });
 
+        // Loss of Pay is switched off for the organisation. A day that would
+        // be charged is left alone entirely rather than written down as
+        // nothing owed: while coaches are still being moved onto the app, "no
+        // login" means nothing was captured, not that nobody worked, and a
+        // settled row saying so would be a record of an absence that may not
+        // have happened. Shortfall violations are unaffected — this switch is
+        // about pay, not conduct.
+        if (!chargeLop && assessed.lopDays > 0) continue;
+
         // A full absence is paid out of the balance before it is paid out of
         // pay: Holiday first, then Paid.
         const absence = !onLeave && logged === 0 && assessed.lopDays > 0;
@@ -4620,6 +4683,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       isHoliday: !!holidayOn(coach, workingDay),
       availabilityMissing: avail.missing
     });
+
+    // Same as the bulk settle: with the switch off, a chargeable day is not
+    // written down at all rather than recorded as nothing owed.
+    if (!chargeLop && day.lopDays > 0) {
+      showToast(
+        `Loss of Pay is switched off, so ${workingDay} was not settled. Turn it ` +
+        `on under Settings once coaches are logging in and out.`, "info");
+      return;
+    }
 
     setAttendanceDays(prev => [...prev, {
       coach_id: coach.id, working_day: workingDay,
@@ -16564,6 +16636,46 @@ export default function App({ session = null, profile = null, onSignOut = null }
               </div>
 
               <div className="settings-grid">
+                {/* Attendance has one switch and it changes what people are
+                    paid, so it sits at the top of this page rather than
+                    somewhere inside the attendance screens. */}
+                <div className="card settings-section">
+                  <h3>Attendance &amp; Loss of Pay</h3>
+                  <p className="subtitle">Whether a day nobody logged in for is deducted from pay</p>
+                  <div className={`lop-switch ${chargeLop ? 'is-on' : 'is-off'}`}>
+                    <div>
+                      <strong>Charge Loss of Pay</strong>
+                      <p>
+                        {chargeLop
+                          ? 'On. Settling a day with no login takes one day\u2019s pay \u2014 base pay \u00f7 26 \u2014 after Holiday and Paid leave have been drawn on.'
+                          : 'Off. Days with no login are left unsettled and nothing is deducted. Turn this on once coaches are logging in and out of the app, or every absent day will read as a full day of Loss of Pay for people who were working normally.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={chargeLop}
+                      className={`hb-switch ${chargeLop ? 'on' : ''}`}
+                      disabled={!PROFILE_PAY_ROLES.includes(currentRole) || lopSwitchBusy}
+                      title={PROFILE_PAY_ROLES.includes(currentRole)
+                        ? (chargeLop ? 'Stop charging Loss of Pay' : 'Start charging Loss of Pay')
+                        : `The ${currentRole} role cannot change what is deducted from pay.`}
+                      onClick={() => toggleChargeLop(!chargeLop)}
+                    >
+                      <span className="hb-switch-knob" />
+                    </button>
+                  </div>
+                  {!PROFILE_PAY_ROLES.includes(currentRole) && (
+                    <p className="hb-reviews-note">
+                      Shown for information. Only Super Admin, HR Manager and Finance may change it.
+                    </p>
+                  )}
+                  {lopSwitchNote && (
+                    <p className={lopSwitchNote.bad ? 'hb-reviews-error' : 'hb-reviews-ok'}>
+                      {lopSwitchNote.text}
+                    </p>
+                  )}
+                </div>
                 <div className="card settings-section">
                   <h3>Policy Variants &amp; Scoring Weights</h3>
                   <p className="subtitle">Modify weights for the five evaluation variants (ideal sum is 100%)</p>

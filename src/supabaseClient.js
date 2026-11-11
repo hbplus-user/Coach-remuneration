@@ -454,7 +454,7 @@ export async function loadState() {
   const [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
          attendanceLogs, attendanceDays, availability,
          leaveBalances, leaveApplications, regularisations, holidays,
-         violations, appeals, auditLog, cycles] =
+         violations, appeals, auditLog, cycles, settings] =
     await Promise.all([
       supabase.from('variants').select('*').order('id'),
       supabase.from('certifications').select('*').order('id'),
@@ -475,7 +475,8 @@ export async function loadState() {
       // Deliberately the last 500: the audit log is read as a recent history,
       // not as something to compute from.
       supabase.from('audit_log').select('*').order('timestamp', { ascending: false }).limit(500),
-      supabase.from('payroll_cycles').select('*')
+      supabase.from('payroll_cycles').select('*'),
+      supabase.from('app_settings').select('*')
     ]);
 
   const failed = [variants, certifications, educationFormats, educationLevels, coaches, periods, orgWork,
@@ -493,6 +494,12 @@ export async function loadState() {
   // lands. Any other error on it is still worth seeing.
   if (regularisations.error && !/does not exist|schema cache/i.test(regularisations.error.message || '')) {
     throw regularisations.error;
+  }
+  // Same reasoning for app_settings: a deploy that lands before its migration
+  // must not take the whole app down. Missing reads as "no settings yet", and
+  // every default is the safe one.
+  if (settings.error && !/does not exist|schema cache/i.test(settings.error.message || '')) {
+    throw settings.error;
   }
 
   const rows = periods.data ?? [];
@@ -517,6 +524,9 @@ export async function loadState() {
     violations: violations.data ?? [],
     appeals: (appeals.data ?? []).map(MAPPERS.appeals.fromRow),
     auditLog: (auditLog.data ?? []).map(MAPPERS.auditLog.fromRow),
+    settings: Object.fromEntries(
+      (settings.error ? [] : (settings.data ?? [])).map(r => [r.key, r.value])
+    ),
     payrollLocked: openCycle?.locked ?? false,
     openPeriodMonth: openCycle?.period_month ?? null
   };
@@ -528,6 +538,30 @@ export async function loadState() {
  * state would fight with whatever they are editing, so this reads only the
  * columns that say what is locked.
  */
+/**
+ * Write one organisation-wide setting.
+ *
+ * Its own call rather than part of syncState: these are rare, deliberate acts
+ * by one person, and a failure has to be reported to them there and then
+ * instead of being folded into a background sync they are not watching.
+ */
+export async function saveSetting(key, value, updatedBy = null) {
+  if (!supabase) return { ok: false, why: 'Not connected to the database.' };
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key, value, updated_at: new Date().toISOString(), updated_by: updatedBy },
+            { onConflict: 'key' });
+  if (error) {
+    return {
+      ok: false,
+      why: /does not exist|schema cache/i.test(error.message || '')
+        ? 'The app_settings table is not there yet — run supabase/app-settings.sql.'
+        : error.message
+    };
+  }
+  return { ok: true };
+}
+
 export async function loadLockState() {
   if (!supabase) return null;
 

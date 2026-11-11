@@ -5144,3 +5144,47 @@ form {
   color: var(--text-muted, #8a8578);
   font-variant-numeric: tabular-nums;
 }
+
+/* The Loss of Pay switch. Its state has to be readable at a glance from across
+   a desk, because the wrong one quietly changes what people are paid. */
+.lop-switch {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.08));
+}
+.lop-switch.is-on  { background: var(--accent-amber-glow); border-color: var(--accent-amber); }
+.lop-switch.is-off { background: var(--accent-teal-glow); border-color: var(--accent-teal); }
+.lop-switch p {
+  margin: 4px 0 0;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  max-width: 54ch;
+}
+.hb-switch {
+  flex: 0 0 auto;
+  width: 50px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.12));
+  background: var(--text-muted);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.hb-switch.on { background: var(--accent-amber); }
+.hb-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+.hb-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.hb-switch.on .hb-switch-knob { transform: translateX(22px); }
