@@ -13527,6 +13527,51 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </ViewPurpose>
 
+                {/* The Settings page is switched off in ENABLED_VIEWS, so this lived
+                    somewhere nobody could reach. It belongs here anyway: Loss of
+                    Pay is what settling attendance produces. Not shown to a
+                    coach looking at their own attendance — whether the
+                    organisation deducts is not theirs to see here. */}
+                {!isOwn && (
+                <div className="card settings-section">
+                  <h3>Attendance &amp; Loss of Pay</h3>
+                  <p className="subtitle">Whether a day nobody logged in for is deducted from pay</p>
+                  <div className={`lop-switch ${chargeLop ? 'is-on' : 'is-off'}`}>
+                    <div>
+                      <strong>Charge Loss of Pay</strong>
+                      <p>
+                        {chargeLop
+                          ? 'On. Settling a day with no login takes one day\u2019s pay \u2014 base pay \u00f7 26 \u2014 after Holiday and Paid leave have been drawn on.'
+                          : 'Off. Days with no login are left unsettled and nothing is deducted. Turn this on once coaches are logging in and out of the app, or every absent day will read as a full day of Loss of Pay for people who were working normally.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={chargeLop}
+                      className={`hb-switch ${chargeLop ? 'on' : ''}`}
+                      disabled={!PROFILE_PAY_ROLES.includes(currentRole) || lopSwitchBusy}
+                      title={PROFILE_PAY_ROLES.includes(currentRole)
+                        ? (chargeLop ? 'Stop charging Loss of Pay' : 'Start charging Loss of Pay')
+                        : `The ${currentRole} role cannot change what is deducted from pay.`}
+                      onClick={() => toggleChargeLop(!chargeLop)}
+                    >
+                      <span className="hb-switch-knob" />
+                    </button>
+                  </div>
+                  {!PROFILE_PAY_ROLES.includes(currentRole) && (
+                    <p className="hb-reviews-note">
+                      Shown for information. Only Super Admin, HR Manager and Finance may change it.
+                    </p>
+                  )}
+                  {lopSwitchNote && (
+                    <p className={lopSwitchNote.bad ? 'hb-reviews-error' : 'hb-reviews-ok'}>
+                      {lopSwitchNote.text}
+                    </p>
+                  )}
+                </div>
+                )}
+
                 {!isOwn && (() => {
                   const waiting = leaveApplications.filter(a => a.status === 'Pending'
                     && inAttendanceScope(a.coach_id)).length;
@@ -16636,46 +16681,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
               </div>
 
               <div className="settings-grid">
-                {/* Attendance has one switch and it changes what people are
-                    paid, so it sits at the top of this page rather than
-                    somewhere inside the attendance screens. */}
-                <div className="card settings-section">
-                  <h3>Attendance &amp; Loss of Pay</h3>
-                  <p className="subtitle">Whether a day nobody logged in for is deducted from pay</p>
-                  <div className={`lop-switch ${chargeLop ? 'is-on' : 'is-off'}`}>
-                    <div>
-                      <strong>Charge Loss of Pay</strong>
-                      <p>
-                        {chargeLop
-                          ? 'On. Settling a day with no login takes one day\u2019s pay \u2014 base pay \u00f7 26 \u2014 after Holiday and Paid leave have been drawn on.'
-                          : 'Off. Days with no login are left unsettled and nothing is deducted. Turn this on once coaches are logging in and out of the app, or every absent day will read as a full day of Loss of Pay for people who were working normally.'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={chargeLop}
-                      className={`hb-switch ${chargeLop ? 'on' : ''}`}
-                      disabled={!PROFILE_PAY_ROLES.includes(currentRole) || lopSwitchBusy}
-                      title={PROFILE_PAY_ROLES.includes(currentRole)
-                        ? (chargeLop ? 'Stop charging Loss of Pay' : 'Start charging Loss of Pay')
-                        : `The ${currentRole} role cannot change what is deducted from pay.`}
-                      onClick={() => toggleChargeLop(!chargeLop)}
-                    >
-                      <span className="hb-switch-knob" />
-                    </button>
-                  </div>
-                  {!PROFILE_PAY_ROLES.includes(currentRole) && (
-                    <p className="hb-reviews-note">
-                      Shown for information. Only Super Admin, HR Manager and Finance may change it.
-                    </p>
-                  )}
-                  {lopSwitchNote && (
-                    <p className={lopSwitchNote.bad ? 'hb-reviews-error' : 'hb-reviews-ok'}>
-                      {lopSwitchNote.text}
-                    </p>
-                  )}
-                </div>
                 <div className="card settings-section">
                   <h3>Policy Variants &amp; Scoring Weights</h3>
                   <p className="subtitle">Modify weights for the five evaluation variants (ideal sum is 100%)</p>
