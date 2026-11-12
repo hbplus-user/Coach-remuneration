@@ -8618,7 +8618,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
         {syncError && (
           <div className="sync-banner">
             <i className="bx bx-cloud-off"></i>
-            <span><strong>Not saved to Supabase:</strong> {syncError}</span>
+            {/* The figures stay on screen after a failed save, which is right —
+                discarding what someone just typed would be worse — but it
+                means the screen and the database now disagree and the screen
+                looks normal. Saying so is the only thing standing between that
+                and a figure being read off this page as though it were
+                stored. */}
+            <span>
+              <strong>Not saved to Supabase:</strong> {syncError}
+              <br />
+              <strong>What is on screen is not stored.</strong> It is still here so you can
+              retry, but it will be gone on reload and other screens may show the
+              stored figures instead. Do not read numbers off this page as final
+              until this clears.
+            </span>
             <button type="button" onClick={() => setSyncError("")}>Dismiss</button>
           </div>
         )}
