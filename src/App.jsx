@@ -2328,6 +2328,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [chargeLop, setChargeLop] = useState(false);
   const [lopSwitchBusy, setLopSwitchBusy] = useState(false);
   const [lopSwitchNote, setLopSwitchNote] = useState(null);
+  const [clearPeriod, setClearPeriod] = useState('');
 
   /**
    * Turn Loss of Pay charging on or off for the organisation.
@@ -5797,6 +5798,121 @@ export default function App({ session = null, profile = null, onSignOut = null }
         : `${row.lop_days} day(s) Loss of Pay returned`) +
       ` and any attendance incident waived. ${why}`);
     return true;
+  };
+
+  /**
+   * Undo a whole cycle's worth of attendance settling.
+   *
+   * Every "Coach No-Show" on these records was filed by the settler, not by a
+   * person: it reads a day with no login as a day nobody worked. While coaches
+   * are still being moved onto the app, a day with no login means nothing was
+   * captured — so a full cycle of ordinary working days became a full cycle of
+   * no-shows, each at the top of the ladder, plus a day of Loss of Pay each.
+   *
+   * Deleted rather than waived, which is the opposite of what reverseSettledDay
+   * does for a single day, and deliberately so. A waived incident keeps its
+   * place in the occurrence ladder — that is right when the day happened and
+   * was forgiven, and wrong here, where the day never happened at all. Leaving
+   * them would hold the coach at occurrence #29 for ever, so their next real
+   * no-show would cost the ₹650 ceiling instead of the ₹350 first step.
+   *
+   * Only ever touches incidents the system raised. Anything a manager filed by
+   * hand is somebody's judgement and is left exactly where it is.
+   */
+  const clearSystemAttendanceFor = (periodMonth) => {
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast("Your role cannot change what coaches are charged.", "error");
+      return;
+    }
+    const records = [...currentMonth, ...historicMonths].filter(r => r.period_month === periodMonth);
+    if (records.length === 0) {
+      showToast(`There are no ${periodMonth} records.`, "warning");
+      return;
+    }
+    if (records.some(r => r.status === 'FINANCE_LOCKED')) {
+      showToast(`${periodMonth} is finance-locked. Reopen it on Close & pay first.`, "danger");
+      return;
+    }
+
+    const { period_start: from, period_end: to } = records[0];
+    const inWindow = (d) => d >= from && d <= to;
+
+    const vios = violations.filter(v =>
+      v.reported_by === 'System — attendance' && inWindow(v.incident_date));
+    const days = attendanceDays.filter(d => inWindow(d.working_day));
+
+    if (vios.length === 0 && days.length === 0) {
+      showToast(`Nothing the system settled in ${periodMonth}.`, "info");
+      return;
+    }
+
+    const money = vios.filter(isPenaltyChargeable)
+      .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+    const lopDays = days.reduce((sum, d) => sum + (Number(d.lop_days) || 0), 0);
+    const covered = days.filter(d => d.cover_type_id);
+    const coachCount = new Set([...vios.map(v => v.coach_id), ...days.map(d => d.coach_id)]).size;
+
+    if (!window.confirm(
+      `Erase what the system settled in ${periodMonth} (${from} to ${to})?\n\n` +
+      `  \u2022 ${vios.length} system-raised incident(s), worth \u20b9${money.toLocaleString('en-IN')}\n` +
+      `  \u2022 ${lopDays} day(s) of Loss of Pay, given back\n` +
+      `  \u2022 ${covered.length} day(s) covered from leave, returned to balance\n` +
+      `  \u2022 across ${coachCount} coach(es)\n\n` +
+      `Incidents filed by a person are not touched.\n\n` +
+      `The occurrence ladder resets with them, so the next real no-show starts ` +
+      `again at the first step. There is no undo.`)) return;
+
+    // Leave drawn on to cover an absence goes back to the balance it came from.
+    if (covered.length > 0) {
+      const { year } = leaveYearFor(new Date());
+      const back = new Map();
+      for (const d of covered) {
+        const k = `${d.coach_id}|${d.cover_type_id}`;
+        back.set(k, (back.get(k) || 0) + 1);
+      }
+      setLeaveBalances(prev => prev.map(b => {
+        const n = back.get(`${b.coach_id}|${b.type_id}`);
+        return (n && b.leave_year === year)
+          ? { ...b, used: Math.max(0, (Number(b.used) || 0) - n) } : b;
+      }));
+    }
+
+    // Loss of Pay comes off the record it was added to, per coach.
+    const lopBack = new Map();
+    for (const d of days) {
+      if (Number(d.lop_days) > 0) {
+        lopBack.set(d.coach_id, (lopBack.get(d.coach_id) || 0) + Number(d.lop_days));
+      }
+    }
+    if (lopBack.size > 0) {
+      const patch = (list) => list.map(r => {
+        if (r.period_month !== periodMonth) return r;
+        const n = lopBack.get(r.coach_id);
+        if (!n) return r;
+        return {
+          ...r,
+          lop_days: Math.max(0, (Number(r.lop_days) || 0) - n),
+          unplanned_lop_days: Math.max(0, (Number(r.unplanned_lop_days) || 0) - n)
+        };
+      });
+      setCurrentMonth(patch);
+      setHistoricMonths(patch);
+    }
+
+    const goneVios = new Set(vios.map(v => v.id));
+    setViolations(prev => prev.filter(v => !goneVios.has(v.id)));
+    setAttendanceDays(prev => prev.filter(d => !inWindow(d.working_day)));
+
+    logAudit("Attendance Settling Erased",
+      `${actorName} erased what the system settled in ${periodMonth}: ` +
+      `${vios.length} incident(s) worth \u20b9${money}, ${lopDays} day(s) of Loss of Pay ` +
+      `returned, ${covered.length} leave day(s) returned, across ${coachCount} coach(es). ` +
+      `Coaches are not logging in and out yet, so these were days with nothing ` +
+      `recorded rather than days nobody worked.`);
+
+    showToast(
+      `${periodMonth}: ${vios.length} system incident(s) and ${lopDays} day(s) of ` +
+      `Loss of Pay erased.`, "success");
   };
 
   const raiseRegularisation = (coach, workingDay, reason) => {
@@ -13582,6 +13698,63 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {lopSwitchNote.text}
                     </p>
                   )}
+
+                  {/* Switching Loss of Pay off stops the next cycle being
+                      charged; it does nothing about the one already settled.
+                      This is how that gets undone. */}
+                  {PROFILE_PAY_ROLES.includes(currentRole) && (() => {
+                    const months = [...new Set([...historicMonths, ...currentMonth].map(r => r.period_month))];
+                    const chosen = months.includes(clearPeriod) ? clearPeriod : (months[months.length - 1] || '');
+                    const rec = [...currentMonth, ...historicMonths].find(r => r.period_month === chosen);
+                    const inWindow = (d) => rec && d >= rec.period_start && d <= rec.period_end;
+                    const vios = rec ? violations.filter(v =>
+                      v.reported_by === 'System — attendance' && inWindow(v.incident_date)) : [];
+                    const money = vios.filter(isPenaltyChargeable)
+                      .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+                    const lop = rec ? attendanceDays
+                      .filter(d => inWindow(d.working_day))
+                      .reduce((sum, d) => sum + (Number(d.lop_days) || 0), 0) : 0;
+
+                    return (
+                      <div className="lop-clear">
+                        <div>
+                          <strong>Erase what the system settled</strong>
+                          <p>
+                            Every “Coach No-Show” here was raised by the settler reading a day
+                            with no login as a day nobody worked. While coaches are not logging
+                            in and out, that is a day with nothing recorded. This removes those
+                            incidents, gives back the Loss of Pay and returns any leave that was
+                            drawn on. Incidents a person filed are left alone, and the occurrence
+                            ladder resets with them.
+                          </p>
+                          <p className={vios.length || lop ? 'hb-reviews-error' : 'hb-reviews-note'}>
+                            {chosen
+                              ? (vios.length || lop
+                                  ? `${chosen}: ${vios.length} system incident(s) worth ${rupees(money)}, and ${lop} day(s) of Loss of Pay.`
+                                  : `${chosen}: nothing the system settled.`)
+                              : 'No periods on record.'}
+                          </p>
+                        </div>
+                        <div className="lop-clear-actions">
+                          <select
+                            className="header-select"
+                            aria-label="Period to erase"
+                            value={chosen}
+                            onChange={(e) => setClearPeriod(e.target.value)}
+                          >
+                            {months.map(m => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          <button
+                            className="btn btn-danger"
+                            disabled={!chosen || (vios.length === 0 && lop === 0)}
+                            onClick={() => clearSystemAttendanceFor(chosen)}
+                          >
+                            <i className="bx bx-eraser"></i> Erase {chosen}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
                 )}
 
