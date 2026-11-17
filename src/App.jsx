@@ -8638,6 +8638,120 @@ export default function App({ session = null, profile = null, onSignOut = null }
     showToast(`${periodMonth} payroll run downloaded — ${rows.length} coaches, through to net pay.`);
   };
 
+  /**
+   * Every incident charged on a cycle, as a CSV, for all coaches at once.
+   *
+   * The payroll export carries one penalty figure per coach, which is the
+   * right amount to pay from and the wrong amount to answer a question with:
+   * a coach asking why ₹1,350 came off their pay cannot be answered from a
+   * total. This is the same money, itemised — one row per incident, with the
+   * date, what happened, which occurrence it was on the ladder and what that
+   * step costs.
+   *
+   * Two blocks in one file. The detail reads bottom-up, incident by incident;
+   * the per-coach totals underneath reconcile line for line against the
+   * Incident Penalty column of the payroll export, so the two downloads can be
+   * checked against each other rather than taken on trust.
+   */
+  const handleExportPenalties = (periodMonth) => {
+    // The same rows the screen is showing, filtered the same way, so a
+    // download taken while filtered to Fixed is a Fixed download.
+    const rows = buildPayrollRun(periodMonth).filter(
+      r => payrollCategoryFilter === "All" || r.coach.coach_category === payrollCategoryFilter
+    );
+    const withVios = rows.filter(r => r.periodVios.length > 0);
+
+    if (withVios.length === 0) {
+      showToast(
+        `No incidents dated in ${periodMonth}` +
+        (payrollCategoryFilter === "All" ? '' : ` for ${payrollCategoryFilter} coaches`) +
+        ` — nothing to export.`, "info");
+      return;
+    }
+
+    const money = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const header = [
+      "Coach ID", "Coach Name", "Category", "Policy Variant",
+      "Incident ID", "Incident Date", "Incident Time",
+      "Violation", "Occurrence", "Consequence",
+      "Recorded Penalty", "Charged To Pay", "Status", "Reported By", "Evidence"
+    ];
+    const width = header.length;
+    const pad = (cells) => [...cells, ...Array(Math.max(0, width - cells.length)).fill('')];
+
+    const body = [];
+    for (const r of withVios) {
+      // Oldest first within a coach: the ladder climbs in that order, so #1
+      // above #2 is the only order in which the consequences read sensibly.
+      const vios = [...r.periodVios].sort((a, b) =>
+        String(a.incident_date).localeCompare(String(b.incident_date))
+        || String(a.incident_time || '').localeCompare(String(b.incident_time || '')));
+      for (const v of vios) {
+        const charged = isPenaltyChargeable(v) ? money(v.penalty_amount) : 0;
+        body.push([
+          r.coach.id, r.coach.name, r.coach.coach_category, r.vConfig.name,
+          v.id, v.incident_date, v.incident_time || '',
+          v.type, v.occurrence_no != null ? `#${v.occurrence_no}` : '',
+          v.consequence,
+          money(v.penalty_amount), charged,
+          // Why nothing was taken, where nothing was taken. A zero with no
+          // reason beside it is the cell that generates the email.
+          isPenaltyChargeable(v) ? (v.status || '') : `${v.status} — not charged`,
+          v.reported_by || '', v.evidence || ''
+        ]);
+      }
+    }
+
+    // Per coach, reconciling with the payroll export's Incident Penalty.
+    const totalsBlock = [
+      pad([]),
+      pad(["PER COACH", "", "", "", "", "", "", "", "", "",
+           "Recorded Penalty", "Charged To Pay", "Incidents", "Of Which Not Charged", "Cycle Penalty Waiver"])
+    ];
+    let grandRecorded = 0, grandCharged = 0, grandWaiver = 0;
+    for (const r of withVios) {
+      const recorded = money(r.periodVios.reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0));
+      // What payroll actually deducted for incidents, taken from the pay sum
+      // itself rather than added up again here — if the two ever disagree it
+      // is the pay sum that is right, and this file should show it.
+      const charged = money(r.pay.violationPenalties);
+      const notCharged = r.periodVios.filter(v => !isPenaltyChargeable(v)).length;
+      const waiver = money(r.record.penalty_waiver);
+      grandRecorded += recorded; grandCharged += charged; grandWaiver += waiver;
+      totalsBlock.push(pad([
+        r.coach.id, r.coach.name, "", "", "", "", "", "", "", "",
+        recorded, charged, r.periodVios.length, notCharged, waiver
+      ]));
+    }
+    totalsBlock.push(pad([
+      "TOTAL", `${withVios.length} coach${withVios.length === 1 ? '' : 'es'}`,
+      "", "", "", "", "", "", "", "",
+      money(grandRecorded), money(grandCharged), body.length, "", money(grandWaiver)
+    ]));
+
+    const csv = [header, ...body, ...totalsBlock]
+      .map(row => row.map(csvCell).join(','))
+      .join('\r\n');
+
+    const categoryTag = payrollCategoryFilter === "All" ? '' : `_${payrollCategoryFilter.replace('-', '')}`;
+    downloadBlob(
+      new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }),
+      `HB_Penalties_${periodMonth.replace(/ /g, '_')}${categoryTag}.csv`
+    );
+
+    logAudit(
+      "Penalties Exported",
+      `${actorName} exported ${periodMonth}'s incidents (${body.length} incident(s) across ` +
+      `${withVios.length} coach(es)` +
+      (payrollCategoryFilter === "All" ? '' : `, ${payrollCategoryFilter} only`) +
+      `, ${rupees(grandCharged)} charged to pay) to CSV.`
+    );
+    showToast(
+      `${periodMonth} penalties downloaded — ${body.length} incident${body.length === 1 ? '' : 's'} ` +
+      `across ${withVios.length} coach${withVios.length === 1 ? '' : 'es'}, ` +
+      `${rupees(grandCharged)} charged to pay.`);
+  };
+
   // Export CSV
   const handleExportCSV = () => {
     const dataset = payrollMonthFilter === currentPeriodMonth ? currentMonth : historicMonths;
@@ -13394,6 +13508,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
                             <i className="bx bx-download"></i> Export CSV
                           </button>
+                          {/* The same money, itemised. The pay export carries one
+                              penalty figure per coach, which is what you pay
+                              from; this is what you answer a coach with. */}
+                          <button
+                            className="btn btn-secondary"
+                            title={`Every incident charged on ${period}, one row each, for all coaches`}
+                            onClick={() => handleExportPenalties(period)}
+                          >
+                            <i className="bx bx-download"></i> Penalties CSV
+                          </button>
                         </div>
                       </div>
 
@@ -13627,6 +13751,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       title={run.length === 0 ? 'Nothing to export for this period' : `Download the ${period} payroll run as CSV`}
                     >
                       <i className="bx bx-download"></i> Download CSV
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => handleExportPenalties(period)}
+                      disabled={run.length === 0}
+                      title={run.length === 0
+                        ? 'Nothing to export for this period'
+                        : `Download every incident charged on ${period}, one row each`}
+                    >
+                      <i className="bx bx-download"></i> Penalties CSV
                     </button>
                   </div>
 
