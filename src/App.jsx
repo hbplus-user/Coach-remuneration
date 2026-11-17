@@ -26,6 +26,12 @@ import {
 // variant of the penalty matrix and in `default`, so it always resolves.
 const NO_SHOW_VIOLATION = 'Coach No-Show';
 
+// Who a late-join incident is recorded by. The same convention as
+// "System — attendance": a name that says plainly this was measured, not
+// reported by a person, so these can be told apart from somebody's judgement
+// and removed again without touching anybody's.
+const LATE_REPORTER = 'System — late join';
+
 // What an appeal's state means, said once for the coach watching it and the
 // approver deciding it. These are the table's own values — the handlers
 // used to write RESOLVED / RM_DECIDED / ESCALATED_HR, none of which the
@@ -68,7 +74,8 @@ import {
 import {
   fetchReviews, fiveStarStreak, REVIEW_API_DEFAULT,
   fetchSessionSummary, SESSION_API_DEFAULT, fetchNightSessions,
-  fetchAvailability, AVAILABILITY_API_DEFAULT, istTimeOf
+  fetchAvailability, AVAILABILITY_API_DEFAULT, istTimeOf,
+  fetchLateJoins, SESSION_LIST_API_DEFAULT, LATE_GRACE_MINUTES
 } from './reviews.js';
 
 // Phase 1 scope: only these modules are exposed in the UI.
@@ -2330,6 +2337,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [lopSwitchNote, setLopSwitchNote] = useState(null);
   const [clearPeriod, setClearPeriod] = useState('');
 
+  // Late joins read from the app: which cycle to read, whose sessions, and
+  // what the last read found. Nothing here is stored until the incidents are
+  // filed, so a read can be repeated and thrown away freely.
+  const [latePeriod, setLatePeriod] = useState('');
+  const [lateCoachId, setLateCoachId] = useState('');
+  const [lateScan, setLateScan] = useState(null);
+
   /**
    * Turn Loss of Pay charging on or off for the organisation.
    *
@@ -4380,6 +4394,244 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `between ${rows[0]?.day} and ${rows[rows.length - 1]?.day}. Shortfalls on those ` +
       `days can now be measured rather than sent for review.`);
     return { ok: true, stored: keep.length };
+  };
+
+  /* -------------------------------------------------------------------------
+   * Late joins, read from the app
+   *
+   * The app records when each session was due to start and when the coach
+   * actually joined it. The gap between those two is the one punctuality
+   * figure that can be measured rather than reported, and the annexures
+   * already price it — Annexure 1B for a session delivered over video, the
+   * coach's own variant for one at a centre.
+   *
+   * Two steps on purpose, like every other feed here: read and show first,
+   * file second. Reading charges nobody, and the reading is shown session by
+   * session so the figures can be checked against the app before any money
+   * moves.
+   * ---------------------------------------------------------------------- */
+
+  /**
+   * Where the session list is read from.
+   *
+   * There is deliberately no second setting to forget: if the session summary
+   * goes through this app's own proxy, so does this, which is what makes it
+   * work on the deployment without anybody adding another variable. An
+   * explicit VITE_SESSION_LIST_API_BASE still wins.
+   */
+  const lateListBase = () => {
+    const explicit = import.meta.env.VITE_SESSION_LIST_API_BASE;
+    if (explicit) return explicit;
+    const summary = import.meta.env.VITE_SESSION_API_BASE;
+    if (summary && summary.startsWith('/')) return summary.replace(/\/[^/]*$/, '/session-list');
+    return SESSION_LIST_API_DEFAULT;
+  };
+
+  /** The session id a system late-join incident was raised from. */
+  const sessionIdOf = (v) =>
+    (String(v?.evidence || '').match(/\[session ([^\]]+)\]/) || [])[1] || null;
+
+  /**
+   * Read a cycle's sessions and work out which ones the coach joined late.
+   *
+   * Nothing is written. What comes back is a list to look at: every late join
+   * with the session it belongs to, how late it was, which step of the ladder
+   * it lands on and what that step costs — plus the sessions with no join
+   * recorded at all, which are not lateness and are never charged here.
+   */
+  const scanLateJoins = async () => {
+    const months = [...new Set([...historicMonths, ...currentMonth].map(r => r.period_month))];
+    // The open cycle, not the last row in the list. A pay cycle is named for
+    // the month it ends in, so "October 2026" runs 16 Sep to 15 Oct — and
+    // reading one cycle while looking at another cycle's pay is the one way to
+    // come away believing the figures went nowhere.
+    const period = months.includes(latePeriod)
+      ? latePeriod
+      : (currentMonth[0]?.period_month || months[months.length - 1] || '');
+    if (!period) { showToast('No cycles on record yet.', 'warning'); return; }
+
+    const records = [...currentMonth, ...historicMonths].filter(r => r.period_month === period);
+    const { period_start: from, period_end: to } = records[0];
+
+    const wanted = lateCoachId
+      ? coaches.filter(c => c.id === lateCoachId)
+      : coaches.filter(c => c.status === 'Active');
+    const withId = wanted.filter(c => c.app_coach_id);
+    const noId = wanted.filter(c => !c.app_coach_id);
+
+    if (withId.length === 0) {
+      setLateScan({
+        period, from, to, findings: [], errors: [], noId,
+        error: wanted.length === 0
+          ? 'No coach to read.'
+          : `None of these coaches has an App Coach ID. The app's sessions are keyed `
+            + `by it — set it under Details on the profile, then read again.`
+      });
+      return;
+    }
+
+    setLateScan({ period, from, to, busy: true, of: withId.length });
+
+    const base = lateListBase();
+    const token = await apiTokenFor(base);
+
+    // A few at a time rather than all at once: this is one request per coach
+    // and the whole roster arriving together is a burst on the admin API.
+    const results = [];
+    const errors = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < withId.length) {
+        const coach = withId[next++];
+        const res = await fetchLateJoins(coach.app_coach_id, {
+          base, fromDay: from, toDay: to, token
+        });
+        if (res.ok) results.push({ coach, res });
+        else errors.push(`${coach.name} — ${res.why}`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, withId.length) }, worker));
+
+    // An incident already raised from a session is not raised again. Reading
+    // twice must not charge twice, and the session id is what makes the two
+    // readings the same reading.
+    const filed = new Set(violations
+      .filter(v => v.reported_by === LATE_REPORTER)
+      .map(sessionIdOf)
+      .filter(Boolean));
+
+    // In the order they happened, so the ladder climbs in time order rather
+    // than in whatever order the roster came back in.
+    const flat = [];
+    for (const { coach, res } of results) {
+      for (const l of res.late) flat.push({ coach, l });
+    }
+    flat.sort((a, b) => a.l.start - b.l.start);
+
+    const running = [...violations];
+    const findings = flat.map(({ coach, l }) => {
+      const already = filed.has(l.id);
+      if (already) {
+        return { coach_id: coach.id, coach: coach.name, session: l, already };
+      }
+      const occurrence = getViolationOccurrenceNumber(coach.id, l.type, l.day, running) + 1;
+      const consequence = getPenaltyConsequence(coach.variant_id, l.type, occurrence, PENALTY_MATRIX);
+      // Counted into the ladder straight away, so a second late join in the
+      // same month is priced as the second and not as another first.
+      running.push({
+        coach_id: coach.id, type: l.type, incident_date: l.day,
+        status: 'Pending_Acknowledge'
+      });
+      return {
+        coach_id: coach.id, coach: coach.name, session: l, already,
+        occurrence, consequence: consequence.consequence, amount: consequence.amount
+      };
+    });
+
+    const totals = results.reduce((acc, { res }) => ({
+      sessions: acc.sessions + res.sessions,
+      onTime: acc.onTime + res.onTime,
+      noJoinRecord: acc.noJoinRecord + res.noJoinRecord,
+      notHeld: acc.notHeld + res.notHeld
+    }), { sessions: 0, onTime: 0, noJoinRecord: 0, notHeld: 0 });
+
+    setLateScan({
+      period, from, to, findings, errors, noId, totals,
+      coachesRead: results.length,
+      readAt: new Date().toLocaleString('en-IN')
+    });
+
+    const fresh = findings.filter(f => !f.already).length;
+    showToast(
+      fresh
+        ? `${fresh} late join(s) found in ${period}. Nothing is charged until you file them.`
+        : `No new late joins in ${period} across ${results.length} coach(es).`,
+      fresh ? 'warning' : 'success');
+  };
+
+  /**
+   * File the late joins that were read, as incidents.
+   *
+   * This is the step that costs money, so it says what it will cost before it
+   * does it. Each incident carries the session it came from, which is what
+   * stops a second reading filing the same lateness twice.
+   */
+  const fileLateJoins = () => {
+    if (!verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner")) {
+      showToast(`The ${currentRole} role cannot record incidents.`, 'danger');
+      return;
+    }
+    if (payrollLocked) {
+      showToast('Incidents are locked: the cycle is closed.', 'danger');
+      return;
+    }
+    const scan = lateScan;
+    const fresh = (scan?.findings || []).filter(f => !f.already);
+    if (fresh.length === 0) { showToast('Nothing new to file.', 'info'); return; }
+
+    const records = [...currentMonth, ...historicMonths].filter(r => r.period_month === scan.period);
+    if (records.some(r => r.status === 'FINANCE_LOCKED')) {
+      showToast(`${scan.period} is finance-locked. Reopen it on Close & pay first.`, 'danger');
+      return;
+    }
+
+    const money = fresh.reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
+    const affected = [...new Set(fresh.map(f => f.coach_id))];
+
+    if (!window.confirm(
+      `File ${fresh.length} late-join incident(s) for ${scan.period}?\n\n` +
+      `  • charged on the ${scan.period} cycle, ${scan.from} to ${scan.to}\n` +
+      `  • ${affected.length} coach(es)\n` +
+      `  • ${rupees(money)} in penalties\n` +
+      `  • each one carries the session it was read from, so reading again ` +
+      `will not charge it twice\n\n` +
+      `A violation resets a coach's five-star streak to zero, so the streaks of ` +
+      `those ${affected.length} coach(es) are reset as well.\n\n` +
+      `Coaches can acknowledge or appeal these in the usual way.`)) return;
+
+    const stamp = Date.now().toString().substring(7);
+    const rows = fresh.map((f, i) => ({
+      id: `VIO_${stamp}${String(i).padStart(3, '0')}`,
+      coach_id: f.coach_id,
+      type: f.session.type,
+      occurrence_no: f.occurrence,
+      consequence: f.consequence,
+      penalty_amount: f.amount,
+      incident_date: f.session.day,
+      incident_time: f.session.time,
+      reported_by: LATE_REPORTER,
+      evidence:
+        `${f.session.name} at ${f.session.time} IST` +
+        `${f.session.member ? ` with ${f.session.member}` : ''} — scheduled start ` +
+        `${f.session.time}, coach joined ${f.session.joinedTime}, ` +
+        `${f.session.minutes.toFixed(1)} min late. Read from the HB+ app. ` +
+        `[session ${f.session.id}]`,
+      status: 'Pending_Acknowledge'
+    }));
+
+    setViolations(prev => [...prev, ...rows]);
+
+    // The same rule the manual path applies: an incident ends the run.
+    const hit = new Set(affected);
+    setCoaches(prev => prev.map(c => hit.has(c.id) ? { ...c, five_star_streak: 0 } : c));
+    setCurrentMonth(prev => prev.map(m => hit.has(m.coach_id) ? { ...m, five_star_streak: 0 } : m));
+
+    setLateScan(prev => prev && ({
+      ...prev,
+      findings: prev.findings.map(f => ({ ...f, already: true })),
+      filedNow: fresh.length, filedWorth: money
+    }));
+
+    logAudit('Late Joins Filed',
+      `${actorName} filed ${fresh.length} late-join incident(s) for ${scan.period} ` +
+      `(${scan.from} to ${scan.to}) worth ${rupees(money)} across ${affected.length} ` +
+      `coach(es), read from the app's own record of when each session started and ` +
+      `when the coach joined it.`);
+
+    showToast(
+      `${fresh.length} incident(s) filed, worth ${rupees(money)}. They are charged on ` +
+      `the ${scan.period} cycle (${scan.from} to ${scan.to}) — open that cycle in the ` +
+      `Payroll Calculator to see them, not a different one.`, 'success');
   };
 
   const openMonthsForCoach = (coachId, fromMonth, toMonth) => {
@@ -17033,6 +17285,253 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </div>
               </div>
+
+              {/* Late joins, measured from the app.
+                  Every other incident on this page is somebody's report. This
+                  one is a measurement: the app knows when each session was due
+                  to start and when the coach joined it, so the lateness is a
+                  subtraction rather than a judgement. It is still shown before
+                  it is charged — a figure nobody has looked at should not take
+                  money off anybody. */}
+              {verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (() => {
+                // Each cycle with its real dates, because the name is not the
+                // dates: "October 2026" is 16 Sep to 15 Oct. Reading one cycle
+                // and then opening another in the Payroll Calculator is the
+                // one way to file real incidents and believe nothing happened.
+                const byMonth = new Map();
+                for (const r of [...historicMonths, ...currentMonth]) {
+                  if (!byMonth.has(r.period_month)) byMonth.set(r.period_month, r);
+                }
+                const months = [...byMonth.keys()];
+                const dayOf = (d) => new Date(d).toLocaleDateString('en-IN',
+                  { day: 'numeric', month: 'short' });
+                const cycleLabel = (m) => {
+                  const r = byMonth.get(m);
+                  return r ? `${m} (${dayOf(r.period_start)} \u2013 ${dayOf(r.period_end)})` : m;
+                };
+                const chosen = months.includes(latePeriod)
+                  ? latePeriod
+                  : (currentMonth[0]?.period_month || months[months.length - 1] || '');
+                const scan = lateScan;
+                const findings = scan?.findings || [];
+                const fresh = findings.filter(f => !f.already);
+                const money = fresh.reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
+
+                // One line per coach, before the session-by-session list. A
+                // hundred and eighty rows answer "how late was that session";
+                // only this answers "what is this about to cost whom", which
+                // is the question somebody about to charge money is asking.
+                const byCoach = new Map();
+                for (const f of findings) {
+                  const e = byCoach.get(f.coach_id)
+                    || { id: f.coach_id, coach: f.coach, n: 0, filed: 0, money: 0, worst: 0 };
+                  e.n += 1;
+                  if (f.already) e.filed += 1; else e.money += Number(f.amount) || 0;
+                  e.worst = Math.max(e.worst, f.session.minutes);
+                  byCoach.set(f.coach_id, e);
+                }
+                const perCoach = [...byCoach.values()]
+                  .sort((x, y) => y.money - x.money || y.n - x.n);
+                // Only once there is something to show. A read that failed
+                // reports its reason and nothing else: a totals line built from
+                // a scan that never happened reads as a quiet, confident zero.
+                const showing = scan && scan.period === chosen && !scan.busy
+                  && !scan.error && Array.isArray(scan.findings);
+
+                return (
+                  <div className="card" style={{ marginBottom: '1.5rem' }}>
+                    <div className="card-header-row">
+                      <h3>Late joins from the app</h3>
+                      <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                        When each session was due to start, against when the coach joined it.
+                      </span>
+                    </div>
+                    <p className="subtitle">
+                      Read from the app&rsquo;s own record of every session in the cycle.
+                      Under {LATE_GRACE_MINUTES} minute is not late &mdash; the annexure&rsquo;s
+                      first step is 1&ndash;5 minutes. A session with no join recorded at all is
+                      counted and shown but never charged here: that is a coach working outside
+                      the app, not a coach arriving late. Cancelled sessions and the coach&rsquo;s
+                      own no-shows are left to attendance, so nothing is charged twice.
+                    </p>
+
+                    <div className="tracker-toolbar-controls" style={{ marginBottom: '0.75rem' }}>
+                      <select
+                        className="header-select"
+                        aria-label="Cycle to read"
+                        value={chosen}
+                        onChange={(e) => setLatePeriod(e.target.value)}
+                      >
+                        {months.length === 0 && <option value="">No cycles on record</option>}
+                        {months.map(m => <option key={m} value={m}>{cycleLabel(m)}</option>)}
+                      </select>
+                      <select
+                        className="header-select"
+                        aria-label="Whose sessions to read"
+                        value={lateCoachId}
+                        onChange={(e) => setLateCoachId(e.target.value)}
+                      >
+                        <option value="">Every active coach</option>
+                        {coaches.filter(c => c.status === 'Active').map(c => (
+                          <option key={c.id} value={c.id}>{c.id} &mdash; {c.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={!chosen || Boolean(scan?.busy)}
+                        onClick={scanLateJoins}
+                      >
+                        <i className="bx bx-cloud-download"></i>{' '}
+                        {scan?.busy ? 'Reading the app…' : 'Fetch late joins'}
+                      </button>
+                      {showing && fresh.length > 0 && (
+                        <button className="btn btn-danger" onClick={fileLateJoins}>
+                          <i className="bx bx-error"></i> File {fresh.length} incident(s) &mdash; {rupees(money)}
+                        </button>
+                      )}
+                    </div>
+
+                    {scan?.busy && (
+                      <p className="hb-reviews-note">
+                        Reading {scan.of} coach(es) for {scan.period}&hellip;
+                      </p>
+                    )}
+
+                    {scan?.error && <p className="hb-reviews-error">{scan.error}</p>}
+
+                    {showing && (
+                      <>
+                        <p className={fresh.length ? 'hb-reviews-error' : 'hb-reviews-ok'}>
+                          {scan.period} ({scan.from} to {scan.to}), read {scan.readAt}:{' '}
+                          {scan.totals?.sessions ?? 0} session(s) across {scan.coachesRead} coach(es)
+                          &mdash; {findings.length} late join(s)
+                          {fresh.length < findings.length &&
+                            `, ${findings.length - fresh.length} already filed`}
+                          , {scan.totals?.onTime ?? 0} on time, {scan.totals?.noJoinRecord ?? 0} with
+                          no join recorded{scan.totals?.notHeld ? `, ${scan.totals.notHeld} not held` : ''}.
+                          {scan.filedNow
+                            ? ` ${scan.filedNow} incident(s) worth ${rupees(scan.filedWorth)} filed.`
+                            : (fresh.length > 0 ? ' None of it is charged yet.' : '')}
+                        </p>
+
+                        {scan.filedNow > 0 && (
+                          <p className="hb-reviews-ok">
+                            Charged on the <strong>{scan.period}</strong> cycle, {scan.from} to{' '}
+                            {scan.to}. Open that cycle in the Payroll Calculator to see them —
+                            a cycle is named for the month it ends in, so a penalty dated 23 Oct
+                            is charged on the cycle that ends 15 Nov, not the one that ends 15 Oct.
+                          </p>
+                        )}
+
+                        {(scan.noId?.length > 0 || scan.errors?.length > 0) && (
+                          <p className="hb-reviews-note">
+                            {scan.noId?.length > 0 && (
+                              <>Not read, no App Coach ID: {scan.noId.map(c => c.name).join(', ')}.{' '}</>
+                            )}
+                            {scan.errors?.length > 0 && <>Could not read: {scan.errors.join(' · ')}</>}
+                          </p>
+                        )}
+
+                        {fresh.length > 0 && (
+                          <p className="hb-reviews-error">
+                            <strong>Nothing below is charged yet.</strong> These are
+                            {' '}{fresh.length} reading(s) worth {rupees(money)}, shown so they can
+                            be checked first. They reach payroll only when you press
+                            {' '}<strong>File {fresh.length} incident(s)</strong> above — reading
+                            the app never takes money off anybody.
+                          </p>
+                        )}
+
+                        {perCoach.length > 0 && (
+                          <div className="table-container" style={{ marginBottom: '1rem' }}>
+                            <table className="data-table">
+                              <thead>
+                                <tr>
+                                  <th>Coach</th>
+                                  <th>Late joins</th>
+                                  <th>Worst</th>
+                                  <th className="text-right">To be charged</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {perCoach.map(c => (
+                                  <tr key={c.id}>
+                                    <td><strong>{c.coach}</strong> <small className="text-muted">{c.id}</small></td>
+                                    <td>
+                                      {c.n}
+                                      {c.filed > 0 && <small className="text-muted"> · {c.filed} already filed</small>}
+                                    </td>
+                                    <td>{c.worst.toFixed(1)} min</td>
+                                    <td className="text-right">
+                                      {c.money > 0 ? <strong>{rupees(c.money)}</strong> : rupees(0)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {findings.length > 0 && (
+                          <div className="table-container">
+                            <table className="data-table">
+                              <thead>
+                                <tr>
+                                  <th>Coach</th>
+                                  <th>Session</th>
+                                  <th>Due</th>
+                                  <th>Joined</th>
+                                  <th>Late by</th>
+                                  <th>Violation</th>
+                                  <th>Occurrence</th>
+                                  <th>Consequence</th>
+                                  <th className="text-right">Penalty</th>
+                                  <th>Charged?</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {findings.map(f => (
+                                  <tr key={`${f.coach_id}|${f.session.id || f.session.start}`}>
+                                    <td><strong>{f.coach}</strong><br /><small className="text-muted">{f.coach_id}</small></td>
+                                    <td>
+                                      {f.session.day}
+                                      <br />
+                                      <small className="text-muted">
+                                        {f.session.name}{f.session.member ? ` · ${f.session.member}` : ''}
+                                      </small>
+                                    </td>
+                                    <td style={{ whiteSpace: 'nowrap' }}>{f.session.time}</td>
+                                    <td style={{ whiteSpace: 'nowrap' }}>{f.session.joinedTime}</td>
+                                    <td style={{ whiteSpace: 'nowrap' }}>
+                                      <strong>{f.session.minutes.toFixed(1)} min</strong>
+                                    </td>
+                                    <td>{f.session.type}</td>
+                                    <td>{f.already ? '—' : `#${f.occurrence}`}</td>
+                                    <td>
+                                      {f.already
+                                        ? <span className="badge badge-muted">Already filed</span>
+                                        : <small>{f.consequence}</small>}
+                                    </td>
+                                    <td className="text-right">
+                                      {f.already ? '—' : rupees(f.amount)}
+                                    </td>
+                                    <td>
+                                      {f.already
+                                        ? <span className="badge badge-success">Filed</span>
+                                        : <span className="badge badge-warning">Not yet</span>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+
 
               {(() => {
                 // Appeals. A coach's objection to a decision — a penalty or a

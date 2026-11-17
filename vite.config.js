@@ -2,7 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 /**
- * The same three admin-API routes the Vercel function serves, so `npm run dev`
+ * The same admin-API routes the Vercel function serves, so `npm run dev`
  * behaves like production without the Vercel CLI.
  *
  * This runs in the dev server, not the browser, so HB_ADMIN_TOKEN is read from
@@ -12,7 +12,8 @@ import react from '@vitejs/plugin-react';
 const ROUTES = {
   '/api/hb/feedbacks': '/api/v1/feedbacks',
   '/api/hb/sessions': '/api/v1/dashboard/coach-session-summary',
-  '/api/hb/availability': '/api/v1/coach/availability'
+  '/api/hb/availability': '/api/v1/coach/availability',
+  '/api/hb/session-list': '/api/v1/admin/sessions'
 };
 
 export default defineConfig(({ mode }) => {

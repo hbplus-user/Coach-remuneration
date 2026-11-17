@@ -5,6 +5,8 @@ The dashboard calls three endpoints on `admin.hbplus.fit`:
 - `GET /api/v1/feedbacks` — reviews, for the 5-Star Streak
 - `GET /api/v1/dashboard/coach-session-summary` — sessions completed / missed / cancelled
 - `GET /api/v1/coach/availability` — published availability, checked against logins
+- `GET /api/v1/admin/sessions` — one row per session, carrying its scheduled start
+  and when the coach joined; this is what late joins are measured from
 
 Both work today when you open the URL in a browser tab, because that tab **is**
 `admin.hbplus.fit`. They fail from the dashboard, because the dashboard is served
@@ -129,6 +131,9 @@ To use it:
 2. Set `VITE_REVIEW_API_BASE=/api/hb/feedbacks`,
    `VITE_SESSION_API_BASE=/api/hb/sessions` and
    `VITE_AVAILABILITY_API_BASE=/api/hb/availability`.
+   The session list needs no variable of its own: it follows
+   `VITE_SESSION_API_BASE` to `/api/hb/session-list` unless
+   `VITE_SESSION_LIST_API_BASE` says otherwise.
 3. Redeploy.
 
 The proxy is deliberately narrow, because one on your own domain inherits your

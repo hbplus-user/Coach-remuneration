@@ -855,3 +855,240 @@ export async function fetchNightSessions(appCoachId, {
     window: { from: fromDay, to: toDay }
   };
 }
+
+/* ---------------------------------------------------------------------------
+ * Late joins
+ *
+ * When the coach actually joined each session, against when that session was
+ * scheduled to start.
+ *
+ * The session list carries both figures on every row — `start_time` and
+ * `joining_status.coach_joined_at` — so a whole cycle's lateness is one call
+ * per coach rather than one call per session. The per-session detail endpoint
+ * carries the same two fields and is not needed for this.
+ * ------------------------------------------------------------------------ */
+
+export const SESSION_LIST_API_DEFAULT =
+  'https://admin.hbplus.fit/api/v1/admin/sessions';
+
+// A minute of grace. Annexure 1B's first step is "1–5 min", so under a minute
+// is not a violation in the policy at all — and charging it would be charging
+// coaches for the gap between tapping Join and the server noticing.
+export const LATE_GRACE_MINUTES = 1;
+// Where the minor step ends and the moderate one begins.
+export const LATE_MINOR_MAX_MINUTES = 5;
+
+/**
+ * What the violation is called.
+ *
+ * Annexure 1B governs a session delivered over video, whatever discipline the
+ * coach is on, and its rows are "Late Join". A session at a centre is governed
+ * by the coach's own variant, whose rows are "Late Arrival". The session says
+ * which it was, so neither is guessed.
+ */
+export const LATE_TYPES = {
+  online: { minor: 'Late Join (1–5 min)', major: 'Late Join (> 5 min)' },
+  onsite: { minor: 'Late Arrival (<5 min)',    major: 'Late Arrival (>5 min)' }
+};
+
+// A session that never happened cannot have been joined late. A cancelled or
+// rescheduled slot is not lateness, and a coach no-show is already the
+// attendance settler's business — charging it here as well would charge the
+// same absence twice under two different names.
+const NOT_HELD = new Set(['cancelled', 'canceled', 'rescheduled', 'i_missed']);
+
+/** Whether this session was delivered over video or at a centre. */
+const sessionIsOnline = (raw) => {
+  const mode = String(raw?.session_mode ?? raw?.sessionMode ?? '').toLowerCase();
+  if (mode.includes('online') || mode.includes('virtual') || mode.includes('remote')) return true;
+  if (mode.includes('offline') || mode.includes('hop') || mode.includes('physical')
+      || mode.includes('centre') || mode.includes('center')) return false;
+  // No mode given: a room or a centre makes it in-person, otherwise this is an
+  // app session like every other one on this feed.
+  if (raw?.hop_location_id || raw?.room_id) return false;
+  return true;
+};
+
+/** A moment as "HH:MM:SS" in IST. */
+const istClockOf = (ms) => new Date(ms + (5.5 * 3600 * 1000)).toISOString().slice(11, 19);
+
+/** One row of the session list, reduced to what lateness needs. */
+export const normaliseSession = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const start = msAt(raw, ['start_time', 'startTime', 'session_sort_key']);
+  if (!start) return null;
+
+  const j = raw.joining_status ?? raw.joiningStatus ?? {};
+  const joined = msAt(j, ['coach_joined_at', 'coachJoinedAt'])
+    ?? msAt(raw, ['coach_joined_at', 'coachJoinedAt']);
+
+  const status = String(raw.session_status ?? raw.status ?? '').toLowerCase();
+  const online = sessionIsOnline(raw);
+
+  return {
+    id: raw._id ?? raw.id ?? null,
+    coachAppId: raw.coach_id ?? raw.coachId ?? raw.coach?._id ?? null,
+    name: raw.name ?? 'Session',
+    member: raw.item?.name ?? raw.user?.name ?? null,
+    start,
+    joined: joined ?? null,
+    day: istDayOf(start),
+    time: istTimeOf(start),
+    // To the second, deliberately. "due 08:30, joined 08:36, 6.9 min late"
+    // reads like an arithmetic mistake; "joined 08:36:54" is checkable.
+    joinedTime: joined ? istClockOf(joined) : null,
+    status,
+    online,
+    held: !NOT_HELD.has(status),
+    lateMs: joined === null || joined === undefined ? null : joined - start
+  };
+};
+
+/**
+ * Which step of the ladder a lateness falls on, or null for on time.
+ *
+ * Minutes are rounded to one decimal for display only; the band is decided on
+ * the raw milliseconds, so a session 59 seconds late is not rounded up into a
+ * penalty.
+ */
+export const lateJoinBand = (lateMs, { online = true } = {}) => {
+  if (lateMs === null || lateMs === undefined || !Number.isFinite(lateMs)) return null;
+  if (lateMs < LATE_GRACE_MINUTES * 60000) return null;
+  const names = online ? LATE_TYPES.online : LATE_TYPES.onsite;
+  const minutes = lateMs / 60000;
+  return minutes <= LATE_MINOR_MAX_MINUTES
+    ? { band: 'minor', type: names.minor, minutes }
+    : { band: 'major', type: names.major, minutes };
+};
+
+/**
+ * A cycle's sessions sorted into what each one means.
+ *
+ * Four outcomes, kept apart on purpose:
+ *   late          — joined, and late enough to be a violation.
+ *   onTime        — joined early, on the minute, or inside the grace.
+ *   noJoinRecord  — the session was held but the app recorded no join by the
+ *                   coach. That is not lateness and is never charged here; it
+ *                   is what a coach working outside the app looks like, and
+ *                   the number of them is the measure of how far the rollout
+ *                   has got.
+ *   notHeld       — cancelled, rescheduled, or the coach's own no-show, which
+ *                   the attendance settler already charges.
+ */
+export const classifyLateJoins = (rows, { now = Date.now() } = {}) => {
+  const late = [];
+  let onTime = 0, noJoinRecord = 0, notHeld = 0, future = 0;
+
+  for (const raw of rows) {
+    const s = normaliseSession(raw);
+    if (!s) continue;
+    // A session that has not started yet cannot be joined late.
+    if (s.start > now) { future++; continue; }
+    if (!s.held) { notHeld++; continue; }
+    if (s.joined === null) { noJoinRecord++; continue; }
+
+    const band = lateJoinBand(s.lateMs, { online: s.online });
+    if (!band) { onTime++; continue; }
+    late.push({ ...s, ...band });
+  }
+
+  late.sort((a, b) => a.start - b.start);
+  return { late, onTime, noJoinRecord, notHeld, future, considered: rows.length };
+};
+
+/** The rows out of a session-list answer, whatever it is wrapped in. */
+export const extractSessionList = (payload) => {
+  if (Array.isArray(payload)) return { rows: payload, total: payload.length };
+  const r = payload?.result ?? payload?.data ?? payload;
+  if (Array.isArray(r)) return { rows: r, total: r.length };
+  const rows = Array.isArray(r?.data) ? r.data
+    : Array.isArray(r?.sessions) ? r.sessions
+    : Array.isArray(r?.rows) ? r.rows
+    : null;
+  if (!rows) return null;
+  const total = Number(r.total_count ?? r.total ?? rows.length);
+  return { rows, total: Number.isFinite(total) ? total : rows.length };
+};
+
+/**
+ * Every session a coach had in a cycle, with how late they joined each one.
+ *
+ * Paged, because the list caps what it returns and a busy coach runs to a
+ * hundred sessions a cycle. The loop stops on the page that returns nothing,
+ * so a server that ignores `page` cannot spin it for ever.
+ */
+export async function fetchLateJoins(appCoachId, {
+  base = SESSION_LIST_API_DEFAULT,
+  fromDay,
+  toDay,
+  token = null,
+  signal,
+  pageSize = 500,
+  maxPages = 20,
+  now = Date.now()
+} = {}) {
+  if (!appCoachId) return { ok: false, why: 'This coach has no app ID set.' };
+  if (!fromDay || !toDay) return { ok: false, why: 'No period to fetch.' };
+
+  const headers = { Accept: 'application/json' };
+  if (token) headers.Authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+
+  const rows = [];
+  let total = null;
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url = apiURL(base);
+    url.searchParams.set('coach_id', appCoachId);
+    url.searchParams.set('start_date', String(istDayStart(fromDay)));
+    url.searchParams.set('end_date', String(istDayEnd(toDay)));
+    url.searchParams.set('limit', String(pageSize));
+    url.searchParams.set('page', String(page));
+
+    let res;
+    try {
+      res = await fetch(url.toString(), {
+        headers, credentials: token ? 'omit' : 'include', signal
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        why: `Could not reach ${apiHost(base)}. A CORS error in the console means `
+           + `the admin API has to allow this site's origin — see ADMIN-API-CORS.md. (${e.message})`
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        why: res.status === 401 || res.status === 403
+          ? `The API refused the request (${res.status}). It needs an admin token — `
+            + `set HB_ADMIN_TOKEN on the deployment, or paste one into the API access box.`
+          : `The API answered ${res.status} ${res.statusText}.`
+      };
+    }
+
+    let payload;
+    try { payload = await res.json(); }
+    catch { return { ok: false, why: 'The session list did not return JSON.' }; }
+
+    const got = extractSessionList(payload);
+    if (!got) {
+      return {
+        ok: false,
+        why: 'The session list came back in a shape this app does not recognise. '
+           + `It carried: ${Object.keys(payload?.result ?? payload ?? {}).slice(0, 10).join(', ') || 'nothing'}.`
+      };
+    }
+
+    rows.push(...got.rows);
+    if (total === null) total = got.total;
+    if (got.rows.length === 0 || rows.length >= total) break;
+  }
+
+  return {
+    ok: true,
+    ...classifyLateJoins(rows, { now }),
+    sessions: rows.length,
+    window: { from: fromDay, to: toDay }
+  };
+}

@@ -15,8 +15,8 @@
  * deliberately narrow:
  *
  *   - GET only, so nothing here can change anything upstream.
- *   - Three known paths, so it cannot be used to reach the rest of the admin
- *     API. An open relay with a built-in token would be worse than the CORS
+ *   - A short list of known paths, so it cannot be used to reach the rest
+ *     of the admin API. An open relay with a built-in token would be worse than the CORS
  *     problem it solves.
  *   - A valid Supabase session required, checked against Supabase on every
  *     call. Without this, the function is public: anyone who finds the URL
@@ -29,7 +29,11 @@ const UPSTREAM = process.env.HB_ADMIN_API_BASE || 'https://admin.hbplus.fit';
 const ROUTES = {
   feedbacks: '/api/v1/feedbacks',
   sessions: '/api/v1/dashboard/coach-session-summary',
-  availability: '/api/v1/coach/availability'
+  availability: '/api/v1/coach/availability',
+  // One row per session, each carrying its scheduled start and when the coach
+  // joined. That pair is what late joins are measured from, and it is on the
+  // list rows, so a cycle costs one call rather than one per session.
+  'session-list': '/api/v1/admin/sessions'
 };
 
 /** Whoever is calling must hold a live Supabase session for this project. */
@@ -127,7 +131,12 @@ export default async function handler(req, res) {
   const body = await upstream.text();
   res.status(upstream.status);
   res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
-  // Coach data, and it is per-signed-in-caller. Nothing caches it.
-  res.setHeader('Cache-Control', 'no-store');
+  // Coach data, and it is per-signed-in-caller. Nothing caches it, and no
+  // shared cache may key it by URL alone — two callers hold different tokens
+  // and must never be served each other's answer.
+  res.setHeader('Cache-Control', 'no-store, private');
+  res.setHeader('Vary', 'Authorization');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   return res.send(body);
 }
