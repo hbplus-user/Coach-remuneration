@@ -367,6 +367,15 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
     v.status !== 'Appeal_Approved' // Exclude successfully appealed violations
   );
 
+  // Monthly, in Annexure 1B, is the calendar month the incident falls in, not
+  // the pay cycle: the annexure is written in months. Without this branch a
+  // Monthly type fell through to the Lifetime count below and never reset, so
+  // a coach's fourth late join in a year stayed at the top step for ever.
+  if (trackingWindow === 'Monthly') {
+    const targetMonth = String(incidentDateStr).slice(0, 7);
+    return historical.filter(v => String(v.incident_date).slice(0, 7) === targetMonth).length;
+  }
+
   if (trackingWindow === 'Quarterly') {
     const targetQuarter = getQuarterLabel(incidentDateStr);
     const quarterMatches = historical.filter(v => getQuarterLabel(v.incident_date) === targetQuarter);
