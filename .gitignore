@@ -1,15 +1,105 @@
+# What must never reach the repository.
+#
+# This file is the last line of defence, not the first: a key that is pasted
+# into a source file is still a leaked key, and git history cannot be edited
+# once it is pushed. The rule is that credentials live in .env locally and in
+# the deployment's environment settings on Vercel — never in a file, ever.
+#
+# Adding a pattern here does NOT untrack a file that is already committed.
+# Check with `git ls-files` before trusting a new rule.
+
+# --- Build output and dependencies ----------------------------------------
 node_modules
 dist
-.DS_Store
-.gemini
-.agents
-*.log
+.vite
+.cache
+.turbo
+coverage
+*.tsbuildinfo
 
-# Database schema and migrations are kept out of the repo — apply them from
-# your local copy via the Supabase SQL editor.
-*.sql
-
-# Local environment, including the seed script's service-role key
+# --- Local environment, including every credential the app uses ------------
+# .env holds the Supabase service-role key and the HB+ admin token. Both are
+# full-power credentials; neither is a VITE_ variable, so neither reaches the
+# browser, and neither may reach git.
 .env
 .env.*
+*.env
 !.env.example
+.envrc
+env.local
+# Scratch copies made while loading variables into a host. These have a habit
+# of being written next to the project and forgotten.
+vercel-env*.txt
+*-env-vars*.txt
+
+# --- Keys, certificates and service accounts -------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.asc
+*.gpg
+*.secret
+*.secrets
+secrets*.json
+credentials*.json
+service-account*.json
+*-service-account*.json
+firebase-adminsdk*.json
+gcp-*.json
+# npm and curl keep auth tokens in these.
+.npmrc
+.netrc
+.pgpass
+
+# --- Supabase ---------------------------------------------------------------
+# The whole directory is kept out: schema, migrations, patches and the CLI's
+# local state. Apply the SQL from your own copy through the Supabase SQL
+# editor. The two exceptions are the notes on how to do that and the seed
+# script, both of which read their credentials from the environment and carry
+# none of their own.
+supabase/*
+!supabase/README.md
+!supabase/seed.mjs
+.supabase
+supabase/.branches
+supabase/.temp
+
+# Every .sql file, wherever it is written. The schema describes the shape of
+# live payroll data, and a patch written in a hurry in the project root is the
+# one that gets committed by accident.
+*.sql
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
+
+# --- Anything carrying coaches' personal data ------------------------------
+# Payslips, pay exports and roster imports hold salaries, bank details, PAN
+# and addresses. None of it belongs in a repository, and a repository is
+# where exports land by default.
+*.csv
+*.xlsx
+*.xls
+exports/
+payslips/
+
+# --- Host and tooling state -------------------------------------------------
+.vercel
+.DS_Store
+._*
+Thumbs.db
+*.log
+npm-debug.log*
+.gemini
+.agents
+.claude/settings.local.json
+.vscode
+.idea
+.cursor
