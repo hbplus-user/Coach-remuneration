@@ -45,7 +45,7 @@ const APPEAL_UI = {
 };
 import {
   supabase, isSupabaseConfigured, loadState, loadLockState, syncState, isDatabaseEmpty, saveSetting,
-  listAppUsers, setUserAccess, APP_ROLES, RM_SCOPES,
+  listAppUsers, setUserAccess, setActiveRole, APP_ROLES, RM_SCOPES,
   uploadAttendancePhoto, signedPhotoUrls, deleteAttendancePhotos, getSession
 } from './supabaseClient.js';
 import { buildZip, downloadBlob } from './zip.js';
@@ -57,6 +57,9 @@ import {
   getViolationOccurrenceNumber, 
   getPenaltyConsequence,
   isPenaltyChargeable,
+  isPenaltyCounted,
+  PENALTY_AWAITING_APPROVAL,
+  PENALTY_REFUSED,
   getQuarterLabel,
   calculateTenureYears,
   getEducationScore,
@@ -107,7 +110,7 @@ const UNASSIGNED_VARIANT = {
 const findVariant = (variants, variantId) =>
   (variants || []).find(v => v.id === variantId) || UNASSIGNED_VARIANT;
 
-const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "attendance", "certifications", "penalties", "user-access"];
+const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "attendance", "certifications", "penalties", "user-access", "org-chart"];
 const isViewEnabled = (view) => ENABLED_VIEWS.includes(view);
 
 // Coach disciplines offered on the Add Coach form, mapped to the policy variant
@@ -171,6 +174,22 @@ const ATTENDANCE_ROLES = [
 // Deciding a leave application. A Reporting Manager approves for their own
 // coaches; Super Admin and HR stand in when they are away.
 const LEAVE_APPROVER_ROLES = ['Super Admin', 'HR Manager', 'Reporting Manager'];
+
+// Whose incidents wait for someone else to agree with them.
+//
+// A Showrunner runs scheduling and performance, not pay. Recording an incident
+// takes money off a coach, so what a Showrunner records is a proposal: on the
+// record and visible from the moment it is raised, deducting nothing until the
+// coach's Reporting Manager has read it and agreed. Everybody else's incidents
+// are live as they always were — this is about who may charge, not about
+// adding a step to everything.
+const RAISE_NEEDS_APPROVAL = (role) => role === 'Showrunner';
+
+// Who may decide one. The coach's own Reporting Manager, and above them HR and
+// a Super Admin — without those two, an incident against a coach with no
+// manager could be raised and never decided by anybody, which is exactly how
+// the appeals queue used to strand people.
+const INCIDENT_APPROVER_ROLES = ['Reporting Manager', 'HR Manager', 'Super Admin'];
 // Who decides a regularisation. Not Finance: a Reporting Manager handles
 // nearly all of them, and Finance reads what the month cost rather than
 // deciding what a coach's day was.
@@ -590,6 +609,140 @@ const ORG_WORK_REFERENCE = [
   { type: "Course Development", effort: "Medium", knowledge: "High", min: 3500, max: 5500, note: "" },
   { type: "Coach Training / Mentoring", effort: "High", knowledge: "High", min: 3500, max: 5500, note: "" }
 ];
+
+/**
+ * Who reports to one manager, drawn as a tree.
+ *
+ * Shared by the two places that ask it, because they are the same question
+ * asked from different ends: on User Access, "this account manages whom?",
+ * and on the org chart, "what does the organisation look like?". One
+ * component means the answer cannot differ between them.
+ *
+ * Inactive coaches are kept and marked rather than dropped. A squad of twelve
+ * that shows eight is a squad somebody will re-count by hand.
+ */
+const SquadTree = ({
+  squad, scope, managerName, managerUnknown = false, compact = false,
+  // Moving coaches between squads. Absent on the read-only uses, so the
+  // same component serves both without a second copy to keep in step.
+  canMove = false, draggingId = null, isOver = false,
+  onPickUp, onPutDown, onDragOverSquad, onDragLeaveSquad,
+  // Picking several at once. Eighteen people moved one drag at a time is
+  // eighteen confirmations and eighteen chances to drop one on the wrong
+  // squad.
+  selectedIds = null, onToggleOne, onToggleSquad
+}) => {
+  const selectable = canMove && Array.isArray(selectedIds);
+  const isPicked = (id) => selectable && selectedIds.includes(id);
+  const pickedHere = selectable ? squad.filter(c => selectedIds.includes(c.id)).length : 0;
+  const active = squad.filter(c => c.status === 'Active');
+  const rest = squad.filter(c => c.status !== 'Active');
+
+  return (
+    <div
+      className={`orgchart ${compact ? 'is-compact' : ''} ${canMove ? 'can-move' : ''} ${isOver ? 'is-over' : ''}`}
+      onDragOver={canMove ? (e) => { e.preventDefault(); onDragOverSquad?.(scope?.id); } : undefined}
+      onDragLeave={canMove ? () => onDragLeaveSquad?.(scope?.id) : undefined}
+      onDrop={canMove ? (e) => {
+        e.preventDefault();
+        onPutDown?.(e.dataTransfer.getData('text/plain'), scope?.id);
+      } : undefined}
+    >
+      <div className={`org-node org-manager${selectable ? ' is-selectable' : ''}`}>
+        {selectable && squad.length > 0 && (
+          <label
+            className="org-pick org-pick-all"
+            title={pickedHere === squad.length ? 'Clear this squad' : 'Pick everyone here'}
+          >
+            <input
+              type="checkbox"
+              checked={pickedHere === squad.length && squad.length > 0}
+              // Some but not all: the box says "partly", which is the only
+              // honest third state for a list this long.
+              ref={el => { if (el) el.indeterminate = pickedHere > 0 && pickedHere < squad.length; }}
+              onChange={() => onToggleSquad?.(squad.map(c => c.id),
+                pickedHere !== squad.length)}
+            />
+          </label>
+        )}
+        <strong>{managerName || scope?.label || scope?.id || 'Unassigned'}</strong>
+        {/* Who holds the squad comes from the accounts list, which only an
+            admin may read. Saying "no account holds this squad" to somebody
+            who simply cannot see the accounts would be a confident lie, so
+            when it is unknown nothing is claimed either way. */}
+        {/* The manager's name is the heading above: "RM_01 — S&C" is how a
+            squad is keyed, not what anybody calls it, and someone reading an
+            org chart is looking for a person. The key shows only where there
+            is no name to show instead, because a squad you can drop somebody
+            onto still has to be identifiable. */}
+        {!managerName && !managerUnknown && (
+          <small className="org-warn">no account holds this squad</small>
+        )}
+        <span className="org-count">
+          {active.length} active{rest.length ? ` · ${rest.length} not` : ''}
+        </span>
+      </div>
+
+      {squad.length === 0 ? (
+        <p className="org-empty">Nobody reports here yet.</p>
+      ) : (
+        <ul className="org-leaves">
+          {/* The item carries the connector, a box inside it carries the
+              card. One element doing both puts the tree line inside the box
+              it is supposed to be pointing at. */}
+          {[...active, ...rest].map(c => (
+            <li key={c.id} className="org-leaf">
+              <div
+                className={`org-node org-coach ${c.status === 'Active' ? '' : 'is-off'}`
+                  + `${canMove ? ' is-draggable' : ''}${draggingId === c.id ? ' is-dragging' : ''}`
+                  + `${isPicked(c.id) ? ' is-picked' : ''}${selectable ? ' is-selectable' : ''}`}
+                draggable={canMove || undefined}
+                onDragStart={canMove ? (e) => {
+                  e.dataTransfer.setData('text/plain', c.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  onPickUp?.(c.id);
+                } : undefined}
+                onDragEnd={canMove ? () => onPickUp?.(null) : undefined}
+                title={canMove
+                  ? (isPicked(c.id)
+                      ? 'Dragging this moves everyone picked'
+                      : `Drag ${c.name} onto another squad to move them`)
+                  : undefined}
+              >
+                {selectable && (
+                  <label className="org-pick" title={`Pick ${c.name}`}>
+                    <input
+                      type="checkbox"
+                      checked={isPicked(c.id)}
+                      onChange={() => onToggleOne?.(c.id)}
+                    />
+                  </label>
+                )}
+                <strong>{c.name}</strong>
+                <small>{c.id}{c.coach_category ? ` \u00b7 ${c.coach_category}` : ''}</small>
+                {/* Somebody can be both: a coach on the roster and the account
+                    that manages a squad. Without saying so, their card in the
+                    unassigned column reads as an oversight when it is simply
+                    the other half of the same person. */}
+                {c.managesSquad && (
+                  <span className="org-status org-manages">manages {c.managesSquad}</span>
+                )}
+                {/* Their record points at a squad, but nobody holds it — so
+                    they are here rather than under a heading that approves
+                    nothing. Said on the card so the fact is not lost with the
+                    card that used to show it. */}
+                {c.strandedFrom && (
+                  <span className="org-status org-stranded">listed under {c.strandedFrom}</span>
+                )}
+                {c.status !== 'Active' && <span className="org-status">{c.status}</span>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 const rupees = (n) => `₹${Math.round(Number(n) || 0).toLocaleString('en-IN')}`;
 
@@ -2066,7 +2219,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
   }, [currentRole, attendanceTab]);
   const [currentCoachContext, setCurrentCoachContext] = useState(profile?.coach_id ?? "");
   const [currentRmContext, setCurrentRmContext] = useState(profile?.rm_id ?? "RM_01");
-  const canSwitchRole = (profile?.role ?? "Super Admin") === "Super Admin";
+  /**
+   * Every role this account may act as.
+   *
+   * An account now holds a set and acts as one of them at a time. A Super
+   * Admin may still act as any role at all, which is how anyone checks what a
+   * coach or a manager actually sees before telling them to use it.
+   */
+  const grantedRoles = useMemo(() => {
+    const granted = Array.isArray(profile?.roles) && profile.roles.length
+      ? profile.roles
+      : [profile?.role ?? "Super Admin"];
+    // The role in effect is always one of them. The database enforces this as
+    // well; here it stops a stale profile showing a picker with a value that
+    // is not in its own list.
+    return [...new Set([...granted, profile?.role].filter(Boolean))];
+  }, [profile?.roles, profile?.role]);
+
+  // A Super Admin previews any role. Everyone else switches between the ones
+  // they were granted, and only switches at all if they were granted more
+  // than one.
+  const canPreviewAnyRole = grantedRoles.includes("Super Admin");
+  const canSwitchRole = canPreviewAnyRole || grantedRoles.length > 1;
+  const switchableRoles = canPreviewAnyRole ? APP_ROLES : grantedRoles;
   const [syncError, setSyncError] = useState("");
 
   // User Access screen: the app_users rows, loaded on demand from the
@@ -2075,6 +2250,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [appUsersLoading, setAppUsersLoading] = useState(false);
   const [appUsersError, setAppUsersError] = useState("");
   const [savingUserId, setSavingUserId] = useState(null);
+  // Which manager's squad is open on User Access. One at a time: the point is
+  // to answer a question about one person, not to unfold the whole roster.
+  const [openSquadFor, setOpenSquadFor] = useState(null);
   const [userDrafts, setUserDrafts] = useState({});
   const [activeView, setActiveView] = useState("dashboard");
   // The Home screen's own coach search. Kept here rather than inside the view
@@ -4019,7 +4197,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const to = new Date(`${run.period_end}T23:59:59`);
     // The pay engine's own rule: a violation or no-show resets the streak.
     const breakers = violations
-      .filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved')
+      .filter(v => v.coach_id === coach.id && isPenaltyCounted(v))
       .map(v => v.incident_date);
 
     const counted = fiveStarStreak(res.reviews, breakers, { from, to });
@@ -4255,7 +4433,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       // The same cycle and the same streak rule the Record panel uses: a
       // violation or a no-show resets the run.
       const breakers = violations
-        .filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved')
+        .filter(v => v.coach_id === coach.id && isPenaltyCounted(v))
         .map(v => v.incident_date);
       const counted = fiveStarStreak(rRes.reviews, breakers, {
         from: new Date(`${run.period_start}T00:00:00`),
@@ -4585,10 +4763,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `  • ${rupees(money)} in penalties\n` +
       `  • each one carries the session it was read from, so reading again ` +
       `will not charge it twice\n\n` +
-      `A violation resets a coach's five-star streak to zero, so the streaks of ` +
-      `those ${affected.length} coach(es) are reset as well.\n\n` +
-      `Coaches can acknowledge or appeal these in the usual way.`)) return;
+      (needsApproval
+        ? `\nYour role proposes incidents rather than charging them, so these go ` +
+          `to each coach's Reporting Manager first. Nothing is deducted, and no ` +
+          `streak is reset, until they approve.\n`
+        : `A violation resets a coach's five-star streak to zero, so the streaks ` +
+          `of those ${affected.length} coach(es) are reset as well.\n`) +
+      `\nCoaches can acknowledge or appeal these in the usual way.`)) return;
 
+    const needsApproval = RAISE_NEEDS_APPROVAL(currentRole);
     const stamp = Date.now().toString().substring(7);
     const rows = fresh.map((f, i) => ({
       id: `VIO_${stamp}${String(i).padStart(3, '0')}`,
@@ -4600,21 +4783,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
       incident_date: f.session.day,
       incident_time: f.session.time,
       reported_by: LATE_REPORTER,
+      // Measured by the app, raised by a person. Who that person was decides
+      // whether it charges straight away or waits for the manager.
+      raised_by_role: currentRole,
       evidence:
         `${f.session.name} at ${f.session.time} IST` +
         `${f.session.member ? ` with ${f.session.member}` : ''} — scheduled start ` +
         `${f.session.time}, coach joined ${f.session.joinedTime}, ` +
         `${f.session.minutes.toFixed(1)} min late. Read from the HB+ app. ` +
         `[session ${f.session.id}]`,
-      status: 'Pending_Acknowledge'
+      status: needsApproval ? PENALTY_AWAITING_APPROVAL : 'Pending_Acknowledge'
     }));
 
     setViolations(prev => [...prev, ...rows]);
 
-    // The same rule the manual path applies: an incident ends the run.
-    const hit = new Set(affected);
-    setCoaches(prev => prev.map(c => hit.has(c.id) ? { ...c, five_star_streak: 0 } : c));
-    setCurrentMonth(prev => prev.map(m => hit.has(m.coach_id) ? { ...m, five_star_streak: 0 } : m));
+    // The same rule the manual path applies: an incident ends the run — once
+    // it is an incident. A proposal waiting on a manager is not one yet.
+    if (!needsApproval) {
+      const hit = new Set(affected);
+      setCoaches(prev => prev.map(c => hit.has(c.id) ? { ...c, five_star_streak: 0 } : c));
+      setCurrentMonth(prev => prev.map(m => hit.has(m.coach_id) ? { ...m, five_star_streak: 0 } : m));
+    }
 
     setLateScan(prev => prev && ({
       ...prev,
@@ -4629,9 +4818,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
       `when the coach joined it.`);
 
     showToast(
-      `${fresh.length} incident(s) filed, worth ${rupees(money)}. They are charged on ` +
-      `the ${scan.period} cycle (${scan.from} to ${scan.to}) — open that cycle in the ` +
-      `Payroll Calculator to see them, not a different one.`, 'success');
+      needsApproval
+        ? `${fresh.length} incident(s) worth ${rupees(money)} sent to the Reporting ` +
+          `Manager(s) of ${affected.length} coach(es). Nothing is charged until they approve.`
+        : `${fresh.length} incident(s) filed, worth ${rupees(money)}. They are charged on ` +
+          `the ${scan.period} cycle (${scan.from} to ${scan.to}) — open that cycle in the ` +
+          `Payroll Calculator to see them, not a different one.`,
+      needsApproval ? 'info' : 'success');
   };
 
   const openMonthsForCoach = (coachId, fromMonth, toMonth) => {
@@ -7706,6 +7899,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
       finalAmount = sessionRate * sessionCount;
     }
 
+    // A Showrunner proposes; everybody else records. The difference is one
+    // field, and it is the field that decides whether this costs the coach
+    // anything before a manager has seen it.
+    const needsApproval = RAISE_NEEDS_APPROVAL(currentRole);
     const newVio = {
       id: `VIO_${Date.now().toString().substring(7)}`,
       coach_id: vioCoachId,
@@ -7716,11 +7913,27 @@ export default function App({ session = null, profile = null, onSignOut = null }
       incident_date: vioDate,
       incident_time: vioTime,
       reported_by: actorName,
+      raised_by_role: currentRole,
       evidence: vioEvidence,
-      status: "Pending_Acknowledge"
+      status: needsApproval ? PENALTY_AWAITING_APPROVAL : "Pending_Acknowledge"
     };
 
     setViolations(prev => [...prev, newVio]);
+
+    // Nothing is held against the coach until somebody with the authority to
+    // charge them has agreed, and that includes their streak.
+    if (needsApproval) {
+      const rm = coaches.find(c => c.id === vioCoachId)?.reporting_manager_id;
+      logAudit("Incident Proposed",
+        `${actorName} (${currentRole}) proposed ${vioType} (occurrence #${occurrence}) for ` +
+        `${coach.name}. ${rupees(finalAmount)} \u2014 waiting on ` +
+        `${rm || 'a Reporting Manager'} to approve it. Nothing is charged yet.`);
+      showToast(
+        `Sent to ${coach.name}'s Reporting Manager. It is on the record and ` +
+        `charges nothing until they approve it.`, "info");
+      setActiveModal(null);
+      return;
+    }
 
     // Reset 5-star streak to 0 dynamically on violation
     setCoaches(prev => prev.map(c => {
@@ -7739,6 +7952,100 @@ export default function App({ session = null, profile = null, onSignOut = null }
     logAudit("Violation Logged", `Logged ${vioType} (Occur #${occurrence}) for ${coach.name}. Consequence: ${consequenceObj.consequence}. Fined: ₹${finalAmount}`);
     showToast(`Incident logged for ${coach.name}. Streak reset to 0.`);
     setActiveModal(null);
+  };
+
+  /**
+   * The incidents a manager has been asked to agree with.
+   *
+   * A Reporting Manager sees their own coaches' and nobody else's. HR and a
+   * Super Admin see all of them, because a coach with no manager set would
+   * otherwise have proposals nobody could ever decide — the same hole the
+   * appeals queue had, and it stranded real people in it.
+   */
+  const incidentsAwaitingMe = useMemo(() => {
+    if (!INCIDENT_APPROVER_ROLES.includes(currentRole)) return [];
+    return violations
+      .filter(v => v.status === PENALTY_AWAITING_APPROVAL)
+      .filter(v => {
+        if (currentRole !== 'Reporting Manager') return true;
+        const c = coaches.find(x => x.id === v.coach_id);
+        return c?.reporting_manager_id === currentRmContext;
+      })
+      .sort((a, b) => String(b.incident_date).localeCompare(String(a.incident_date)));
+  }, [violations, coaches, currentRole, currentRmContext]);
+
+  /**
+   * Agree with a proposed incident, or refuse it.
+   *
+   * Approving makes it an incident like any other: chargeable on its cycle,
+   * acknowledgeable and appealable by the coach, and it ends their five-star
+   * run from that moment. Refusing leaves it on the record as refused — never
+   * charged, and never counted towards the next one's place on the ladder,
+   * because an incident the manager did not agree with did not happen.
+   *
+   * A refusal must say why. The coach can see this, and "no" with no reason
+   * attached is what makes somebody ask the same question again next month.
+   */
+  const decideIncident = (vioId, action) => {
+    if (!INCIDENT_APPROVER_ROLES.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot decide incidents.`, 'danger');
+      return;
+    }
+    const vio = violations.find(v => v.id === vioId);
+    if (!vio) return;
+    if (vio.status !== PENALTY_AWAITING_APPROVAL) {
+      showToast('That incident has already been decided.', 'info');
+      return;
+    }
+    const coach = coaches.find(c => c.id === vio.coach_id);
+
+    // A Reporting Manager decides their own coaches. Checked here as well as
+    // in the list, because a stale screen is not an authorisation.
+    if (currentRole === 'Reporting Manager'
+        && coach?.reporting_manager_id !== currentRmContext) {
+      showToast(`${coach?.name || vio.coach_id} does not report to you.`, 'danger');
+      return;
+    }
+
+    const approving = action === 'Approve';
+    const note = window.prompt(approving
+      ? `Approving ${vio.type} for ${coach?.name || vio.coach_id} — ${rupees(vio.penalty_amount)} `
+        + `will be deducted on the cycle containing ${vio.incident_date}.\n\n`
+        + `Add a note (optional):`
+      : `Refusing ${vio.type} for ${coach?.name || vio.coach_id}.\n\n`
+        + `Why? The coach can see this, and it is not optional:`);
+    if (note === null) return;
+    if (!approving && !note.trim()) {
+      showToast('A refusal needs a reason.', 'warning');
+      return;
+    }
+
+    setViolations(prev => prev.map(v => v.id === vioId ? {
+      ...v,
+      status: approving ? 'Pending_Acknowledge' : PENALTY_REFUSED,
+      decided_by: actorName,
+      decided_at: new Date().toISOString(),
+      decision_note: note.trim() || null
+    } : v));
+
+    // An incident ends the five-star run — from the moment it becomes one.
+    if (approving && coach) {
+      setCoaches(prev => prev.map(c => c.id === coach.id ? { ...c, five_star_streak: 0 } : c));
+      setCurrentMonth(prev => prev.map(m =>
+        m.coach_id === coach.id ? { ...m, five_star_streak: 0 } : m));
+    }
+
+    logAudit(approving ? 'Incident Approved' : 'Incident Refused',
+      `${actorName} ${approving ? 'approved' : 'refused'} ${vio.type} ` +
+      `(occurrence #${vio.occurrence_no}) for ${coach?.name || vio.coach_id}, ` +
+      `dated ${vio.incident_date}, ${rupees(vio.penalty_amount)}. ` +
+      `Raised by ${vio.reported_by}${vio.raised_by_role ? ` (${vio.raised_by_role})` : ''}.` +
+      (note.trim() ? ` Note: ${note.trim()}` : ''));
+
+    showToast(approving
+      ? `Approved — ${rupees(vio.penalty_amount)} will be deducted from ${coach?.name || vio.coach_id}.`
+      : `Refused. Nothing is charged, and it does not count towards the next one.`,
+      approving ? 'success' : 'info');
   };
 
   // Submit bulk sessions CSV simulator
@@ -8132,7 +8439,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     const inPeriod = violations.filter(v =>
       v.coach_id === coach.id &&
-      v.status !== 'Appeal_Approved' &&
+      isPenaltyCounted(v) &&
       new Date(v.incident_date) >= new Date(record.period_start) &&
       new Date(v.incident_date) <= new Date(record.period_end)
     );
@@ -8544,7 +8851,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const vConfig = findVariant(variants, coach.variant_id);
 
       const { score, band } = resolvePeriodScore(coach, record, vConfig);
-      const coachVios = violations.filter(v => v.coach_id === coach.id && v.status !== 'Appeal_Approved');
+      const coachVios = violations.filter(v => v.coach_id === coach.id && isPenaltyCounted(v));
       const periodVios = coachVios.filter(v =>
         new Date(v.incident_date) >= new Date(record.period_start) &&
         new Date(v.incident_date) <= new Date(record.period_end)
@@ -8764,7 +9071,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       if (!matchesV) return;
 
       const vConfig = findVariant(variants, coach.variant_id);
-      const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
+      const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && isPenaltyCounted(v));
       const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
       const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
@@ -8801,7 +9108,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setAppUsers(rows);
       // Seed the per-row drafts so the selects are controlled from the start.
       setUserDrafts(Object.fromEntries(rows.map(u => [
-        u.id, { role: u.role, coachId: u.coach_id || "", rmId: u.rm_id || "" }
+        u.id, {
+          role: u.role,
+          // A row from before the migration has no set; its one role is it.
+          roles: u.roles?.length ? u.roles : [u.role],
+          coachId: u.coach_id || "", rmId: u.rm_id || ""
+        }
       ])));
     } catch (e) {
       setAppUsersError(e.message || String(e));
@@ -8811,14 +9123,222 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Admins get the list up front so the sidebar can badge accounts waiting on
   // a role; everyone else never pays for the round trip.
-  const isAccessAdmin = ["Super Admin", "HR Manager"].includes(profile?.role);
+  // The role in effect, not the roles granted. The server decides whether to
+  // return the user list from the active role, so asking from any other one
+  // gets refused — and an account that holds HR Manager but is acting as a
+  // Showrunner would otherwise ask, be refused, and show an empty list as
+  // though nobody held any squad.
+  const isAccessAdmin = ["Super Admin", "HR Manager"].includes(currentRole);
 
   useEffect(() => {
     if (!isAccessAdmin) return;
     if (activeView === 'user-access' || appUsers.length === 0) refreshAppUsers();
-  }, [activeView, session?.user?.id, isAccessAdmin]);
+  }, [activeView, session?.user?.id, isAccessAdmin, currentRole]);
 
-  const pendingAccessCount = appUsers.filter(u => u.role === 'Coach' && !u.coach_id).length;
+  const grantedOf = (u) => (u?.roles?.length ? u.roles : [u?.role]).filter(Boolean);
+  const pendingAccessCount = appUsers.filter(
+    u => grantedOf(u).includes('Coach') && !u.coach_id).length;
+
+  /**
+   * Who reports to a manager.
+   *
+   * The squad is held on the coach — `reporting_manager_id` — so this reads
+   * from the roster rather than from the accounts: a manager manages coaches
+   * whether or not any of those coaches has ever signed in.
+   */
+  // Which coach is being dragged, and which squad the cursor is over. Only
+  // for the drag itself; the move is a confirmed action, not a hover.
+  const [dragCoachId, setDragCoachId] = useState(null);
+  const [overSquadId, setOverSquadId] = useState(null);
+
+  // Moving somebody between squads changes who approves their leave, decides
+  // their regularisations and agrees to incidents against them. That is an
+  // HR decision, so it is not something a manager can do to another manager's
+  // squad from a drag.
+  const CAN_MOVE_SQUAD = ['Super Admin', 'HR Manager'];
+  // Declared here, not inside the view: the page's own description reads it,
+  // and that sits outside the block the chart is built in.
+  const canMoveSquads = CAN_MOVE_SQUAD.includes(currentRole);
+
+  /**
+   * Move a coach to another manager.
+   *
+   * Confirmed first, by name, naming both ends: a drag that lands one card
+   * off would otherwise silently reassign the wrong person, and nothing on
+   * screen would look any different afterwards.
+   *
+   * Only the manager changes. Leave already approved, regularisations already
+   * decided and incidents already agreed stay exactly as they are — they were
+   * decided by whoever was answerable at the time, and rewriting that would
+   * falsify the record rather than correct it.
+   */
+  // Who is picked for a bulk move, and where they are going.
+  const [pickedCoachIds, setPickedCoachIds] = useState([]);
+  const [moveTarget, setMoveTarget] = useState('');
+
+  const togglePicked = (id) => setPickedCoachIds(prev =>
+    prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const togglePickedMany = (ids, on) => setPickedCoachIds(prev => on
+    ? [...new Set([...prev, ...ids])]
+    : prev.filter(x => !ids.includes(x)));
+
+  /**
+   * Move several coaches to one manager, in a single confirmed step.
+   *
+   * The drag is right for one person and wrong for eighteen: eighteen drags
+   * is eighteen confirmations and eighteen chances to drop somebody on the
+   * wrong squad. This asks once, names everybody it is about to move, and
+   * says where each of them is coming from.
+   */
+  const moveCoachesToSquad = (ids, toRmId) => {
+    setDragCoachId(null);
+    setOverSquadId(null);
+    if (!ids || ids.length === 0) return;
+
+    if (!CAN_MOVE_SQUAD.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot change who a coach reports to.`, 'danger');
+      return;
+    }
+
+    const to = toRmId === 'none' ? null : (toRmId || null);
+    // Somebody already there is not a move. Dropping a mixed selection onto
+    // one of its own squads should move the rest, not report a move of people
+    // who have not moved.
+    const moving = coaches.filter(c => ids.includes(c.id)
+      && (c.reporting_manager_id || null) !== to);
+    if (moving.length === 0) {
+      showToast('Everyone picked already reports there.', 'info');
+      setPickedCoachIds([]);
+      return;
+    }
+
+    const names = moving.slice(0, 8).map(c => `  \u2022 ${c.name} (${c.id}) \u2014 from ${squadTitle(c.reporting_manager_id)}`);
+    const more = moving.length > names.length ? `\n  \u2026 and ${moving.length - names.length} more` : '';
+
+    if (!window.confirm(
+      `Move ${moving.length} coach${moving.length === 1 ? '' : 'es'} to ${squadTitle(to)}?\n\n` +
+      names.join('\n') + more + `\n\n` +
+      `${to ? squadTitle(to) : 'Nobody'} will approve their leave, decide their ` +
+      `regularisations and agree to incidents raised against them.\n\n` +
+      `Anything already decided stays as it is.`)) return;
+
+    const ms = new Set(moving.map(c => c.id));
+    setCoaches(prev => prev.map(c =>
+      ms.has(c.id) ? { ...c, reporting_manager_id: to } : c));
+    setPickedCoachIds([]);
+
+    logAudit('Reporting Manager Changed',
+      `${actorName} moved ${moving.length} coach(es) to ${squadTitle(to)}: ` +
+      moving.map(c => `${c.name} (${c.id}) from ${squadTitle(c.reporting_manager_id)}`).join('; ') + '.');
+
+    showToast(to
+      ? `${moving.length} coach${moving.length === 1 ? '' : 'es'} now report to ${squadTitle(to)}.`
+      : `${moving.length} coach${moving.length === 1 ? ' has' : 'es have'} no manager \u2014 nobody ` +
+        `approves their leave or decides an incident against them until one is set.`,
+      to ? 'success' : 'warning');
+  };
+
+  const moveCoachToSquad = (coachId, toRmId) => {
+    setDragCoachId(null);
+    setOverSquadId(null);
+    if (!coachId) return;
+
+    if (!CAN_MOVE_SQUAD.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot change who a coach reports to.`, 'danger');
+      return;
+    }
+
+    // Dragging a card that is part of a selection moves the selection. Doing
+    // otherwise would pick up one person while a dozen sit visibly ticked.
+    if (pickedCoachIds.includes(coachId)) {
+      moveCoachesToSquad(pickedCoachIds, toRmId);
+      return;
+    }
+
+    const coach = coaches.find(c => c.id === coachId);
+    if (!coach) return;
+
+    const from = coach.reporting_manager_id || null;
+    const to = toRmId === 'none' ? null : (toRmId || null);
+    if (from === to) return;   // dropped back where it came from
+
+    const label = (id) => squadTitle(id);
+
+    if (!window.confirm(
+      `Move ${coach.name} (${coach.id}) from ${label(from)} to ${label(to)}?\n\n` +
+      `${to ? label(to) : 'Nobody'} will approve their leave, decide their ` +
+      `regularisations and agree to incidents raised against them.\n\n` +
+      `Anything already decided stays as it is.`)) return;
+
+    setCoaches(prev => prev.map(c =>
+      c.id === coachId ? { ...c, reporting_manager_id: to } : c));
+
+    logAudit('Reporting Manager Changed',
+      `${actorName} moved ${coach.name} (${coach.id}) from ${label(from)} to ${label(to)}.`);
+
+    showToast(to
+      ? `${coach.name} now reports to ${label(to)}.`
+      : `${coach.name} now has no manager \u2014 nobody approves their leave or decides ` +
+        `an incident against them until one is set.`,
+      to ? 'success' : 'warning');
+  };
+
+  /**
+   * The account that holds a squad, and what to call that squad.
+   *
+   * Matched on the linked coach record first, then on email. Somebody can be
+   * a manager without their account being linked to their own coach record —
+   * Musaib holds RM_01 while his coach record sits in the unassigned column —
+   * and those are the same person, so the chart should say so.
+   */
+  const accountForCoach = (coach) => appUsers.find(u =>
+    (u.coach_id && u.coach_id === coach.id)
+    || (u.email && coach.email && u.email.toLowerCase() === coach.email.toLowerCase()));
+
+  const managerAccountFor = (rmId) => appUsers.find(
+    u => grantedOf(u).includes('Reporting Manager') && u.rm_id === rmId);
+
+  /** A squad without its key: "S&C", not "RM_01 — S&C". */
+  const squadShortName = (rmId) => {
+    if (!rmId) return null;
+    const label = RM_SCOPES.find(r => r.id === rmId)?.label;
+    return label ? (label.split('\u2014').pop() || label).trim() : rmId;
+  };
+
+  /** What to call a squad to a person: its manager, or failing that its name. */
+  const squadTitle = (rmId) => {
+    if (!rmId) return 'no manager';
+    const mgr = managerAccountFor(rmId);
+    return mgr ? (mgr.full_name || mgr.email) : (squadShortName(rmId) || rmId);
+  };
+
+  /** Active first, then by name, with the manager flag each row needs. */
+  const asSquadRows = (list) => [...list]
+    .sort((a, b) => (a.status === b.status ? 0 : a.status === 'Active' ? -1 : 1)
+      || String(a.name).localeCompare(String(b.name)))
+    // Who, on this list, is themselves a manager. Carried on the row rather
+    // than looked up while drawing, so the chart stays a drawing.
+    .map(c => {
+      const acct = accountForCoach(c);
+      const runs = acct && grantedOf(acct).includes('Reporting Manager') ? acct.rm_id : null;
+      return runs ? { ...c, managesSquad: squadShortName(runs) } : c;
+    });
+
+  const squadOf = (rmId) => asSquadRows(
+    coaches.filter(c => c.reporting_manager_id === rmId));
+
+  /**
+   * Whether a squad has somebody holding it.
+   *
+   * A squad with no account is not a manager, whatever the coach records say
+   * they point at: nobody approves that squad's leave, decides its
+   * regularisations or agrees to its incidents. So it is not drawn as a
+   * manager, and the coaches pointing at it are shown as what they actually
+   * are — unmanaged — rather than filed under a heading that does nothing.
+   */
+  const squadIsHeld = (rmId) => Boolean(rmId && appUsers.some(
+    u => grantedOf(u).includes('Reporting Manager') && u.rm_id === rmId));
 
   const updateUserDraft = (id, patch) =>
     setUserDrafts(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -8827,13 +9347,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const draft = userDrafts[user.id];
     if (!draft) return;
 
+    const granted = draft.roles?.length ? draft.roles : [draft.role];
+
     // Mirror the checks the RPC enforces, so the user gets told before the
-    // round trip rather than after it.
-    if (draft.role === 'Coach' && !draft.coachId) {
+    // round trip rather than after it. Against the whole set, not the active
+    // role: an account granted Coach needs a coach record whether or not it
+    // happens to be acting as one at the moment.
+    if (granted.includes('Coach') && !draft.coachId) {
       showToast("Pick the coach record this account belongs to.", "danger");
       return;
     }
-    if (draft.role === 'Reporting Manager' && !draft.rmId) {
+    if (granted.includes('Reporting Manager') && !draft.rmId) {
       showToast("Pick which squad this manager reviews.", "danger");
       return;
     }
@@ -8842,17 +9366,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
     try {
       const updated = await setUserAccess({
         id: user.id,
+        roles: granted,
         role: draft.role,
         coachId: draft.coachId,
         rmId: draft.rmId
       });
       setAppUsers(prev => prev.map(u => u.id === user.id
-        ? { ...u, role: updated.role, coach_id: updated.coach_id, rm_id: updated.rm_id,
+        ? { ...u, role: updated.role, roles: updated.roles ?? granted,
+            coach_id: updated.coach_id, rm_id: updated.rm_id,
             coach_name: coaches.find(c => c.id === updated.coach_id)?.name ?? null }
         : u));
       // No logAudit here: admin_set_access already writes the audit row
       // server-side, where it cannot be skipped by a client that never runs.
-      showToast(`${user.full_name || user.email} is now ${draft.role}.`);
+      updateUserDraft(user.id, { rmEditing: false });
+      const who = user.full_name || user.email;
+      showToast(granted.length > 1
+        ? `${who} can now act as ${granted.join(', ')} \u2014 currently ${updated.role ?? draft.role}.`
+        : `${who} is now ${granted[0]}.`);
     } catch (e) {
       showToast(e.message || String(e), "danger");
     }
@@ -8862,7 +9392,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const userAccessDirty = (u) => {
     const d = userDrafts[u.id];
     if (!d) return false;
+    const was = [...(u.roles?.length ? u.roles : [u.role])].sort().join('|');
+    const now = [...(d.roles?.length ? d.roles : [d.role])].sort().join('|');
     return d.role !== u.role
+      || was !== now
       || (d.coachId || "") !== (u.coach_id || "")
       || (d.rmId || "") !== (u.rm_id || "");
   };
@@ -8870,6 +9403,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Switch Active role context handler
   const handleRoleSelectChange = (role) => {
     setCurrentRole(role);
+
+    // A Super Admin is previewing — looking at what somebody else sees — so
+    // nothing is stored. Anyone else is genuinely changing which of their own
+    // granted roles they are acting as, and that is remembered: it has to
+    // survive a reload, and the audit trail of what somebody did should line
+    // up with what they were acting as when they did it.
+    if (!canPreviewAnyRole && grantedRoles.includes(role) && isSupabaseConfigured) {
+      setActiveRole(role).catch(e =>
+        showToast(`Switched for now, but it could not be remembered: ${e.message}`, 'warning'));
+    }
     if (role === "Coach" && coaches.length > 0 && !currentCoachContext) {
       setCurrentCoachContext(coaches[0].id);
     }
@@ -9005,12 +9548,40 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </a>
               </li>
             )}
+            {isViewEnabled('org-chart') && verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (
+              <li className={`nav-item ${activeView === 'org-chart' ? 'active' : ''}`} onClick={() => handleNavClick('org-chart', "Super Admin,HR Manager,Reporting Manager,Showrunner")}>
+                <a href="#org-chart">
+                  <i className="bx bx-sitemap nav-icon"></i><span>Who Reports To Whom</span>
+                  {/* Coaches with nobody to answer to. They have no manager to
+                      approve their leave, decide a regularisation or agree to
+                      an incident, so the number is worth carrying here. */}
+                  {(() => {
+                    const orphans = coaches.filter(
+                      c => c.status === 'Active' && !c.reporting_manager_id).length;
+                    return orphans > 0 ? <span className="nav-pill">{orphans}</span> : null;
+                  })()}
+                </a>
+              </li>
+            )}
             {isViewEnabled('penalties') && verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner") && (
               <li className={`nav-item ${activeView === 'penalties' ? 'active' : ''}`} onClick={() => handleNavClick('penalties', "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner")}>
                 <a href="#penalties">
                   <i className="bx bx-error-circle nav-icon"></i><span>Penalties</span>
                   {/* Appeals wait on a person, so the number waiting belongs
                       where they will see it without going looking. */}
+                  {/* Incidents a Showrunner has proposed. Counted separately
+                      from appeals because they are a different decision with
+                      a different consequence: until this one is made, a coach
+                      is either being charged for nothing or not charged for
+                      something. */}
+                  {incidentsAwaitingMe.length > 0 && (
+                    <span
+                      className="nav-appeal-badge"
+                      title={`${incidentsAwaitingMe.length} incident${incidentsAwaitingMe.length === 1 ? '' : 's'} waiting for your approval`}
+                    >
+                      <i className="bx bx-check-shield"></i>{incidentsAwaitingMe.length}
+                    </span>
+                  )}
                   {(() => {
                     if (!LEAVE_APPROVER_ROLES.includes(currentRole)) return null;
                     const open = appeals.filter(a => {
@@ -9132,19 +9703,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
           <div className="header-right">
             <div className="control-group">
               <label htmlFor="role-select">
-                <i className="bx bxs-user-badge"></i> {canSwitchRole ? "View Role" : "Signed In As"}
+                <i className="bx bxs-user-badge"></i>{' '}
+                {canPreviewAnyRole ? "View Role" : canSwitchRole ? "Acting As" : "Signed In As"}
               </label>
               {canSwitchRole ? (
-                <select id="role-select" className="header-select" value={currentRole} onChange={(e) => handleRoleSelectChange(e.target.value)}>
-                  <option value="Super Admin">Super Admin</option>
-                  <option value="HR Manager">HR Manager</option>
-                  <option value="Reporting Manager">Reporting Manager</option>
-                  <option value="Finance">Finance / Payroll</option>
-                  <option value="Showrunner">Showrunner</option>
-                  {/* Coaches sign in for attendance and leave, so the role has
-                      to be previewable — a Super Admin needs to see what a
-                      coach sees before telling one to use it. */}
-                  <option value="Coach">Coach</option>
+                /* What this account may act as. A Super Admin gets every role,
+                   because checking what a coach or a manager actually sees is
+                   how you find out whether to tell them to use it. Everyone
+                   else gets the roles they were granted, and sees a picker at
+                   all only if there is more than one. */
+                <select
+                  id="role-select"
+                  className="header-select"
+                  value={currentRole}
+                  onChange={(e) => handleRoleSelectChange(e.target.value)}
+                >
+                  {switchableRoles.map(r => (
+                    <option key={r} value={r}>
+                      {r === 'Finance' ? 'Finance / Payroll' : r}
+                    </option>
+                  ))}
                 </select>
               ) : (
                 /* Non-admins get their app_users role, not a picker — RLS would
@@ -9218,7 +9796,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 const hoursToday = loggedHoursForDay(todays, nowTick);
                 const expected = standardDailyHours(me.coach_category);
                 const myLeave = leaveApplications.filter(a => a.coach_id === me.id);
-                const myVios = violations.filter(v => v.coach_id === me.id && v.status !== 'Appeal_Approved');
+                const myVios = violations.filter(v => v.coach_id === me.id && isPenaltyCounted(v));
                 const periodVios = myRecord ? myVios.filter(v =>
                   new Date(v.incident_date) >= new Date(myRecord.period_start) &&
                   new Date(v.incident_date) <= new Date(myRecord.period_end)) : [];
@@ -9492,6 +10070,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // 4 — incidents dated inside the cycle, still undecided.
                 const openVios = violations.filter(v =>
                   inCycle(v.incident_date) && (v.status === 'Pending_Acknowledge' || v.status === 'Appealed'));
+                // A proposal waiting on a manager is not yet something the
+                // coach is being asked to acknowledge, and showing it as one
+                // would have them acknowledge a charge that may never happen.
 
                 // 5 — what the month costs as it stands.
                 let draftGross = 0;
@@ -9992,7 +10573,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 const milestoneTarget = currentSelectedCoach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96;
                 const progressPct = Math.min(100, ((Number(sessions) || 0) / milestoneTarget) * 100);
-                const activeVio = violations.filter(v => v.coach_id === currentSelectedCoach.id && v.status !== 'Appeal_Approved');
+                const activeVio = violations.filter(v => v.coach_id === currentSelectedCoach.id && isPenaltyCounted(v));
 
                 const allRuns = [...histList, curr].filter(Boolean);
 
@@ -10086,7 +10667,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   ? run.hb_score
                                   : computeHBPlusScore(currentSelectedCoach, run, vConfig).hbScore;
                                 const bandVal = run.band || getPerformanceBand(scoreVal).label;
-                                const monthVios = violations.filter(v => v.coach_id === currentSelectedCoach.id && new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && v.status !== 'Appeal_Approved');
+                                const monthVios = violations.filter(v => v.coach_id === currentSelectedCoach.id && new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && isPenaltyCounted(v));
                                 const coachOrgWork = orgWork.filter(o => o.coach_id === currentSelectedCoach.id && o.period_month === run.period_month && o.status === 'Approved');
                                 const pay = computeMonthlyPay(currentSelectedCoach, carryPay(run), { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
                                 const isLocked = run.status === 'FINANCE_LOCKED';
@@ -10198,7 +10779,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             }
 
             const coachVios = violations.filter(v => v.coach_id === coach.id);
-            const activeVio = coachVios.filter(v => v.status !== 'Appeal_Approved');
+            const activeVio = coachVios.filter(v => isPenaltyCounted(v));
             const canLock = LOCK_ROLES.includes(currentRole);
             const canManage = PROFILE_PAY_ROLES.includes(currentRole);
             const canEditScores = SCORE_EDIT_ROLES.includes(currentRole);
@@ -10313,7 +10894,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // month's total minus the threshold cannot tell you.
                 beyond_sessions: run.beyond_availability_sessions,
                 violations: pick("violations", coachVios.filter(v =>
-                  v.status !== 'Appeal_Approved' &&
+                  isPenaltyCounted(v) &&
                   new Date(v.incident_date) >= new Date(run.period_start) &&
                   new Date(v.incident_date) <= new Date(run.period_end)
                 ).length)
@@ -12083,7 +12664,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       }
                       const seedRow = buildScoreRow(coach, selected);
                       const periodVios = coachVios.filter(v =>
-                        v.status !== 'Appeal_Approved' &&
+                        isPenaltyCounted(v) &&
                         new Date(v.incident_date) >= new Date(selected.period_start) &&
                         new Date(v.incident_date) <= new Date(selected.period_end)
                       );
@@ -12134,7 +12715,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               penaltyWaiver: Number(selected.penalty_waiver) || 0,
                               lopDays: Number(selected.lop_days) || 0,
                               penaltyItems: periodVios,
-                              penaltyOtherCount: coachVios.filter(v => v.status !== 'Appeal_Approved').length - periodVios.length,
+                              penaltyOtherCount: coachVios.filter(v => isPenaltyCounted(v)).length - periodVios.length,
                               payFrom: resolvePay(selected),
                               baseOverride: carryPay(selected).fixed_pay_override
                                 ?? (coach.coach_category === 'Flexi-Fixed'
@@ -12174,7 +12755,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               ? run.hb_score
                               : computeHBPlusScore(coach, run, vConfig).hbScore;
                             const bandVal = run.band || getPerformanceBand(scoreVal).label;
-                            const monthVios = coachVios.filter(v => new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && v.status !== 'Appeal_Approved');
+                            const monthVios = coachVios.filter(v => new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && isPenaltyCounted(v));
                             const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === run.period_month && o.status === 'Approved');
                             const pay = computeMonthlyPay(coach, carryPay(run), { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
                             const isLocked = run.status === 'FINANCE_LOCKED';
@@ -16944,6 +17525,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       if (v.status === "Appeal_Raised") statusClass = "badge-info";
                       if (v.status === "Appeal_Approved") statusClass = "badge-success";
                       if (v.status === "Appeal_Rejected") statusClass = "badge-danger";
+                      // Proposed, and not yet anybody's money.
+                      if (v.status === PENALTY_AWAITING_APPROVAL) statusClass = "badge-info";
+                      if (v.status === PENALTY_REFUSED) statusClass = "badge-muted";
 
                       return (
                         <tr key={v.id}>
@@ -17031,7 +17615,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   if (!matchesV) return;
 
                   const vConfig = findVariant(variants, coach.variant_id);
-                  const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
+                  const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && isPenaltyCounted(v));
                   const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
                   const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
@@ -17106,7 +17690,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           }).map(e => {
                             const coach = coaches.find(c => c.id === e.coach_id);
                             const vConfig = findVariant(variants, coach.variant_id);
-                            const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
+                            const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && isPenaltyCounted(v));
                             const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
                             const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
@@ -17419,6 +18003,94 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
                 </div>
               </div>
+
+              {/* What a Showrunner has proposed, waiting on the manager who can
+                  charge it. First on the page because somebody is not being
+                  paid correctly until it is dealt with, in whichever
+                  direction. */}
+              {incidentsAwaitingMe.length > 0 && (
+                <div className="card" style={{ marginBottom: '1.5rem' }}>
+                  <div className="card-header-row">
+                    <h3>Waiting for your approval · {incidentsAwaitingMe.length}</h3>
+                    <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                      Proposed by a Showrunner. Nothing is deducted until you agree.
+                    </span>
+                  </div>
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Coach</th>
+                          <th>When</th>
+                          <th>Violation</th>
+                          <th>Occurrence</th>
+                          <th>Consequence</th>
+                          <th className="text-right">Penalty</th>
+                          <th>Raised by</th>
+                          <th>What happened</th>
+                          <th className="actions-col">Decide</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {incidentsAwaitingMe.map(v => {
+                          const c = coaches.find(x => x.id === v.coach_id);
+                          return (
+                            <tr key={v.id}>
+                              <td>
+                                <strong>{c?.name || v.coach_id}</strong>
+                                <br /><small className="text-muted">{v.coach_id}</small>
+                              </td>
+                              {/* Formatted here rather than through a helper:
+                                  the two formatDate helpers in this file are
+                                  each local to another block, and reaching for
+                                  one from here is a blank screen. */}
+                              <td style={{ whiteSpace: 'nowrap' }}>
+                                {v.incident_date
+                                  ? new Date(v.incident_date).toLocaleDateString('en-IN',
+                                      { day: 'numeric', month: 'short', year: 'numeric' })
+                                  : '\u2014'}
+                                {v.incident_time && <><br /><small className="text-muted">{v.incident_time}</small></>}
+                              </td>
+                              <td>{v.type}</td>
+                              <td>#{v.occurrence_no}</td>
+                              <td><small>{v.consequence}</small></td>
+                              <td className="text-right"><strong>{rupees(v.penalty_amount)}</strong></td>
+                              <td>
+                                <small>{v.reported_by}</small>
+                                {v.raised_by_role && (
+                                  <><br /><small className="text-muted">{v.raised_by_role}</small></>
+                                )}
+                              </td>
+                              {/* The whole of it. A manager asked to take money
+                                  off somebody should not have to click through
+                                  to find out what they did. */}
+                              <td><small className="text-muted">{v.evidence || '\u2014 no detail given \u2014'}</small></td>
+                              <td className="actions-col">
+                                <div className="table-btn-group">
+                                  <button
+                                    className="btn-row-icon icon-save"
+                                    title={`Approve \u2014 ${rupees(v.penalty_amount)} will be deducted`}
+                                    onClick={() => decideIncident(v.id, 'Approve')}
+                                  >
+                                    <i className="bx bx-check"></i>
+                                  </button>
+                                  <button
+                                    className="btn-row-icon icon-cancel"
+                                    title="Refuse — nothing is charged and it does not count"
+                                    onClick={() => decideIncident(v.id, 'Reject')}
+                                  >
+                                    <i className="bx bx-x"></i>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
               {/* Late joins, measured from the app.
                   Every other incident on this page is somebody's report. This
@@ -17777,6 +18449,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // handler as the modal — opening the modal from a coach page
                 // and typing here are one path, so neither can drift.
                 const STATUS_UI = {
+                  Pending_RM_Approval: ['Waiting for the manager', 'info', 'Not charged yet'],
+                  Rejected: ['Refused by the manager', 'good', 'Not charged \u00b7 does not count'],
                   Pending_Acknowledge: ['Waiting for coach', 'warn', 'Will be charged'],
                   Acknowledged: ['Acknowledged', 'mute', 'Will be charged'],
                   Appealed: ['Appealed', 'info', 'Charged unless the appeal wins'],
@@ -18467,8 +19141,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </tr>
                     )}
                     {appUsers.map(u => {
-                      const draft = userDrafts[u.id] || { role: u.role, coachId: u.coach_id || "", rmId: u.rm_id || "" };
-                      const pending = u.role === 'Coach' && !u.coach_id;
+                      const draft = userDrafts[u.id]
+                        || { role: u.role, roles: u.roles?.length ? u.roles : [u.role],
+                             coachId: u.coach_id || "", rmId: u.rm_id || "" };
+                      const picked = draft.roles || [draft.role];
+                      const has = (r) => picked.includes(r);
+                      // Ticking the last box off would leave an account that
+                      // can act as nothing, which every "is this role allowed"
+                      // check would pass vacuously. The database refuses it;
+                      // so does the box.
+                      const toggleRole = (r) => {
+                        const next = has(r) ? picked.filter(x => x !== r) : [...picked, r];
+                        if (next.length === 0) {
+                          showToast("An account needs at least one role.", "warning");
+                          return;
+                        }
+                        updateUserDraft(u.id, {
+                          roles: next,
+                          // Acting as a role that was just revoked makes no
+                          // sense, so it falls back to one they still hold.
+                          role: next.includes(draft.role) ? draft.role : next[0]
+                        });
+                      };
+                      const pending = picked.includes('Coach') && !u.coach_id;
                       const isSelf = u.id === session?.user?.id;
                       return (
                         <tr key={u.id} className={pending ? 'row-pending' : undefined}>
@@ -18493,21 +19188,37 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               : <span className="text-muted">never</span>}</small>
                           </td>
                           <td>
-                            <select
-                              className="header-select"
-                              value={draft.role}
-                              onChange={(e) => updateUserDraft(u.id, { role: e.target.value })}
-                            >
-                              {(APP_ROLES.includes(draft.role) ? APP_ROLES : [...APP_ROLES, draft.role])
-                                .map(r => (
-                                  <option key={r} value={r}>
-                                    {r}{APP_ROLES.includes(r) ? '' : ' (current)'}
-                                  </option>
-                                ))}
-                            </select>
+                            {/* Several roles may be granted; one is in effect.
+                                Granting many and acting as one keeps every
+                                rule about who sees whose pay answerable — the
+                                app always knows which hat is being worn. */}
+                            <div className="role-grant-set">
+                              {APP_ROLES.map(r => (
+                                <label key={r} className={`role-grant ${has(r) ? 'is-on' : ''}`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={has(r)}
+                                    onChange={() => toggleRole(r)}
+                                  />
+                                  <span>{r}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {picked.length > 1 && (
+                              <label className="role-active-pick">
+                                <small className="text-muted">acting as</small>
+                                <select
+                                  className="header-select"
+                                  value={draft.role}
+                                  onChange={(e) => updateUserDraft(u.id, { role: e.target.value })}
+                                >
+                                  {picked.map(r => <option key={r} value={r}>{r}</option>)}
+                                </select>
+                              </label>
+                            )}
                           </td>
                           <td>
-                            {draft.role === 'Coach' && (
+                            {has('Coach') && (
                               <select
                                 className="header-select"
                                 value={draft.coachId}
@@ -18519,35 +19230,271 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 ))}
                               </select>
                             )}
-                            {draft.role === 'Reporting Manager' && (
-                              <select
-                                className="header-select"
-                                value={draft.rmId}
-                                onChange={(e) => updateUserDraft(u.id, { rmId: e.target.value })}
-                              >
-                                <option value="">— pick a squad —</option>
-                                {RM_SCOPES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
-                              </select>
+                            {/* The squad a manager holds: a picker only while
+                                there is something to decide. Once it is saved
+                                the row simply says which squad, because the
+                                control was being offered on every manager row
+                                for ever to re-answer a question already
+                                answered. It comes back the moment the squad is
+                                cleared, and a new manager still cannot be saved
+                                without one — the database refuses it. */}
+                            {has('Reporting Manager') && (
+                              u.rm_id && draft.rmId === u.rm_id && !draft.rmEditing ? (
+                                <button
+                                  type="button"
+                                  className="linked-squad"
+                                  title={`${u.rm_id} — click to move them to another squad`}
+                                  onClick={() => updateUserDraft(u.id, { rmEditing: true })}
+                                >
+                                  {squadShortName(u.rm_id)}
+                                  <i className="bx bx-pencil"></i>
+                                </button>
+                              ) : (
+                                <select
+                                  className="header-select"
+                                  value={draft.rmId}
+                                  onChange={(e) => updateUserDraft(u.id, { rmId: e.target.value })}
+                                >
+                                  <option value="">— pick a squad —</option>
+                                  {RM_SCOPES.map(r => (
+                                    <option key={r.id} value={r.id}>{squadShortName(r.id)}</option>
+                                  ))}
+                                </select>
+                              )
                             )}
-                            {draft.role !== 'Coach' && draft.role !== 'Reporting Manager' && (
+                            {!has('Coach') && !has('Reporting Manager') && (
                               <span className="text-muted">—</span>
                             )}
                           </td>
                           <td style={{ textAlign: 'right' }}>
-                            <button
-                              className="btn btn-primary"
-                              disabled={!userAccessDirty(u) || savingUserId === u.id}
-                              onClick={() => handleSaveUserAccess(u)}
-                            >
-                              {savingUserId === u.id ? "Saving…" : "Save"}
-                            </button>
+                            <div className="table-btn-group" style={{ justifyContent: 'flex-end' }}>
+                              {/* Only where there is a squad to show, and only
+                                  once it is saved: a manager whose squad is
+                                  still an unsaved tick box manages nobody
+                                  yet. */}
+                              {grantedOf(u).includes('Reporting Manager') && u.rm_id && (
+                                <button
+                                  className="btn btn-secondary"
+                                  title={`Who reports to ${u.full_name || u.email}`}
+                                  onClick={() => setOpenSquadFor(openSquadFor === u.id ? null : u.id)}
+                                >
+                                  <i className={`bx ${openSquadFor === u.id ? 'bx-chevron-up' : 'bx-sitemap'}`}></i>
+                                  {' '}{squadOf(u.rm_id).length}
+                                </button>
+                              )}
+                              <button
+                                className="btn btn-primary"
+                                disabled={!userAccessDirty(u) || savingUserId === u.id}
+                                onClick={() => handleSaveUserAccess(u)}
+                              >
+                                {savingUserId === u.id ? "Saving…" : "Save"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
+                    }).flatMap((row, i) => {
+                      // The squad hangs under the row it belongs to, as a row
+                      // of its own: a tree nested inside a cell would be laid
+                      // out by the table and come out as a column.
+                      const u = appUsers[i];
+                      if (!u || openSquadFor !== u.id) return [row];
+                      const scope = { id: u.rm_id, label: squadShortName(u.rm_id) || u.rm_id };
+                      return [row, (
+                        <tr key={`${u.id}-squad`} className="row-squad">
+                          <td colSpan={5}>
+                            <SquadTree
+                              squad={squadOf(u.rm_id)}
+                              scope={scope}
+                              managerName={u.full_name || u.email}
+                              compact
+                            />
+                          </td>
+                        </tr>
+                      )];
                     })}
                   </tbody>
                 </table>
               </div>
+            </section>
+          )}
+
+          {/* The shape of the organisation: every squad, who manages it, and
+              who answers to nobody. Read-only — a coach's manager is set on
+              their own record, and two places to change one thing is how the
+              two places end up disagreeing. */}
+          {isViewEnabled('org-chart') && activeView === 'org-chart'
+            && verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner") && (
+            <section id="view-org-chart" className="content-view active-view">
+              <div className="page-header-row">
+                <div>
+                  <h2>Who Reports To Whom</h2>
+                  <p>
+                    Every squad and the coaches in it.{' '}
+                    {canMoveSquads
+                      ? 'Drag a coach onto another squad to change who they report to — you are asked to confirm before anything moves. The same field is on their record under Coach Master.'
+                      : 'A coach\u2019s manager is set on their own record under Coach Master — this reads it rather than sets it.'}
+                  </p>
+                </div>
+              </div>
+
+              {(() => {
+                // A manager is a squad with an account holding it. The squad
+                // is the thing that exists: coaches point at RM_01 whether or
+                // not anybody has been given that role yet, and a squad with
+                // no account is the gap worth seeing.
+                const managerFor = (rmId) => appUsers.find(
+                  u => grantedOf(u).includes('Reporting Manager') && u.rm_id === rmId);
+
+                // Only squads somebody actually holds. A squad with no
+                // account is not a manager — nobody approves its leave or
+                // decides its incidents — so drawing it as one says a coach
+                // is managed when they are not. The card appears by itself the
+                // moment an account is given that squad on User Access.
+                const scopes = [...new Set([
+                  ...RM_SCOPES.map(r => r.id),
+                  ...coaches.map(c => c.reporting_manager_id)
+                ].filter(Boolean))]
+                  .filter(squadIsHeld)
+                  .map(id => ({ id, label: squadShortName(id) || id }));
+
+                // Unmanaged in practice: no squad at all, or a squad nobody
+                // holds. The second kind keeps a note of where they are filed,
+                // so hiding the empty squad does not hide the fact.
+                const orphans = asSquadRows(
+                  coaches.filter(c => !squadIsHeld(c.reporting_manager_id))
+                ).map(c => c.reporting_manager_id
+                  ? { ...c, strandedFrom: squadShortName(c.reporting_manager_id) }
+                  : c);
+                const activeOrphans = orphans.filter(c => c.status === 'Active');
+
+                return (
+                  <>
+                    <div className="card org-summary">
+                      <div>
+                        <strong>{coaches.filter(c => c.status === 'Active').length}</strong>
+                        <small>active coaches</small>
+                      </div>
+                      <div>
+                        <strong>{scopes.length}</strong>
+                        <small>squads</small>
+                      </div>
+                      {isAccessAdmin && (() => {
+                        // Squads that exist in the policy but nobody holds, so
+                        // they are not drawn. Counted here or they would vanish
+                        // without trace.
+                        const unheld = RM_SCOPES.filter(r => !squadIsHeld(r.id));
+                        return unheld.length > 0 ? (
+                          <div title={`Not shown as squads: ${unheld.map(r => squadShortName(r.id)).join(', ')}`}>
+                            <strong>{unheld.length}</strong>
+                            <small>squads with nobody holding them</small>
+                          </div>
+                        ) : null;
+                      })()}
+                      <div className={activeOrphans.length ? 'org-summary-warn' : ''}>
+                        <strong>{activeOrphans.length}</strong>
+                        <small>active coaches with no manager</small>
+                      </div>
+                    </div>
+
+                    {/* Only once something is picked. A toolbar that is always
+                        there is a toolbar nobody reads. */}
+                    {canMoveSquads && pickedCoachIds.length > 0 && (
+                      <div className="card org-movebar">
+                        <strong>
+                          {pickedCoachIds.length} picked
+                        </strong>
+                        <span className="text-muted">move them to</span>
+                        <select
+                          className="header-select"
+                          value={moveTarget}
+                          onChange={(e) => setMoveTarget(e.target.value)}
+                        >
+                          <option value="">— choose —</option>
+                          {scopes.map(sc => (
+                            <option key={sc.id} value={sc.id}>{squadTitle(sc.id)}</option>
+                          ))}
+                          <option value="none">No manager</option>
+                        </select>
+                        <button
+                          className="btn btn-primary"
+                          disabled={!moveTarget}
+                          onClick={() => { moveCoachesToSquad(pickedCoachIds, moveTarget); setMoveTarget(''); }}
+                        >
+                          <i className="bx bx-transfer"></i> Move
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          onClick={() => setPickedCoachIds([])}
+                        >
+                          Clear
+                        </button>
+                        <span className="text-muted org-movebar-hint">
+                          or drag any one of them onto a squad
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="org-grid">
+                      {scopes.map(sc => {
+                        const mgr = managerFor(sc.id);
+                        return (
+                          <div className="card org-card" key={sc.id}>
+                            <SquadTree
+                              squad={squadOf(sc.id)}
+                              scope={sc}
+                              managerName={mgr ? (mgr.full_name || mgr.email) : null}
+                              managerUnknown={!isAccessAdmin}
+                              canMove={canMoveSquads}
+                              draggingId={dragCoachId}
+                              isOver={overSquadId === sc.id && dragCoachId !== null}
+                              onPickUp={setDragCoachId}
+                              onPutDown={moveCoachToSquad}
+                              onDragOverSquad={setOverSquadId}
+                              onDragLeaveSquad={(id) => setOverSquadId(
+                                prev => prev === id ? null : prev)}
+                              selectedIds={canMoveSquads ? pickedCoachIds : null}
+                              onToggleOne={togglePicked}
+                              onToggleSquad={togglePickedMany}
+                            />
+                          </div>
+                        );
+                      })}
+
+                      {orphans.length > 0 && (
+                        <div className="card org-card org-card-orphans">
+                          {/* Not a squad, and deliberately not drawn as one.
+                              These coaches have nobody to approve their leave,
+                              decide a regularisation or agree to an incident
+                              raised against them. */}
+                          <SquadTree
+                            squad={orphans}
+                            scope={{ id: 'none', label: 'No manager set' }}
+                            managerName={null}
+                            managerUnknown
+                            canMove={canMoveSquads}
+                            draggingId={dragCoachId}
+                            isOver={overSquadId === 'none' && dragCoachId !== null}
+                            onPickUp={setDragCoachId}
+                            onPutDown={moveCoachToSquad}
+                            onDragOverSquad={setOverSquadId}
+                            onDragLeaveSquad={(id) => setOverSquadId(
+                              prev => prev === id ? null : prev)}
+                            selectedIds={canMoveSquads ? pickedCoachIds : null}
+                            onToggleOne={togglePicked}
+                            onToggleSquad={togglePickedMany}
+                          />
+                          <p className="org-note">
+                            Nobody approves their leave, decides their regularisations, or
+                            agrees to an incident raised against them. Set a manager on each
+                            coach's record under Coach Master.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </section>
           )}
 
@@ -19594,7 +20541,7 @@ HB+_030,185,0,96`} />
         );
         if (!e) return null;
 
-        const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && v.status !== 'Appeal_Approved');
+        const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && isPenaltyCounted(v));
         const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
 
         const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);

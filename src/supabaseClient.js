@@ -262,7 +262,11 @@ const MAPPERS = {
     key: v => v.id,
     toRow: v => blanksToNull(pick(v, [
       'id', 'coach_id', 'type', 'occurrence_no', 'consequence', 'penalty_amount',
-      'incident_date', 'incident_time', 'reported_by', 'evidence', 'status'
+      'incident_date', 'incident_time', 'reported_by', 'evidence', 'status',
+      // Who could raise it, who decided it and why. `pick` drops what is
+      // undefined, so an incident raised before these columns existed still
+      // saves without them.
+      'raised_by_role', 'decided_by', 'decided_at', 'decision_note'
     ]), DATE_ISH),
     fromRow: r => r
   },
@@ -391,15 +395,39 @@ export async function listAppUsers() {
   return data ?? [];
 }
 
-/** Assign a role and its binding. Returns the updated row. */
-export async function setUserAccess({ id, role, coachId = null, rmId = null }) {
+/**
+ * Grant an account its set of roles, and say which one it acts as.
+ *
+ * `roles` is everything the account may be; `role` is the one in effect. The
+ * SQL refuses a `role` outside the set, so the two cannot drift apart.
+ */
+export async function setUserAccess({ id, roles, role = null, coachId = null, rmId = null }) {
   if (!supabase) throw new Error('Supabase is not configured');
+  const granted = (roles && roles.length ? roles : [role]).filter(Boolean);
+  if (granted.length === 0) throw new Error('Give the account at least one role.');
+
   const { data, error } = await supabase.rpc('admin_set_access', {
     target_id: id,
-    new_role: role,
+    new_roles: granted,
+    new_role: role && granted.includes(role) ? role : granted[0],
     new_coach_id: coachId || null,
     new_rm_id: rmId || null
   });
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Change which of your own granted roles you are acting as.
+ *
+ * Not a privilege change: the SQL only moves the active role to one the
+ * account already holds, and refuses anything else. Stored rather than kept
+ * in the tab, so the choice survives a reload and the audit trail of what
+ * somebody did lines up with what they were acting as at the time.
+ */
+export async function setActiveRole(role) {
+  if (!supabase) throw new Error('Supabase is not configured');
+  const { data, error } = await supabase.rpc('set_active_role', { wanted: role });
   if (error) throw error;
   return data;
 }

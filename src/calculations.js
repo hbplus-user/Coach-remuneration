@@ -364,7 +364,9 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
     v.coach_id === coachId && 
     v.type === violationType && 
     new Date(v.incident_date) <= new Date(incidentDateStr) &&
-    v.status !== 'Appeal_Approved' // Exclude successfully appealed violations
+    // An appeal that succeeded, or an incident the manager refused, did not
+    // happen. One still awaiting approval did, and counts.
+    isPenaltyCounted(v)
   );
 
   // Monthly, in Annexure 1B, is the calendar month the incident falls in, not
@@ -392,8 +394,26 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
  * Whether a violation's penalty is actually charged. A successful appeal or a
  * waiver settles the incident without taking the money.
  */
+// An incident a Showrunner raised, waiting for the Reporting Manager to agree
+// with it. On the record and visible, but it takes nothing off anybody's pay
+// until it is approved.
+export const PENALTY_AWAITING_APPROVAL = 'Pending_RM_Approval';
+export const PENALTY_REFUSED = 'Rejected';
+
 export const isPenaltyChargeable = (v) =>
-  v?.status !== 'Appeal_Approved' && v?.status !== 'Waived';
+  v?.status !== 'Appeal_Approved' && v?.status !== 'Waived'
+  && v?.status !== PENALTY_AWAITING_APPROVAL && v?.status !== PENALTY_REFUSED;
+
+/**
+ * Whether an incident still counts towards the occurrence ladder.
+ *
+ * Wider than chargeable, and deliberately so. A waived incident costs nothing
+ * but still happened, so the next one is priced as the second; an appeal that
+ * succeeded and an incident the manager refused did not happen at all, and
+ * must not push the coach's next real incident up a step.
+ */
+export const isPenaltyCounted = (v) =>
+  v?.status !== 'Appeal_Approved' && v?.status !== PENALTY_REFUSED;
 
 export function getPenaltyConsequence(variantId, violationType, occurrenceNo, penaltyMatrix) {
   // A violation is looked for in the coach's own variant first, then in the

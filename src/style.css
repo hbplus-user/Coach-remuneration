@@ -5203,3 +5203,328 @@ form {
 }
 .lop-clear p { margin: 4px 0 0; font-size: 0.86rem; max-width: 60ch; }
 .lop-clear-actions { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+
+/* ---------------------------------------------------------------------------
+   Granting several roles to one account
+   ------------------------------------------------------------------------ */
+
+.role-grant-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 24rem;
+}
+
+.role-grant {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.role-grant:hover { background: var(--wash); }
+
+.role-grant.is-on {
+  border-color: var(--accent-olive, var(--brand-olive));
+  background: var(--wash-strong);
+  font-weight: 600;
+}
+
+/* The tick itself is the chip's state, said by the chip. Keeping the native
+   box as well gives the same fact twice and crowds a cell that already holds
+   six of these. It stays in the markup for the keyboard and the screen
+   reader, which both need it. */
+.role-grant input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.role-grant:focus-within {
+  outline: 2px solid var(--accent-olive, var(--brand-olive));
+  outline-offset: 1px;
+}
+
+.role-active-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.role-active-pick .header-select { padding: 2px 6px; font-size: 0.78rem; }
+
+/* ---------------------------------------------------------------------------
+   Who reports to whom
+   ------------------------------------------------------------------------ */
+
+.orgchart { --org-line: var(--border-strong); }
+
+.org-node {
+  display: block;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.org-node strong { display: block; font-size: 0.9rem; }
+.org-node small  { display: block; font-size: 0.76rem; color: var(--text-muted); }
+
+.org-manager {
+  background: var(--bg-surface-header);
+  border-color: var(--border-strong);
+}
+
+.org-count {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.org-warn { color: var(--accent-red); }
+
+/* The tree. Each leaf draws its own piece of the line — a vertical segment
+   spanning its full height, which joins the segment of the leaf below it, and
+   an elbow across to the box. Drawn per item rather than as one trunk down
+   the container, so the line ends exactly at the last elbow whatever the list
+   is, with no row heights to measure and no magic numbers to get wrong. */
+.org-leaves {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+.org-leaf {
+  position: relative;
+  margin: 8px 0 0;
+  padding-left: 24px;
+  list-style: none;
+}
+
+/* The vertical run, down to the next leaf. */
+.org-leaf::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: -8px;
+  bottom: 0;
+  width: 1px;
+  background: var(--org-line);
+}
+
+/* The last one stops at its own elbow instead of dangling past it. */
+.org-leaf:last-child::before { bottom: auto; height: 26px; }
+
+/* The elbow across to the box. */
+.org-leaf::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 18px;
+  width: 13px;
+  height: 1px;
+  background: var(--org-line);
+}
+
+.org-coach.is-off { opacity: 0.6; }
+
+.org-status {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--wash-strong);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.org-empty {
+  margin: 10px 0 0 22px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+/* Inside a table row, where the tree is an answer to one question rather than
+   a page of its own. */
+.row-squad > td { background: var(--wash); padding: 14px 18px; }
+.orgchart.is-compact .org-node { padding: 6px 10px; }
+.orgchart.is-compact .org-leaves { max-height: 22rem; overflow-y: auto; }
+
+/* The whole organisation. */
+.org-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+}
+
+.org-summary > div { display: flex; flex-direction: column; }
+.org-summary strong { font-family: var(--font-title); font-size: 1.5rem; line-height: 1.2; }
+.org-summary small  { font-size: 0.78rem; color: var(--text-muted); }
+.org-summary-warn strong { color: var(--accent-red); }
+
+.org-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.org-card { padding: 16px 18px; }
+.org-card-orphans { border: 1px dashed var(--accent-red); }
+
+.org-note {
+  margin: 12px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  max-width: 44ch;
+}
+
+/* ---------------------------------------------------------------------------
+   Moving a coach between squads
+   ------------------------------------------------------------------------ */
+
+/* Only where it can actually be done. A grab cursor on a card that refuses to
+   move is a worse lie than no cursor at all. */
+.org-node.is-draggable { cursor: grab; }
+.org-node.is-draggable:active { cursor: grabbing; }
+
+.org-node.is-draggable:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 4px rgba(26, 26, 26, 0.08);
+}
+
+/* The card being carried, left behind faded so the row it came from is still
+   readable while deciding where it is going. */
+.org-node.is-dragging { opacity: 0.4; }
+
+/* Where it would land. The whole squad lights up rather than a thin line
+   between two cards, because the drop target is the squad, not a position in
+   it — the list is sorted by name, so there is no "here" to drop into. */
+.orgchart.is-over {
+  outline: 2px dashed var(--accent-olive, var(--brand-olive));
+  outline-offset: 10px;
+  border-radius: 6px;
+}
+
+.orgchart.can-move .org-manager { transition: background 120ms ease; }
+.orgchart.is-over .org-manager { background: var(--wash-strong); }
+
+/* An empty squad is a drop target too, and with nothing in it there would
+   otherwise be nothing to aim at. */
+.orgchart.can-move .org-empty {
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+  margin-left: 0;
+  text-align: center;
+}
+
+/* Somebody who is both a coach and a manager. Marked rather than hidden: the
+   two facts are both true and the card is the only place they meet. */
+.org-status.org-manages {
+  background: var(--accent-olive-glow, var(--wash-strong));
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+/* A squad already assigned: stated rather than offered again, but still the
+   way to change it — a fact you cannot edit is a dead end. */
+.linked-squad {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--wash);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.linked-squad i { margin-left: 6px; opacity: 0.45; font-size: 0.9em; }
+.linked-squad:hover { background: var(--wash-strong); border-color: var(--border-strong); }
+.linked-squad:hover i { opacity: 0.9; }
+
+/* ---------------------------------------------------------------------------
+   Picking several coaches at once
+   ------------------------------------------------------------------------ */
+
+/* The card becomes a row: tick on the left, the person on the right. Driven
+   by a class the component sets rather than :has(), so the layout does not
+   depend on a selector the browser may not have. */
+.org-node.is-selectable {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 10px;
+  align-items: start;
+}
+
+.org-node.is-selectable > .org-pick { grid-row: 1 / -1; align-self: start; }
+.org-node.is-selectable > :not(.org-pick) { grid-column: 2; }
+/* A badge is as wide as its words. In a grid column it would stretch to the
+   full width of the card and read as a bar. */
+.org-node.is-selectable > .org-status { justify-self: start; }
+
+.org-pick {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 2px;
+  cursor: pointer;
+}
+
+.org-pick input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--brand-olive);
+  cursor: pointer;
+}
+
+.org-pick-all { margin-top: 3px; }
+
+/* A picked card is unmistakably picked — the whole point of picking a dozen
+   is being able to see, at a glance, that it really is a dozen. */
+.org-node.is-picked {
+  border-color: var(--brand-olive);
+  background: var(--wash-strong);
+  box-shadow: inset 2px 0 0 var(--brand-olive);
+}
+
+.org-movebar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  position: sticky;
+  /* Follows down the page: the list is long, and a bar you have to scroll
+     back up to is a bar you stop using halfway through the job. */
+  top: 8px;
+  z-index: 5;
+  border: 1px solid var(--brand-olive);
+}
+
+.org-movebar strong { font-family: var(--font-title); font-size: 1.05rem; }
+.org-movebar-hint { font-size: 0.8rem; }
+
+/* Filed under a squad nobody holds. Marked, not hidden: the record still says
+   so, and somebody has to notice in order to fix it. */
+.org-status.org-stranded {
+  background: var(--accent-red-glow);
+  color: var(--accent-red);
+}
