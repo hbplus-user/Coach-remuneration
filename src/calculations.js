@@ -327,6 +327,13 @@ export function computeHBPlusScore(coach, periodData, variant) {
  * Map HB+ Score to Performance Band
  */
 export function getPerformanceBand(score) {
+  // A score that cannot be read is not an Exceptional score. Every comparison
+  // below is false for undefined and for NaN, so without this guard an
+  // unreadable score fell through to the top band and paid the top rate —
+  // which is how a payslip came to pay a 72 like a 90. The lowest band is the
+  // conservative direction and a glaring label, so it gets reported rather
+  // than quietly overpaid.
+  if (!Number.isFinite(Number(score))) return { label: "0–30 Non-Functional", min: 0, max: 30 };
   if (score < 30) return { label: "0–30 Non-Functional", min: 0, max: 30 };
   if (score < 40) return { label: "30–40 Weak", min: 30, max: 40 };
   if (score < 50) return { label: "40–50 Basic", min: 40, max: 50 };
@@ -503,7 +510,11 @@ export function missedSessionPenalty(sessionRate, count) {
 }
 
 export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsForMonth, variantConfig, orgWorkItems = []) {
-  const score = scoreData.hbScore;
+  // Either shape. The payroll run hands this a computed { hbScore }; the
+  // payslip, the dashboard totals and three other screens hand it the period
+  // record itself, where the same number is called hb_score. Reading only one
+  // of the two left those callers paying every coach at the top band.
+  const score = scoreData?.hbScore ?? scoreData?.hb_score;
   const bandObj = getPerformanceBand(score);
   const bandLabel = bandObj.label;
 
@@ -741,9 +752,19 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   //    A waived incident stays on the record — it still counts towards the
   //    occurrence history that sets the next one's consequence — but waiving it
   //    is the decision not to charge for it, so it is not deducted.
-  const violationPenalties = activeViolationsForMonth
+  const violationPenaltiesRaised = activeViolationsForMonth
     .filter(isPenaltyChargeable)
     .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
+
+  // Money forgiven for the month, over and above any individually waived
+  // incident. It is a decision not to charge, so it has to reduce the charge
+  // everywhere — it was being applied inside the calculator alone, which left
+  // the same month paying one figure on that screen and a larger one on the
+  // payslip and the payroll run. Never more than was charged: waiving beyond
+  // that would turn a penalty into a payment.
+  const penaltyWaived = Math.min(
+    Math.max(Number(monthData.penalty_waiver) || 0, 0), violationPenaltiesRaised);
+  const violationPenalties = Math.round((violationPenaltiesRaised - penaltyWaived) * 100) / 100;
   // Everything that already reads penaltyDeductions — the payslip, the payroll
   // run, the exports — deducts missed sessions without needing to know about
   // them, while the two stay separable for anything that shows the breakdown.
@@ -760,6 +781,8 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
                    penaltyDeductions - lossOfPay;
 
   return {
+    violationPenaltiesRaised,
+    penaltyWaived,
     perSessionRate: effectiveRate,
     basePay,
     threshold,
