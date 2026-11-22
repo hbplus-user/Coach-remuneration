@@ -2733,6 +2733,14 @@ form {
     padding: 0 !important;
     margin: 0 !important;
   }
+  /* The calculation statement is the second sheet of the same PDF, so the
+     coach gets the figure and the arithmetic behind it in one file. */
+  .payslip-calc {
+    page-break-before: always;
+    break-before: page;
+  }
+  /* A row of a calculation must not be split across two sheets. */
+  .payslip-calc-table tr { page-break-inside: avoid; break-inside: avoid; }
 }
 
 /* ===================================================================
@@ -5527,4 +5535,62 @@ form {
 .org-status.org-stranded {
   background: var(--accent-red-glow);
   color: var(--accent-red);
+}
+
+/* ---------------------------------------------------------------------------
+   Payslip, second sheet: how the figure was arrived at
+   ------------------------------------------------------------------------ */
+
+.payslip-calc { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 2px solid var(--brand-ink); }
+
+.payslip-calc-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.payslip-calc-table td {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+  font-size: 0.88rem;
+}
+
+/* The reason for a line, under the line. A figure with no explanation beside
+   it is the one a coach writes in about. */
+.payslip-calc-table td small {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.payslip-calc-table .amt {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding-left: 1.5rem;
+}
+
+/* Lines worth nothing this month stay on the slip, greyed. Dropping them
+   would leave a coach wondering whether the night premium exists at all. */
+.payslip-calc-table tr.is-nil td,
+.payslip-calc-table tr.is-nil .amt { color: var(--text-muted); }
+
+.payslip-calc-table tr.is-minus .amt { color: var(--accent-red); }
+/* Money given back reads as given back, not as a second deduction. */
+.payslip-calc-table tr.is-plus .amt { color: var(--accent-green, var(--brand-olive)); }
+
+.payslip-calc-table tr.subtotal-row td {
+  border-top: 1px solid var(--border-strong);
+  border-bottom: none;
+  font-weight: 600;
+}
+
+.payslip-calc-table tr.total-row td {
+  border-top: 2px solid var(--brand-ink);
+  border-bottom: none;
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding-top: 9px;
 }

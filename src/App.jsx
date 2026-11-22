@@ -202,6 +202,12 @@ const LOCK_ROLES = ['Super Admin', 'HR Manager', 'Finance', 'Reporting Manager']
 // payslips, and overriding a rate. Narrower than locking on purpose.
 const PROFILE_PAY_ROLES = ['Super Admin', 'HR Manager', 'Finance'];
 
+// Who may open and print a payslip. The same three: a payslip states what a
+// person is paid, and the roles that do not set pay have no reason to hold
+// one. Named separately from PROFILE_PAY_ROLES so changing one does not
+// quietly change the other.
+const PAYSLIP_ROLES = ['Super Admin', 'HR Manager', 'Finance'];
+
 const OFFERED_VARIANT_IDS = ['V1', 'V3', 'V5', 'V6'];
 
 /**
@@ -6929,14 +6935,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Open Payslip Modal
   const handleOpenPayslipModal = (coachId, period) => {
-    // A coach may see their own payslip and no one else's. Showrunner sees none
-    // at all, since the whole role is built to keep pay out of view.
-    if (currentRole === 'Showrunner') {
-      showToast("Payslips are not available to this role.", "error");
-      return;
-    }
-    if (currentRole === 'Coach' && coachId !== profile?.coach_id) {
-      showToast("You can only open your own payslip.", "error");
+    // Payslips are issued, not browsed. Only the roles that run pay may open
+    // one: Super Admin, HR Manager and Finance. A Reporting Manager runs a
+    // squad rather than its payroll, a Showrunner is built to keep pay out of
+    // view, and a coach receives their payslip rather than pulling it from
+    // the system. Checked here rather than only on the buttons, because a
+    // button that is not rendered is not a permission.
+    if (!PAYSLIP_ROLES.includes(currentRole)) {
+      showToast(
+        currentRole === 'Coach'
+          ? "Payslips are issued by HR — ask them for yours."
+          : `Payslips are not available to the ${currentRole} role.`, "error");
       return;
     }
     setSelectedCoachId(coachId);
@@ -9159,6 +9168,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // Declared here, not inside the view: the page's own description reads it,
   // and that sits outside the block the chart is built in.
   const canMoveSquads = CAN_MOVE_SQUAD.includes(currentRole);
+  // Offering a button that refuses the person who presses it teaches them to
+  // distrust the buttons, so the payslip ones are simply not drawn.
+  const canSeePayslip = PAYSLIP_ROLES.includes(currentRole);
 
   /**
    * Move a coach to another manager.
@@ -10010,7 +10022,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     </span>
                                   </td>
                                   <td className="actions-col">
-                                    {r.status === 'FINANCE_LOCKED' ? (
+                                    {r.status === 'FINANCE_LOCKED' && canSeePayslip ? (
                                       <button className="btn btn-secondary btn-sm"
                                         onClick={() => handleOpenPayslipModal(me.id, r.period_month)}>
                                         <i className="bx bx-download"></i> View
@@ -10684,9 +10696,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       </span>
                                     </td>
                                     <td className="actions-col">
-                                      <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(currentSelectedCoach.id, run.period_month)} disabled={!isLocked && currentRole !== 'Super Admin'}>
-                                        <i className="bx bx-file-pdf"></i> Preview
-                                      </button>
+                                      {canSeePayslip ? (
+                                        <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(currentSelectedCoach.id, run.period_month)} disabled={!isLocked && currentRole !== 'Super Admin'}>
+                                          <i className="bx bx-file-pdf"></i> Preview
+                                        </button>
+                                      ) : <span className="text-muted">—</span>}
                                     </td>
                                   </tr>
                                 );
@@ -12639,7 +12653,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       {/* The slip belongs with the pay it states, not with the
                           scores. Same rule as the payslip buttons elsewhere: a
                           slip is issued once Finance has locked the month. */}
-                      {canManage && statRun && (() => {
+                      {canManage && canSeePayslip && statRun && (() => {
                         const slipPeriod = statRun.period_month;
                         const slipLocked = statRun.status === 'FINANCE_LOCKED';
                         const mayIssue = slipLocked || currentRole === 'Super Admin';
@@ -12772,9 +12786,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   </span>
                                 </td>
                                 <td className="actions-col">
-                                  <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(coach.id, run.period_month)} disabled={!isLocked && currentRole !== 'Super Admin'}>
-                                    <i className="bx bx-file-pdf"></i> Preview
-                                  </button>
+                                  {canSeePayslip ? (
+                                    <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(coach.id, run.period_month)} disabled={!isLocked && currentRole !== 'Super Admin'}>
+                                      <i className="bx bx-file-pdf"></i> Preview
+                                    </button>
+                                  ) : <span className="text-muted">—</span>}
                                 </td>
                               </tr>
                             );
@@ -17716,9 +17732,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 </td>
                                 <td className="actions-col">
                                   <div style={{ display: 'inline-flex', gap: '4px' }}>
-                                    <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(coach.id, e.period_month)}>
-                                      <i className="bx bx-file-blank"></i> Payslip
-                                    </button>
+                                    {canSeePayslip && (
+                                      <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(coach.id, e.period_month)}>
+                                        <i className="bx bx-file-blank"></i> Payslip
+                                      </button>
+                                    )}
                                     {isOrgWorkEligible(coach.coach_category) && (currentRole === 'Super Admin' || currentRole === 'HR Manager') && (
                                       <button className="btn btn-teal" onClick={() => handleOpenOrgWorkModal(coach.id)} disabled={payrollLocked}>
                                         <i className="bx bx-plus-circle"></i> Org Work
@@ -20716,6 +20734,143 @@ HB+_030,185,0,96`} />
                 <p className="payslip-note">
                   * This is computer generated statement, does not require signature.
                 </p>
+
+                {/* The second page: how the figure on the first page was
+                    arrived at. A payslip states a salary as a structure —
+                    Basic, HRA, allowances — which is the right shape for a
+                    payslip and tells a coach nothing about why this month
+                    differs from last. Every line below is the pay engine's
+                    own, in the order it computes them. */}
+                <div className="payslip-calc">
+                  <div className="payslip-top">
+                    <div>
+                      <h1 className="payslip-title">
+                        HOW THIS WAS <span>CALCULATED</span>
+                      </h1>
+                      <p className="payslip-company">
+                        {coach.name.toUpperCase()} · {payslipPeriod} · {formatDate(e.period_start)} to {formatDate(e.period_end)}
+                      </p>
+                      <p className="payslip-address">
+                        {coach.coach_category} · {vConfig.name} · Score{' '}
+                        {Number(calcScoreObj.hbScore ?? calcScoreObj.hb_score ?? 0).toFixed(2)}{' '}
+                        · Band {getPerformanceBand(calcScoreObj.hbScore ?? calcScoreObj.hb_score).label}
+                      </p>
+                    </div>
+                    <div className="payslip-mark">HB+</div>
+                  </div>
+
+                  <table className="payslip-calc-table">
+                    <tbody>
+                      {[
+                        ['Base / fixed pay', pay.basePay,
+                          coach.coach_category === 'Flexi' ? 'Session-paid — no fixed component' : 'For the month'],
+                        ['Sessions delivered', null,
+                          `${Number(e.sessions_completed) || 0} against a threshold of ${pay.threshold}`
+                          + (pay.thresholdIsOverridden ? ' (set for this month)' : '')],
+                        ['Per-session pay', pay.sessionPay,
+                          coach.coach_category === 'Fixed'
+                            ? 'A Fixed coach is paid a salary, not per session'
+                            : `${Number(e.sessions_completed) || 0} × ${rupees(pay.perSessionRate)}`
+                              + (pay.rateIsOverridden ? ' (rate set for this month)' : '')],
+                        ['Extra sessions past the threshold', pay.extraSessionPay,
+                          `${pay.extraSessions || 0} × ${rupees(pay.perSessionRate)}`],
+                        ['Sessions beyond availability', pay.beyondAvailabilityPay,
+                          `${pay.beyondAvailabilitySessions || 0} × ${rupees(pay.beyondAvailabilityRate)}`
+                          + (pay.beyondAvailabilityOverlap
+                              ? ` — ${pay.beyondAvailabilityOverlap} also counted as extra sessions, check this is not paid twice`
+                              : '')],
+                        ['Night session premium', pay.nightSessionPay,
+                          `${Number(e.night_sessions) || 0} session(s) between 10 PM and 4 AM`],
+                        ['Milestone incentive', pay.milestoneIncentive, 'For passing the month\u2019s milestone'],
+                        ['Consistency bonus', pay.consistencyBonus,
+                          pay.consistencyEligible ? 'Attendance at or above 95% with no incidents' : 'Not earned this month'],
+                        ['5-star streak bonus', pay.streakBonusPay,
+                          `${Number(e.five_star_streak) || 0} consecutive five-star reviews`],
+                        ['Other organisational work', pay.orgWorkPay, 'Approved work outside sessions'],
+                      ].map(([label, amount, note]) => (
+                        <tr key={label} className={amount === 0 ? 'is-nil' : undefined}>
+                          <td>{label}<small>{note}</small></td>
+                          <td className="amt">{amount === null ? '' : rupees(amount)}</td>
+                        </tr>
+                      ))}
+
+                      <tr className="subtotal-row">
+                        <td>Earned this month</td>
+                        <td className="amt">{rupees(earningsSum + pay.penaltyDeductions + pay.lossOfPay)}</td>
+                      </tr>
+
+                      {[
+                        ['Incidents raised', pay.violationPenaltiesRaised, 'minus',
+                          `${activeVio.filter(isPenaltyChargeable).length} chargeable incident(s) in this cycle`],
+                        // Given back, not taken. Printed as another minus it
+                        // read as a second deduction, and the two together as
+                        // money the coach never saw.
+                        ['Penalty waived', pay.penaltyWaived, 'plus',
+                          'Forgiven for this month — added back'],
+                        ['Missed sessions', pay.missedSessionDeduction, 'minus',
+                          `${pay.missedSessions || 0} at ${pay.missedSessionTierLabel || 'the standard rate'}`],
+                        ['Loss of pay', pay.lossOfPay, 'minus',
+                          `${pay.lopDays || 0} day(s) · base pay ÷ 26 per day`],
+                      ].map(([label, amount, sign, note]) => (
+                        <tr
+                          key={label}
+                          className={amount === 0 ? 'is-nil' : (sign === 'plus' ? 'is-plus' : 'is-minus')}
+                        >
+                          <td>{label}<small>{note}</small></td>
+                          <td className="amt">
+                            {amount === 0
+                              ? rupees(0)
+                              : `${sign === 'plus' ? '+' : '−'} ${rupees(Math.abs(amount))}`}
+                          </td>
+                        </tr>
+                      ))}
+
+                      <tr className="total-row">
+                        <td>Gross monthly pay</td>
+                        <td className="amt">{rupees(pay.grossPay)}</td>
+                      </tr>
+                      <tr className="is-minus">
+                        <td>Income tax u/s 194J<small>10% TDS on professional fees</small></td>
+                        <td className="amt">− {rupees(incomeTax)}</td>
+                      </tr>
+                      <tr className="total-row">
+                        <td>Net monthly pay — what reaches the coach</td>
+                        <td className="amt">{rupees(netPayable)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  {activeVio.length > 0 && (
+                    <>
+                      <div className="payslip-section-title">INCIDENTS THIS CYCLE</div>
+                      <table className="payslip-calc-table">
+                        <tbody>
+                          {activeVio.map(v => (
+                            <tr key={v.id} className={isPenaltyChargeable(v) ? undefined : 'is-nil'}>
+                              <td>
+                                {v.type}
+                                <small>
+                                  {v.incident_date} · occurrence #{v.occurrence_no} · {v.consequence}
+                                  {!isPenaltyChargeable(v) && ` · ${String(v.status).replace(/_/g, ' ')} — not charged`}
+                                </small>
+                              </td>
+                              <td className="amt">
+                                {isPenaltyChargeable(v)
+                                  ? `− ${rupees(v.penalty_amount)}`
+                                  : rupees(0)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+
+                  <p className="payslip-note">
+                    * Figures are the pay engine’s own, not re-typed. Raise anything that
+                    looks wrong with your Reporting Manager before the cycle is locked.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
