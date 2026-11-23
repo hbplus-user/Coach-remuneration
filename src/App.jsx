@@ -752,6 +752,53 @@ const SquadTree = ({
 
 const rupees = (n) => `₹${Math.round(Number(n) || 0).toLocaleString('en-IN')}`;
 
+// Who the slip is from. One place, because the name appears in the letterhead
+// and again in the footer, and a payslip that disagrees with itself about the
+// paying entity is not a document anyone can file.
+const SLIP_COMPANY = {
+  name: 'HASEL HEALTH AND WELLNESS PRIVATE LIMITED',
+  gstin: '21AAGCH5082C1Z1',
+  address: [
+    '206, Lumbini Enclave, Niladri Vihar',
+    'Bhubaneswar, Odisha 751021, India'
+  ]
+};
+
+// The two brands a coach can be paid under. Same company and the same GSTIN —
+// what changes is the mark at the head of the slip, because a HOP coach's
+// payslip carrying the HB+ logo is the kind of thing that gets a document
+// handed back.
+const SLIP_BRANDS = {
+  'HB+': { label: 'HB+', logo: '/logo.svg' },
+  'HOP': { label: 'HOP', logo: '/logo-hop.svg' }
+};
+const BRAND_OPTIONS = Object.keys(SLIP_BRANDS);
+
+/**
+ * Which brand a coach is paid under.
+ *
+ * The brand set on the coach wins. Where none has been set — every coach,
+ * until the column is filled in — it falls back to the policy variant's
+ * property, which is where the distinction already lived: a HOP variant is
+ * written "HOP Studio / Home Visit". That keeps existing coaches on the right
+ * letterhead without anyone having to touch them one by one, while leaving the
+ * field free to override it where the variant does not tell the truth.
+ */
+const brandOf = (coach, variantConfig) => {
+  const set = coach?.brand;
+  if (set && SLIP_BRANDS[set]) return set;
+  return String(variantConfig?.property || '').trim().toUpperCase().startsWith('HOP')
+    ? 'HOP' : 'HB+';
+};
+
+// The mark used on a salary slip when no logo file has been supplied. Inline
+// SVG rather than a request, so it renders in a print preview and in a saved
+// PDF without the network being involved.
+const SLIP_WORDMARK = "data:image/svg+xml;utf8," + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="150" height="44" viewBox="0 0 150 44">' +
+  '<text x="0" y="33" font-family="Helvetica,Arial,sans-serif" font-size="32" ' +
+  'font-weight="700" fill="#747440">HB+</text></svg>');
+
 /**
  * A period's settled score for a coach: the stored value (which the score card
  * editor keeps in step, overrides included) falling back to a fresh calculation.
@@ -11777,6 +11824,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {editItem("Category", selectField("coach_category", COACH_CATEGORIES))}
                           {editItem("Policy Variant", selectField("variant_id", offeredVariants(variants, coachDraft.variant_id ?? coach.variant_id)
                             .map(v => ({ value: v.id, label: variantLabel(v) }))))}
+                          {editItem("Brand", selectField("brand", BRAND_OPTIONS))}
                           {editItem("Designation", textField("internal_designation"))}
                           {editItem("Reporting Manager", selectField("reporting_manager_id", REPORTING_MANAGERS))}
                           {editItem("Assigned Property", textField("assigned_property"))}
@@ -11990,6 +12038,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {detailRow("Type of Coach", coach.coach_type || (vConfig ? vConfig.discipline : null))}
                           {detailRow("Category", coach.coach_category)}
                           {detailRow("Policy Variant", vConfig ? vConfig.name : coach.variant_id)}
+                          {detailRow("Brand", brandOf(coach, vConfig)
+                            + (coach.brand ? "" : " — from the policy variant"))}
                           {detailRow("Designation", coach.internal_designation)}
                           {detailRow("Reporting Manager", coach.reporting_manager_id)}
                           {detailRow("Assigned Property", coach.assigned_property)}
@@ -12654,8 +12704,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           scores. Same rule as the payslip buttons elsewhere: a
                           slip is issued once Finance has locked the month. */}
                       {canManage && canSeePayslip && statRun && (() => {
-                        const slipPeriod = statRun.period_month;
-                        const slipLocked = statRun.status === 'FINANCE_LOCKED';
+                        // The slip follows the month the calculator is on.
+                        // It used to follow the latest recorded run instead,
+                        // so selecting November and pressing Download handed
+                        // you December's slip, with December's figures and
+                        // none of November's incidents — which reads as the
+                        // slip having lost them. Same fallback the calculator
+                        // itself uses, so the two never disagree.
+                        const slipRun = allRuns.find(r => r.period_month === payCalcPeriod)
+                          || allRuns[allRuns.length - 1] || statRun;
+                        const slipPeriod = slipRun.period_month;
+                        const slipLocked = slipRun.status === 'FINANCE_LOCKED';
                         const mayIssue = slipLocked || currentRole === 'Super Admin';
                         return (
                           <button
@@ -20561,42 +20620,63 @@ HB+_030,185,0,96`} />
 
         const activeVio = violations.filter(v => v.coach_id === coach.id && new Date(v.incident_date) >= new Date(e.period_start) && new Date(v.incident_date) <= new Date(e.period_end) && isPenaltyCounted(v));
         const coachOrgWork = orgWork.filter(o => o.coach_id === coach.id && o.period_month === e.period_month && o.status === 'Approved');
+        // Incidents this coach has on the record but outside this cycle's
+        // dates. A nil penalty section on a clean month and a nil penalty
+        // section on a coach with 27 incidents in the cycle before look
+        // identical on paper, and the second gets read as the slip having
+        // lost them.
+        const slipBrand = brandOf(coach, vConfig);
+        const otherCycleVios = violations.filter(
+          v => v.coach_id === coach.id && isPenaltyCounted(v)).length - activeVio.length;
 
         const calcScoreObj = e.hb_score != null ? e : computeHBPlusScore(coach, e, vConfig);
         const pay = computeMonthlyPay(coach, carryPay(e), calcScoreObj, activeVio, vConfig, coachOrgWork);
 
-        const earningsSum = pay.basePay + pay.beyondAvailabilityPay +
-                            pay.sessionPay + pay.nightSessionPay + pay.milestoneIncentive + 
-                            pay.consistencyBonus + pay.streakBonusPay + pay.orgWorkPay + pay.trialIncentive + pay.eventIncentive + 
-                            pay.hopOohPremium + pay.hopPtHomePremium + pay.hopPerformanceCreditsPay;
+        // Every other screen in the app — the calculator, the payroll run,
+        // the exports, the totals — withholds TDS on grossPay, which is what
+        // is left after penalties and Loss of Pay. This screen alone taxed the
+        // figure from before penalties, so the payslip promised a coach a
+        // larger net than payroll actually paid them. It now taxes the same
+        // base as everything else, and the slip adds up in one column.
+        const grossPay = Math.round(pay.grossPay * 100) / 100;
+        const incomeTax = Math.round(grossPay * TDS_194J_RATE);
+        const netPayable = Math.round((grossPay - incomeTax) * 100) / 100;
 
-        // Earnings (A) is what the month was worth before anything came off it.
-        // Loss of Pay used to be netted silently out of this, which left a slip
-        // showing a smaller salary with nothing saying why — so it is shown
-        // gross here and taken off in deductions, where it can be read.
-        const totalEarnings = Math.round(
-          (pay.grossPay + pay.penaltyDeductions + pay.lossOfPay) * 100) / 100;
-        const earningLines = payslipEarnings(coach.coach_category, totalEarnings, pay.basePay);
-        // Withheld on what is left after days not worked, as the policy sets
-        // out — so the figure itself does not change, only where it is shown.
-        const taxableEarnings = Math.round((totalEarnings - pay.lossOfPay) * 100) / 100;
-        const incomeTax = Math.round(taxableEarnings * TDS_194J_RATE);
-        const totalDeductions = Math.round(
-          (incomeTax + pay.penaltyDeductions + pay.lossOfPay) * 100) / 100;
-        const netPayable = Math.round((totalEarnings - totalDeductions) * 100) / 100;
+        // What the month earned, line by line, in the engine's own order.
+        // Lines the sample statement does not list are still shown when they
+        // carry money: a Variable coach's session pay or a trial incentive
+        // left off the page would make the slip understate what was earned.
+        const payLines = [
+          ['Base / Fixed Pay', pay.basePay, true],
+          ['Per-Session Rate', pay.perSessionRate, 'rate'],
+          ['Sessions for the Month', Number(e.sessions_completed) || 0, 'count'],
+          ['Extra Sessions (beyond threshold)', pay.extraSessions, 'count'],
+          ['Extra-Session Pay', pay.extraSessionPay, true],
+          ['Session Pay', pay.sessionPay, false],
+          ['Beyond-Availability Pay', pay.beyondAvailabilityPay, true],
+          ['Night Session Premium', pay.nightSessionPay, true],
+          ['Milestone Incentive', pay.milestoneIncentive, true],
+          ['Consistency Bonus', pay.consistencyBonus, true],
+          ['5-Star Streak Bonus', pay.streakBonusPay, true],
+          ['Org Work Pay', pay.orgWorkPay, true],
+          ['Trial Incentive', pay.trialIncentive, false],
+          ['Event Incentive', pay.eventIncentive, false],
+          ['Out-of-Hours Premium', pay.hopOohPremium, false],
+          ['PT-at-Home Premium', pay.hopPtHomePremium, false],
+          ['Performance Credits', pay.hopPerformanceCreditsPay, false]
+        ];
 
         // A salaried month is described in days, so count the period's own.
         const periodDays = Math.round(
           (new Date(e.period_end) - new Date(e.period_start)) / 86400000
         ) + 1;
-
         const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', {
           day: 'numeric', month: 'short', year: 'numeric'
         }) : 'N/A';
 
         return (
           <div className="modal-backdrop active-modal">
-            <div className="modal-card modal-large">
+            <div className="modal-card modal-large modal-slip">
               <div className="modal-header no-print">
                 <h3>Official Payslip &amp; Incentive Statement</h3>
                 <div className="header-buttons-row" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -20605,272 +20685,196 @@ HB+_030,185,0,96`} />
                 </div>
               </div>
               
-              <div className="payslip-print-layout" id="payslip-print-content">
-                <div className="payslip-top">
-                  <div>
-                    <h1 className="payslip-title">PAYSLIP <span>{payslipPeriod.toUpperCase()}</span></h1>
-                    <p className="payslip-company">HB+ FITNESS PRIVATE LIMITED</p>
-                    <p className="payslip-address">3rd Floor, HSR Plaza, Outer Ring Road, Bengaluru - 560102</p>
+              <div className="payslip-print-layout hb-slip" id="payslip-print-content">
+                <header className="slip-letterhead">
+                  {/* Who is paying on the left, the mark on the right, the
+                      two pushed to opposite edges. In source order as well as
+                      on the page, so the name is what a screen reader reaches
+                      first. A failed load swaps in the drawn wordmark rather
+                      than leaving a broken image on a payslip. */}
+                  <div className="slip-ident">
+                    <h1>{SLIP_COMPANY.name}</h1>
+                    <p className="slip-gstin">GSTIN {SLIP_COMPANY.gstin}</p>
+                    {SLIP_COMPANY.address.map(line => <p key={line}>{line}</p>)}
                   </div>
-                  <div className="payslip-mark">HB+</div>
+                  <img
+                    className="slip-logo"
+                    src={SLIP_BRANDS[slipBrand].logo}
+                    alt=""
+                    onError={(ev) => {
+                      if (ev.currentTarget.dataset.fallback) return;
+                      ev.currentTarget.dataset.fallback = '1';
+                      ev.currentTarget.src = SLIP_WORDMARK;
+                    }}
+                  />
+                </header>
+
+                <div className="slip-titlebar">
+                  <span className="slip-titlebar-name">SALARY SLIP</span>
+                  <span className="slip-titlebar-month">{payslipPeriod.toUpperCase()}</span>
+                </div>
+                <div className="slip-subbar">
+                  <span>Performance Period: {formatDate(e.period_start)} – {formatDate(e.period_end)}</span>
+                  <span>All amounts in INR (₹)</span>
                 </div>
 
-                <h2 className="payslip-person">{coach.name.toUpperCase()}</h2>
-                <div className="payslip-facts">
-                  {[
-                    ['Employee Number', coach.id],
-                    ['Date Joined', formatDate(coach.date_of_joining)],
-                    ['Department', 'Delivery'],
-                    ['Sub Department', vConfig?.discipline === 'Yoga' ? 'Yoga' : 'Physical Training'],
-                    ['Designation', coach.internal_designation || 'Coach'],
-                    ['Payment Mode', 'Bank Transfer'],
-                    ['UAN', 'N/A'],
-                    ['PF Number', 'N/A'],
-                    ['PAN Number', coach.pan_number || 'N/A'],
-                    ['Secondary Job Title', coach.coach_type || 'N/A']
-                  ].map(([label, value]) => (
-                    <div className="payslip-fact" key={label}>
-                      <span>{label}</span>
-                      <strong>{value ?? 'N/A'}</strong>
-                    </div>
-                  ))}
+                <div className="slip-band">EMPLOYEE DETAILS</div>
+                {/* Label above value, four to a row, separated by rules
+                    rather than boxed in — the same block the previous slip
+                    carried. A flat list so adding or removing a field cannot
+                    leave a hole in a row. Department has no column on the
+                    coach record; it is the fixed text the previous slip used. */}
+                <div className="slip-facts">
+                    {(() => {
+                      const facts = [
+                        ['Employee Name', coach.name],
+                        ['Employee Number', coach.id],
+                        ['Date Joined', formatDate(coach.date_of_joining)],
+                        ['PAN Number', coach.pan_number || 'N/A'],
+                        ['Department', 'Delivery'],
+                        ['Sub Department', vConfig?.discipline === 'Yoga' ? 'Yoga' : 'Physical Training'],
+                        ['Designation', coach.internal_designation || 'Coach'],
+                        ['Secondary Job Title', coach.coach_type || 'N/A'],
+                        ['Brand', SLIP_BRANDS[slipBrand].label],
+                        ['Policy Variant', vConfig?.name ?? '—'],
+                        ['Coach Category', coach.coach_category],
+                        ['Role', 'Coach'],
+                        ['Month', payslipPeriod],
+                        ['Benchmark Score',
+                          `${Number(calcScoreObj.hbScore ?? calcScoreObj.hb_score ?? 0).toFixed(2)} / 90`],
+                        ['Session Threshold', String(pay.threshold)],
+                        ['Payment Mode', 'Bank Transfer'],
+                        ['UAN', 'N/A'],
+                        ['PF Number', 'N/A']
+                      ];
+                      return facts.map(([label, value]) => (
+                        <div className="slip-fact" key={label}>
+                          <span>{label}</span>
+                          <strong>{value || 'N/A'}</strong>
+                        </div>
+                      ));
+                    })()}
                 </div>
 
-                <div className="payslip-section-title">SALARY DETAILS</div>
-                <div className="payslip-facts">
-                  {coach.coach_category === 'Fixed' ? (
-                    // A salaried month is described in days.
-                    [
-                      ['Actual Payable Days', periodDays.toFixed(1)],
-                      ['Total Working Days', periodDays.toFixed(1)],
-                      ['Loss Of Pay Days', '0.00'],
-                      ['Days Payable', String(periodDays)]
-                    ]
-                  ) : (
-                    // A session-paid month is described in what was delivered.
-                    [['Payable Units', `${Number(e.sessions_completed) || 0} Sessions`]]
-                  ).map(([label, value]) => (
-                    <div className="payslip-fact" key={label}>
-                      <span>{label}</span>
-                      <strong>{value}</strong>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="payslip-ledger-grid">
-                  <div className="payslip-ledger-section">
-                    <h3>EARNINGS</h3>
-                    <table className="payslip-ledger-table">
-                      <tbody>
-                        {earningLines.map(line => (
-                          <tr key={line.label}>
-                            <td>{line.label}</td>
-                            <td className="amt">{line.amount.toFixed(2)}</td>
-                          </tr>
-                        ))}
-                        <tr className="total-row">
-                          <td>Total Earnings (A)</td>
-                          <td className="amt">{totalEarnings.toFixed(2)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="payslip-ledger-section">
-                    <h3>TAXES &amp; DEDUCTIONS</h3>
-                    <table className="payslip-ledger-table">
-                      <tbody>
-                        {pay.lossOfPay > 0 && (
-                          <tr>
-                            <td>
-                              Loss of Pay ({pay.lopDays} day{pay.lopDays === 1 ? '' : 's'})
-                              {pay.unplannedLopDays > 0 && ` — ${pay.unplannedLopDays} unplanned`}
-                            </td>
-                            <td className="amt">{pay.lossOfPay.toFixed(2)}</td>
-                          </tr>
-                        )}
-                        {pay.violationPenalties > 0 && (
-                          <tr>
-                            <td>Penalty ({activeVio.length} incident{activeVio.length === 1 ? '' : 's'})</td>
-                            <td className="amt">{pay.violationPenalties.toFixed(2)}</td>
-                          </tr>
-                        )}
-                        {/* Its own line: a missed session is charged under a
-                            different rule from an incident, and putting the two
-                            together made the incident count look wrong. */}
-                        {pay.missedSessionDeduction > 0 && (
-                          <tr>
-                            <td>Missed sessions ({pay.missedSessions} at {pay.missedSessionTierLabel})</td>
-                            <td className="amt">{pay.missedSessionDeduction.toFixed(2)}</td>
-                          </tr>
-                        )}
-                        <tr>
-                          <td>Total Income Tax</td>
-                          <td className="amt">{incomeTax.toFixed(2)}</td>
-                        </tr>
-                        <tr className="total-row">
-                          <td>Total Taxes &amp; Deductions (B)</td>
-                          <td className="amt">{totalDeductions.toFixed(2)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="payslip-net">
-                  <div className="payslip-net-row">
-                    <span>Net Salary Payable ( A - B )</span>
-                    <strong>{netPayable.toFixed(2)}</strong>
-                  </div>
-                  <div className="payslip-net-row payslip-net-words-row">
-                    <span>Net Salary in words</span>
-                    <strong>{amountInWords(netPayable)}</strong>
-                  </div>
-                </div>
-
-                <p className="payslip-note">
-                  <strong>**Note :</strong> All amounts displayed in this payslip are in INR
-                </p>
-                <p className="payslip-note">
-                  * This is computer generated statement, does not require signature.
-                </p>
-
-                {/* The second page: how the figure on the first page was
-                    arrived at. A payslip states a salary as a structure —
-                    Basic, HRA, allowances — which is the right shape for a
-                    payslip and tells a coach nothing about why this month
-                    differs from last. Every line below is the pay engine's
-                    own, in the order it computes them. */}
-                <div className="payslip-calc">
-                  <div className="payslip-top">
-                    <div>
-                      <h1 className="payslip-title">
-                        HOW THIS WAS <span>CALCULATED</span>
-                      </h1>
-                      <p className="payslip-company">
-                        {coach.name.toUpperCase()} · {payslipPeriod} · {formatDate(e.period_start)} to {formatDate(e.period_end)}
-                      </p>
-                      <p className="payslip-address">
-                        {coach.coach_category} · {vConfig.name} · Score{' '}
-                        {Number(calcScoreObj.hbScore ?? calcScoreObj.hb_score ?? 0).toFixed(2)}{' '}
-                        · Band {getPerformanceBand(calcScoreObj.hbScore ?? calcScoreObj.hb_score).label}
-                      </p>
-                    </div>
-                    <div className="payslip-mark">HB+</div>
-                  </div>
-
-                  <table className="payslip-calc-table">
-                    <tbody>
-                      {[
-                        ['Base / fixed pay', pay.basePay,
-                          coach.coach_category === 'Flexi' ? 'Session-paid — no fixed component' : 'For the month'],
-                        ['Sessions delivered', null,
-                          `${Number(e.sessions_completed) || 0} against a threshold of ${pay.threshold}`
-                          + (pay.thresholdIsOverridden ? ' (set for this month)' : '')],
-                        ['Per-session pay', pay.sessionPay,
-                          coach.coach_category === 'Fixed'
-                            ? 'A Fixed coach is paid a salary, not per session'
-                            : `${Number(e.sessions_completed) || 0} × ${rupees(pay.perSessionRate)}`
-                              + (pay.rateIsOverridden ? ' (rate set for this month)' : '')],
-                        ['Extra sessions past the threshold', pay.extraSessionPay,
-                          `${pay.extraSessions || 0} × ${rupees(pay.perSessionRate)}`],
-                        ['Sessions beyond availability', pay.beyondAvailabilityPay,
-                          `${pay.beyondAvailabilitySessions || 0} × ${rupees(pay.beyondAvailabilityRate)}`
-                          + (pay.beyondAvailabilityOverlap
-                              ? ` — ${pay.beyondAvailabilityOverlap} also counted as extra sessions, check this is not paid twice`
-                              : '')],
-                        ['Night session premium', pay.nightSessionPay,
-                          `${Number(e.night_sessions) || 0} session(s) between 10 PM and 4 AM`],
-                        ['Milestone incentive', pay.milestoneIncentive, 'For passing the month\u2019s milestone'],
-                        ['Consistency bonus', pay.consistencyBonus,
-                          pay.consistencyEligible ? 'Attendance at or above 95% with no incidents' : 'Not earned this month'],
-                        ['5-star streak bonus', pay.streakBonusPay,
-                          `${Number(e.five_star_streak) || 0} consecutive five-star reviews`],
-                        ['Other organisational work', pay.orgWorkPay, 'Approved work outside sessions'],
-                      ].map(([label, amount, note]) => (
-                        <tr key={label} className={amount === 0 ? 'is-nil' : undefined}>
-                          <td>{label}<small>{note}</small></td>
-                          <td className="amt">{amount === null ? '' : rupees(amount)}</td>
-                        </tr>
-                      ))}
-
-                      <tr className="subtotal-row">
-                        <td>Earned this month</td>
-                        <td className="amt">{rupees(earningsSum + pay.penaltyDeductions + pay.lossOfPay)}</td>
+                <div className="slip-band">MONTHLY ACTIVITY SUMMARY</div>
+                <table className="slip-table slip-pairs slip-pairs-num">
+                  <tbody>
+                    {[
+                      ['Sessions Completed', String(Number(e.sessions_completed) || 0),
+                       'Beyond Availability', String(pay.beyondAvailabilitySessions)],
+                      ['Night Sessions (10 PM–4 AM)', String(Number(e.night_sessions) || 0),
+                       '5-Star Streak Count', String(pay.streakCount)],
+                      ['Consistency Bonus Eligible', pay.consistencyEligible ? 'Yes' : 'No',
+                       'Org Work Pay', rupees(pay.orgWorkPay)],
+                      ['Missed Sessions', String(pay.missedSessions),
+                       'Loss of Pay (days)', String(pay.lopDays)]
+                    ].map(([l1, v1, l2, v2]) => (
+                      <tr key={l1}>
+                        <td className="slip-l">{l1}</td>
+                        <td className="slip-v">{v1}</td>
+                        <td className="slip-l">{l2}</td>
+                        <td className="slip-v">{v2}</td>
                       </tr>
+                    ))}
+                  </tbody>
+                </table>
 
-                      {[
-                        ['Incidents raised', pay.violationPenaltiesRaised, 'minus',
-                          `${activeVio.filter(isPenaltyChargeable).length} chargeable incident(s) in this cycle`],
-                        // Given back, not taken. Printed as another minus it
-                        // read as a second deduction, and the two together as
-                        // money the coach never saw.
-                        ['Penalty waived', pay.penaltyWaived, 'plus',
-                          'Forgiven for this month — added back'],
-                        ['Missed sessions', pay.missedSessionDeduction, 'minus',
-                          `${pay.missedSessions || 0} at ${pay.missedSessionTierLabel || 'the standard rate'}`],
-                        ['Loss of pay', pay.lossOfPay, 'minus',
-                          `${pay.lopDays || 0} day(s) · base pay ÷ 26 per day`],
-                      ].map(([label, amount, sign, note]) => (
-                        <tr
-                          key={label}
-                          className={amount === 0 ? 'is-nil' : (sign === 'plus' ? 'is-plus' : 'is-minus')}
-                        >
-                          <td>{label}<small>{note}</small></td>
-                          <td className="amt">
-                            {amount === 0
-                              ? rupees(0)
-                              : `${sign === 'plus' ? '+' : '−'} ${rupees(Math.abs(amount))}`}
+                <div className="slip-band">PAY COMPUTATION</div>
+                <table className="slip-table slip-lines">
+                  <tbody>
+                    {payLines
+                      .filter(([, value, always]) => always === true || always === 'rate'
+                        || always === 'count' || Number(value) > 0)
+                      .map(([label, value, kind]) => (
+                        <tr key={label}>
+                          <td className="slip-l">{label}</td>
+                          <td className="slip-v">
+                            {kind === 'count' ? String(value) : rupees(value)}
                           </td>
                         </tr>
                       ))}
-
-                      <tr className="total-row">
-                        <td>Gross monthly pay</td>
-                        <td className="amt">{rupees(pay.grossPay)}</td>
+                    <tr>
+                      <td className="slip-l">
+                        Missed Session Penalty ({pay.missedSessions} × {rupees(pay.missedSessionRate * pay.missedSessionMultiplier)})
+                      </td>
+                      <td className={`slip-v${pay.missedSessionDeduction > 0 ? ' slip-minus' : ''}`}>
+                        {pay.missedSessionDeduction > 0 ? '− ' : ''}{rupees(pay.missedSessionDeduction)}
+                      </td>
+                    </tr>
+                    {pay.lossOfPay > 0 && (
+                      <tr>
+                        <td className="slip-l">
+                          Loss of Pay ({pay.lopDays} day{pay.lopDays === 1 ? '' : 's'}
+                          {pay.unplannedLopDays > 0 ? `, ${pay.unplannedLopDays} unplanned` : ''})
+                        </td>
+                        <td className="slip-v slip-minus">− {rupees(pay.lossOfPay)}</td>
                       </tr>
-                      <tr className="is-minus">
-                        <td>Income tax u/s 194J<small>10% TDS on professional fees</small></td>
-                        <td className="amt">− {rupees(incomeTax)}</td>
-                      </tr>
-                      <tr className="total-row">
-                        <td>Net monthly pay — what reaches the coach</td>
-                        <td className="amt">{rupees(netPayable)}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                    )}
+                  </tbody>
+                </table>
 
-                  {activeVio.length > 0 && (
-                    <>
-                      <div className="payslip-section-title">INCIDENTS THIS CYCLE</div>
-                      <table className="payslip-calc-table">
-                        <tbody>
-                          {activeVio.map(v => (
-                            <tr key={v.id} className={isPenaltyChargeable(v) ? undefined : 'is-nil'}>
-                              <td>
-                                {v.type}
-                                <small>
-                                  {v.incident_date} · occurrence #{v.occurrence_no} · {v.consequence}
-                                  {!isPenaltyChargeable(v) && ` · ${String(v.status).replace(/_/g, ' ')} — not charged`}
-                                </small>
-                              </td>
-                              <td className="amt">
-                                {isPenaltyChargeable(v)
-                                  ? `− ${rupees(v.penalty_amount)}`
-                                  : rupees(0)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  )}
+                {/* What the incidents came to, what was forgiven, and what is
+                    actually being taken. Printing only the last of the three
+                    left a coach whose penalty was wholly waived with a slip
+                    that mentioned neither the charge nor the pardon. */}
+                <>
+                    <div className="slip-band">PENALTY BREAKDOWN</div>
+                    <table className="slip-table slip-lines">
+                      <tbody>
+                        <tr>
+                          <td className="slip-l">
+                            Recorded Penalties ({activeVio.filter(isPenaltyChargeable).length} incident
+                            {activeVio.filter(isPenaltyChargeable).length === 1 ? '' : 's'})
+                          </td>
+                          <td className="slip-v">{rupees(pay.violationPenaltiesRaised)}</td>
+                        </tr>
+                        <tr>
+                          <td className="slip-l">Penalty Waived</td>
+                          <td className="slip-v">{rupees(pay.penaltyWaived)}</td>
+                        </tr>
+                        <tr className="slip-row-strong">
+                          <td className="slip-l">Penalty Charged / Deducted</td>
+                          <td className="slip-v">{rupees(pay.violationPenalties)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    {pay.violationPenaltiesRaised === 0 && otherCycleVios > 0 && (
+                      <p className="slip-note slip-aside">
+                        No incidents dated {formatDate(e.period_start)} – {formatDate(e.period_end)}.
+                        This coach has {otherCycleVios} incident{otherCycleVios === 1 ? '' : 's'} on
+                        the record in other cycles, charged on those cycles&rsquo; statements.
+                      </p>
+                    )}
+                </>
 
-                  <p className="payslip-note">
-                    * Figures are the pay engine’s own, not re-typed. Raise anything that
-                    looks wrong with your Reporting Manager before the cycle is locked.
-                  </p>
-                </div>
+                <table className="slip-table slip-totals">
+                  <tbody>
+                    <tr className="slip-total-band">
+                      <td className="slip-l">GROSS MONTHLY PAY</td>
+                      <td className="slip-v">{rupees(grossPay)}</td>
+                    </tr>
+                    <tr>
+                      <td className="slip-l">Income Tax / TDS (10% on professional fees)</td>
+                      <td className="slip-v slip-minus">− {rupees(incomeTax)}</td>
+                    </tr>
+                    <tr className="slip-total-band">
+                      <td className="slip-l">NET MONTHLY PAY</td>
+                      <td className="slip-v">{rupees(netPayable)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <p className="slip-words">Net Pay in Words: {amountInWords(netPayable)}.</p>
+                <p className="slip-note">
+                  Computer-generated payroll statement. Total recorded penalties:{' '}
+                  {rupees(pay.violationPenaltiesRaised)}; amount waived: {rupees(pay.penaltyWaived)};
+                  amount charged: {rupees(pay.violationPenalties)}. No signature required.
+                </p>
+
+                <footer className="slip-footer">
+                  <span>{SLIP_COMPANY.name} • Payroll Statement</span>
+                  <span>Page 1</span>
+                </footer>
               </div>
             </div>
           </div>

@@ -2710,8 +2710,31 @@ form {
   .app-container {
     display: block !important;
   }
-  .sidebar, .top-header, .no-print, .modal-header, .modal-backdrop::before, .view-content-wrapper > *:not(#modal-payslip-preview) {
+  /* Print the open modal and nothing else.
+     Hiding the page element by element never held: the first attempt hid the
+     children of .view-content-wrapper and left the wrapper printing as a
+     blank sheet, the next hid the wrapper and left <main> around it doing the
+     same. Every one of those boxes is a child of .app-container, and the modal
+     is the only child that should survive — so that is the rule, and an
+     element added to the shell later cannot reintroduce the blank page. */
+  .app-container > *:not(.modal-backdrop) {
     display: none !important;
+  }
+  .view-content-wrapper, .main-content, #toast-container,
+  .sidebar, .top-header, .no-print, .modal-header, .modal-backdrop::before {
+    display: none !important;
+  }
+  /* Except the one inside the modal that is the slip. */
+  .modal-backdrop, .modal-backdrop .modal-card, #payslip-print-content {
+    display: block !important;
+  }
+  /* Nothing between the page edge and the slip, or the margin stacks up with
+     the printer's own and pushes the content onto another sheet. */
+  html, body, .app-container, .modal-backdrop, .modal-card {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
   }
   .modal-backdrop {
     position: relative !important;
@@ -5593,4 +5616,264 @@ form {
   font-weight: 700;
   font-size: 0.95rem;
   padding-top: 9px;
+}
+
+/* A credit inside the deductions column. Shown in brackets, the way an
+   accounts statement shows a figure that works the other way, so it cannot be
+   added up with the lines above it by mistake. */
+.payslip-ledger-table tr.payslip-credit td { color: var(--accent-green, var(--brand-olive)); }
+/* A restatement of the two lines above it, not a further charge. Set in
+   italic and indented so nobody adds it into the column. */
+.payslip-ledger-table tr.payslip-restated td { font-style: italic; opacity: .78; }
+.payslip-ledger-table tr.payslip-restated td:first-child { padding-left: 18px; }
+
+/* ===========================================================================
+   Salary slip — the Hasel payroll statement.
+
+   One sheet, read top to bottom: who it is, what they did, what that came to,
+   what was taken off, what is left. The earlier two-column "Earnings (A) /
+   Deductions (B)" slip put the penalty on one side and the pay structure on
+   the other, which meant a coach had to reconcile two columns to see why the
+   month differed from the last one. This states the arithmetic once, in the
+   order the pay engine performs it.
+   ======================================================================== */
+.hb-slip {
+  /* The brand palette, in the proportions the guidelines set: the bone and
+     cream carry most of the page, olive does the structural work, and rust is
+     kept for the one thing on a payslip that has to be unmistakable — money
+     coming off. The slip had drifted onto hand-picked hexes that were close
+     to the palette without being it; these are the same tokens the rest of
+     the app is built from, so a change to the brand reaches the payslip. */
+  --slip-band:  var(--brand-olive);                 /* ~30% */
+  --slip-ink:   var(--brand-ink);
+  --slip-soft:  var(--brand-brown);
+  --slip-rule:  rgba(83, 55, 43, .22);              /* brown, thinned */
+  --slip-tint:  var(--brand-bone);                  /* ~60% base */
+  --slip-total: var(--brand-cream);                 /* ~60% base, stronger */
+  --slip-minus: var(--brand-rust);                  /* ~10% accent */
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--slip-ink);
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Paying entity hard left, mark hard right, the full width of the sheet
+   between them — the way a letterhead is read rather than a centred title
+   block. */
+.slip-letterhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 2px 0 12px;
+  text-align: left;
+}
+.hb-slip .slip-logo { flex: 0 0 auto; height: 52px; width: auto; }
+.hb-slip .slip-ident { min-width: 0; }
+
+/* Label above value, four across, divided by rules rather than boxed in.
+   A bordered grid reads as data to be compared column against column; these
+   are facts about one person, read one at a time, and the lighter treatment
+   is what the rest of the statement's tables are measured against. */
+.hb-slip .slip-facts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border: 1px solid var(--slip-rule);
+  border-top: none;
+}
+.hb-slip .slip-fact {
+  padding: 5px 12px;
+  border-top: 1px solid var(--slip-rule);
+  min-width: 0;
+}
+.hb-slip .slip-fact span {
+  display: block;
+  font-size: .85em;
+  color: var(--slip-soft);
+  opacity: .8;
+  line-height: 1.3;
+}
+.hb-slip .slip-fact strong {
+  display: block;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.slip-letterhead h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: .01em;
+  line-height: 1.15;
+  color: var(--slip-band);
+}
+.slip-letterhead p { margin: 2px 0 0; font-size: 11px; color: var(--slip-soft); line-height: 1.35; }
+/* A registration number is a fact someone will check against an invoice, so it
+   is set apart from the address rather than buried in it. */
+.hb-slip .slip-gstin { font-weight: 700; color: var(--slip-ink); letter-spacing: .02em; }
+
+/* The month is the one thing a reader checks first, so it sits opposite the
+   title at the same weight rather than buried in the details table. */
+.slip-titlebar,
+.slip-subbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  border: 1px solid var(--slip-rule);
+  padding: 7px 12px;
+}
+.slip-titlebar { background: var(--slip-total); border-bottom: none; }
+.slip-titlebar-name { font-size: 19px; font-weight: 800; color: var(--slip-band); letter-spacing: .01em; }
+.slip-titlebar-month { font-size: 13px; font-weight: 700; }
+.slip-subbar { background: var(--slip-tint); font-size: 11px; color: var(--slip-soft); }
+
+/* Section headers. Reversed out of the olive so the eye can find the four
+   sections without reading them. */
+.slip-band {
+  background: var(--slip-band);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  padding: 6px 12px;
+  margin-top: 10px;
+}
+
+.hb-slip .slip-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.hb-slip .slip-table td {
+  border: 1px solid var(--slip-rule);
+  padding: 6px 12px;
+  vertical-align: middle;
+}
+.hb-slip .slip-l { color: var(--slip-soft); }
+.hb-slip .slip-v { font-weight: 700; }
+
+/* Label, value, label, value. The two inner columns are narrower because a
+   label reads fine wrapped and a figure does not. */
+.hb-slip .slip-pairs td:nth-child(1),
+.hb-slip .slip-pairs td:nth-child(3) { width: 27%; }
+.hb-slip .slip-pairs-num .slip-v { text-align: right; }
+
+/* A running computation: label left, money right, so the column can be added
+   up by eye down the page. */
+.hb-slip .slip-lines td:first-child { width: 72%; }
+.hb-slip .slip-lines .slip-v,
+.hb-slip .slip-totals .slip-v { text-align: right; }
+.hb-slip .slip-minus { color: var(--slip-minus); }
+.hb-slip .slip-row-strong td { font-weight: 700; background: var(--slip-tint); color: var(--slip-soft); }
+
+.hb-slip .slip-totals { margin-top: 10px; }
+.hb-slip .slip-totals td:first-child { width: 72%; }
+.hb-slip .slip-total-band td {
+  background: var(--slip-total);
+  color: var(--slip-soft);
+  font-weight: 800;
+  font-size: 14px;
+}
+/* Net pay is the one figure the whole sheet exists to state. */
+.hb-slip .slip-totals tr:last-child td { color: var(--slip-band); }
+
+.slip-words { margin: 12px 0 2px; font-weight: 700; font-size: 12.5px; }
+.hb-slip .slip-note { margin: 0; font-size: 10.5px; color: var(--slip-soft); opacity: .85; line-height: 1.4; }
+
+.hb-slip .slip-aside { margin: 4px 0 0; font-style: italic; }
+
+/* On screen the slip sits in a modal, and the modal is whatever width the
+   window and the browser's zoom leave it. The four-column tables put their
+   figures hard against the right edge, so at a narrow width — or at the zoom
+   people actually read a payslip at — the right-hand column's values were the
+   first thing to go off the edge, and a figure you cannot see reads as a
+   figure that is missing. Below this width the pairs stack: every label keeps
+   its value beside it, and nothing leaves the page. Print is unaffected; it
+   has a sheet of known width. */
+@media screen and (max-width: 900px) {
+  .hb-slip .slip-pairs,
+  .hb-slip .slip-pairs tbody,
+  .hb-slip .slip-pairs tr { display: block; }
+  .hb-slip .slip-pairs tr { display: grid; grid-template-columns: 1fr auto; }
+  .hb-slip .slip-pairs td { display: block; border-top: none; }
+  .hb-slip .slip-pairs tr:first-child td:nth-child(-n+2) { border-top: 1px solid var(--slip-rule); }
+  .hb-slip .slip-pairs td:nth-child(1),
+  .hb-slip .slip-pairs td:nth-child(3) { width: auto; border-right: none; }
+  .hb-slip .slip-pairs td:nth-child(2),
+  .hb-slip .slip-pairs td:nth-child(4) { text-align: right; }
+  .hb-slip .slip-pairs td:nth-child(3) { border-top: 1px solid var(--slip-rule); }
+  .hb-slip .slip-pairs td:nth-child(4) { border-top: 1px solid var(--slip-rule); }
+  .hb-slip { padding: 0; }
+  .hb-slip .slip-facts { grid-template-columns: repeat(2, 1fr); }
+  .hb-slip .slip-letterhead { gap: 12px; }
+  .hb-slip .slip-logo { height: 40px; }
+  .hb-slip .slip-lines td:first-child,
+  .hb-slip .slip-totals td:first-child { width: 62%; }
+}
+
+/* The slip is a document, so give it room on screen rather than squeezing it
+   into the width a form dialog needs. A class rather than :has(), which this
+   stylesheet does not rely on. */
+.modal-card.modal-slip { max-width: 920px; }
+
+.slip-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 26px;
+  padding-top: 7px;
+  border-top: 1px solid var(--slip-rule);
+  font-size: 10px;
+  color: var(--slip-soft);
+  opacity: .75;
+}
+
+/* Printing. The bands are the document: without them the sections run
+   together, so the colours are forced rather than left to the browser's
+   default of dropping backgrounds. */
+@media print {
+  /* Fix the sheet and its margins rather than leaving them to whatever the
+     print dialog last had set. Without this the slip was laid out against
+     Chrome's default margins plus the space its date/title header takes, and
+     the last rows dropped onto a second page. */
+  @page {
+    size: A4 portrait;
+    margin: 10mm 11mm;
+  }
+
+  /* Sized to land on one A4 sheet. A salary slip that runs onto a second page
+     puts the net pay on a sheet that can be separated from the name at the
+     top, so the whole statement is kept to a single page. */
+  .hb-slip {
+    font-size: 8.2pt;
+    line-height: 1.26;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .hb-slip .slip-table td { padding: 2.6px 9px; }
+  .hb-slip .slip-fact { padding: 2.4px 9px; break-inside: avoid; page-break-inside: avoid; }
+  .hb-slip .slip-logo { height: 12mm; width: auto; }
+  .hb-slip .slip-band { padding: 3.5px 9px; margin-top: 6px; font-size: 8pt; }
+  .hb-slip .slip-titlebar,
+  .hb-slip .slip-subbar { padding: 4px 9px; }
+  .hb-slip .slip-titlebar-name { font-size: 14pt; }
+  .hb-slip .slip-titlebar-month { font-size: 9.5pt; }
+  .hb-slip .slip-letterhead { padding: 0 0 7px; gap: 10px; }
+  .hb-slip .slip-letterhead h1 { font-size: 12.5pt; }
+  .hb-slip .slip-letterhead p { font-size: 7.2pt; }
+  .hb-slip .slip-totals { margin-top: 6px; }
+  .hb-slip .slip-total-band td { font-size: 10pt; }
+  .hb-slip .slip-words { margin: 8px 0 2px; font-size: 9pt; }
+  .hb-slip .slip-note { font-size: 7.5pt; }
+  .hb-slip .slip-footer { margin-top: 16px; padding-top: 5px; font-size: 7pt; }
+  .hb-slip .slip-band,
+  .hb-slip .slip-titlebar,
+  .hb-slip .slip-subbar,
+  .hb-slip .slip-row-strong td,
+  .hb-slip .slip-total-band td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* A section split across a page break reads as two unrelated tables. */
+  .hb-slip .slip-band { break-after: avoid; page-break-after: avoid; }
+  .hb-slip .slip-table { break-inside: avoid; page-break-inside: avoid; }
+  .slip-footer { break-before: avoid; page-break-before: avoid; }
 }

@@ -65,6 +65,8 @@ const COACH_COLS = [
   'employment_stage', 'training_end_date', 'probation_start_date', 'probation_end_date',
   'weekly_off_day', 'work_mode', 'centre_name', 'centre_lat', 'centre_lng',
   'coach_category', 'internal_designation', 'date_of_joining',
+  // Which brand's letterhead this coach's payslip carries: 'HB+' or 'HOP'.
+  'brand',
   'date_of_first_relevant_certification', 'freelance_past_exp_with_document',
   'freelance_past_exp_without_document', 'non_coaching_exp_years',
   'education_score_override', 'education_qualification', 'education_type',
