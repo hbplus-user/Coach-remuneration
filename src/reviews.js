@@ -1017,6 +1017,68 @@ export const extractSessionList = (payload) => {
  * hundred sessions a cycle. The loop stops on the page that returns nothing,
  * so a server that ignores `page` cannot spin it for ever.
  */
+/**
+ * The sessions a coach had on one day, as the app has them now.
+ *
+ * An incident carries the id of the session it was raised from, and little
+ * else that a person can read: what the register stores is a sentence. This
+ * reads the session itself back, so the register can show which session it
+ * was, who was waiting and when it was due, rather than asking somebody to
+ * take a number on trust.
+ *
+ * One day, not a cycle. The question being answered is always about a single
+ * incident, and a day is the smallest window the list will take.
+ */
+export async function fetchSessionsForDay(appCoachId, {
+  base = SESSION_LIST_API_DEFAULT,
+  day,
+  token = null,
+  signal,
+  pageSize = 200
+} = {}) {
+  if (!appCoachId) return { ok: false, why: 'This coach has no app ID set.' };
+  if (!day) return { ok: false, why: 'No day to read.' };
+
+  const headers = { Accept: 'application/json' };
+  if (token) headers.Authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+
+  const url = apiURL(base);
+  url.searchParams.set('coach_id', appCoachId);
+  url.searchParams.set('start_date', String(istDayStart(day)));
+  url.searchParams.set('end_date', String(istDayEnd(day)));
+  url.searchParams.set('limit', String(pageSize));
+  url.searchParams.set('page', '1');
+
+  let res;
+  try {
+    res = await fetch(url.toString(), {
+      headers, credentials: token ? 'omit' : 'include', signal
+    });
+  } catch (e) {
+    return { ok: false, why: `Could not reach ${apiHost(base)}. (${e.message})` };
+  }
+  if (!res.ok) {
+    return {
+      ok: false,
+      why: res.status === 401 || res.status === 403
+        ? `The API refused the request (${res.status}). It needs an admin token.`
+        : `The API answered ${res.status} ${res.statusText}.`
+    };
+  }
+
+  let payload;
+  try { payload = await res.json(); }
+  catch { return { ok: false, why: 'The session list did not return JSON.' }; }
+
+  const got = extractSessionList(payload);
+  if (!got) return { ok: false, why: 'The session list came back in an unfamiliar shape.' };
+
+  return {
+    ok: true,
+    sessions: got.rows.map(normaliseSession).filter(Boolean)
+  };
+}
+
 export async function fetchLateJoins(appCoachId, {
   base = SESSION_LIST_API_DEFAULT,
   fromDay,

@@ -3,6 +3,17 @@
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
+   `hidden` means hidden.
+
+   The attribute only carries a UA default of `display: none`, so any author
+   rule that sets a display — and this sheet sets dozens, `display: flex` on
+   a form among them — silently outranks it. The element stays on the page
+   with its attribute correctly set, which is the worst of both: a fold that
+   reported itself closed while showing everything.
+   -------------------------------------------------------------------------- */
+[hidden] { display: none !important; }
+
+/* --------------------------------------------------------------------------
    Design Tokens — HB+ Brand Guidelines
    --------------------------------------------------------------------------
    Primary palette   #9f4022 rust · #747440 olive · #53372b brown
@@ -4567,11 +4578,14 @@ form {
    the tracker open, so the two cannot drift. The Annexure matrix stays below.
    =========================================================================== */
 
+/* One column. The incident form used to take a third of the width down the
+   right-hand side, permanently, to do the rarer of the two jobs on this
+   page — the register is what people come here to read, and it was the part
+   being squeezed. The form is below it now, and folded. */
 .hb-inc {
   display: grid; gap: 1.25rem; align-items: start; margin-bottom: 1.5rem;
-  grid-template-columns: minmax(0, 1fr) minmax(290px, 370px);
+  grid-template-columns: minmax(0, 1fr);
 }
-@media (max-width: 1100px) { .hb-inc { grid-template-columns: 1fr; } }
 .hb-inc-main { min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
 .hb-inc-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .hb-inc-chips .hb-btn { min-height: 40px; gap: 7px; }
@@ -4593,7 +4607,13 @@ form {
 .hb-st-good { background: rgba(111,142,124,0.22); color: #3b5a49; }
 .hb-st-mute { background: var(--wash-strong); color: var(--text-secondary); }
 
-.hb-inc-form { padding: 1.3rem 1.4rem; position: sticky; top: 1rem; }
+/* No longer sticky: it is below the register rather than alongside it, and
+   a form that followed the scroll would now follow it over the table. */
+.hb-inc-form { padding: 0; }
+/* Opened, the form is a column of fields and does not want the full width
+   of a desk monitor — a 1,400px-wide text input is harder to fill in than a
+   narrow one, not easier. */
+.hb-inc-form form { padding: 0 1.4rem 1.4rem; max-width: 560px; }
 .hb-inc-form h3 {
   margin: 0 0 1rem; font-family: var(--font-title); font-size: 1.15rem; font-weight: 700;
 }
@@ -5877,3 +5897,353 @@ form {
   .hb-slip .slip-table { break-inside: avoid; page-break-inside: avoid; }
   .slip-footer { break-before: avoid; page-break-before: avoid; }
 }
+
+/* ---------------------------------------------------------------------------
+   The incident register: a row, and the window behind it.
+
+   A row can hold a number and a badge and little else, which is why the
+   register used to read as a wall of "#57 · Waiting for coach" — true, and
+   no help to anybody deciding whether it was fair. The detail window is
+   where the session, the client and the reasoning live, so the table can
+   stay narrow enough to scan.
+   --------------------------------------------------------------------------- */
+
+/* Visible to a screen reader, and to nothing else. The detail column's
+   header has no visible text — the buttons under it say what they do — but a
+   table with a nameless column is read out as an empty cell. */
+.hb-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.hb-more {
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  border-radius: 99px; padding: 4px 12px; cursor: pointer;
+  font: 700 0.74rem var(--font-body); color: var(--text-secondary);
+  white-space: nowrap;
+}
+.hb-more:hover { border-color: var(--brand-olive); color: var(--brand-olive); }
+.hb-more:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+
+.hb-detail-backdrop {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(26, 26, 26, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.hb-detail {
+  background: var(--bg-surface); border-radius: 16px;
+  width: min(560px, 100%); max-height: 86vh; overflow-y: auto;
+  padding: 1.4rem 1.5rem; box-shadow: 0 24px 60px rgba(26, 26, 26, 0.28);
+}
+.hb-detail-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  margin-bottom: 1rem;
+}
+.hb-detail-head h3 {
+  margin: 0 0 7px; font-family: var(--font-title); font-size: 1.2rem; font-weight: 700;
+  line-height: 1.25;
+}
+.hb-detail-x {
+  border: 0; background: none; cursor: pointer; line-height: 1;
+  font-size: 1.6rem; color: var(--text-secondary); padding: 0 4px;
+}
+.hb-detail-x:hover { color: var(--brand-rust); }
+
+/* What it costs, said once and plainly — the question the window is opened
+   to answer, so it sits above the facts rather than among them. */
+.hb-detail-money {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  background: var(--brand-bone); border-radius: 12px; padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+.hb-detail-money span { font-size: 0.86rem; color: var(--brand-brown); font-weight: 600; }
+.hb-detail-money strong {
+  font-size: 1.15rem; font-weight: 700; color: var(--brand-rust); white-space: nowrap;
+}
+
+.hb-detail-facts { margin: 0; display: grid; gap: 0; }
+.hb-detail-facts > div {
+  display: grid; grid-template-columns: 11rem 1fr; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid rgba(83, 55, 43, 0.12);
+}
+.hb-detail-facts > div:last-child { border-bottom: 0; }
+.hb-detail-facts dt {
+  font-size: 0.76rem; font-weight: 700; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--text-secondary); align-self: center;
+}
+.hb-detail-facts dd {
+  margin: 0; font-size: 0.92rem; font-weight: 600; color: var(--text-primary);
+}
+
+.hb-detail-note {
+  margin-top: 1rem; background: var(--brand-bone); border-radius: 12px;
+  padding: 0.85rem 1rem;
+}
+.hb-detail-note > span {
+  display: block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
+  color: var(--text-secondary); margin-bottom: 5px;
+}
+.hb-detail-note p { margin: 0; font-size: 0.9rem; line-height: 1.5; }
+
+/* An older incident that predates the session and client being asked for.
+   Saying so beats a panel that looks complete and is not. */
+.hb-detail-gap {
+  margin: 1rem 0 0; padding: 0.7rem 0.9rem; border-radius: 10px;
+  border: 1px dashed var(--border-strong);
+  font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary);
+}
+
+/* The session and client fields, which appear only for the incidents that
+   have a session behind them. Boxed, so it is obvious they arrived because
+   of the type chosen and will go away again. */
+.hb-inc-session {
+  border: 1px solid var(--border-strong); border-radius: 12px;
+  padding: 0.9rem 1rem; display: flex; flex-direction: column; gap: 0.9rem;
+  background: var(--brand-bone);
+}
+.hb-inc-session-why {
+  margin: 0; font-size: 0.8rem; line-height: 1.5; color: var(--brand-brown);
+}
+.hb-inc-session input {
+  min-height: 44px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-surface); padding: 10px 12px; width: 100%; box-sizing: border-box;
+  font: 500 0.92rem var(--font-body); color: var(--text-primary);
+}
+
+@media (max-width: 700px) {
+  .hb-detail { padding: 1.1rem; border-radius: 14px; }
+  .hb-detail-facts > div { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* Where the session came from. Quiet, because it is provenance and not a
+   finding — but present, because a client name with no source behind it is
+   indistinguishable from one somebody typed. */
+.hb-detail-live {
+  margin: 0.9rem 0 0; font-size: 0.78rem; color: var(--text-secondary);
+  display: flex; align-items: center; gap: 6px;
+}
+.hb-detail-live::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--brand-sage, #6f8e7c); flex: 0 0 auto;
+}
+
+/* The day's sessions, offered when the incident names none of them. */
+.hb-detail-list { margin: 8px 0 0; padding-left: 1.1rem; }
+.hb-detail-list li { font-size: 0.88rem; line-height: 1.6; }
+
+/* ---------------------------------------------------------------------------
+   The four registers.
+
+   Underlined tabs rather than buttons or pills: the page already has a
+   danger button, status chips and filter selects, and a fifth kind of
+   clickable thing competing with them is how a toolbar stops being read.
+   An underline says "you are here" without asking for attention.
+   --------------------------------------------------------------------------- */
+.hb-tabs {
+  display: flex; gap: 2px; align-items: stretch; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-strong); margin-bottom: 0.65rem;
+}
+.hb-tab {
+  border: 0; background: none; cursor: pointer;
+  padding: 10px 16px 11px; margin-bottom: -1px;
+  border-bottom: 3px solid transparent;
+  font: 600 0.92rem var(--font-body); color: var(--text-secondary);
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+}
+.hb-tab:hover { color: var(--text-primary); }
+.hb-tab.is-on {
+  color: var(--brand-olive); border-bottom-color: var(--brand-olive); font-weight: 700;
+}
+.hb-tab:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: -2px; }
+
+.hb-tab-n {
+  min-width: 1.4rem; text-align: center; border-radius: 99px;
+  padding: 1px 7px; background: var(--wash-strong);
+  font-size: 0.74rem; font-weight: 700; color: var(--text-secondary);
+}
+.hb-tab.is-on .hb-tab-n { background: var(--brand-cream); color: var(--brand-olive); }
+
+/* What this register is for, in one line. Four lists that look alike need
+   saying apart; the alternative is four tab names and a guess. */
+.hb-tab-why {
+  margin: 0 0 0.9rem; font-size: 0.84rem; line-height: 1.5;
+  color: var(--text-secondary); max-width: 68ch;
+}
+
+/* The LOP register's own fact: the day was an absence, and what that cost
+   besides the incident itself. */
+.hb-absent {
+  margin-top: 5px; font-size: 0.74rem; font-weight: 700;
+  letter-spacing: 0.02em; color: var(--brand-rust);
+}
+
+@media (max-width: 700px) {
+  .hb-tab { padding: 9px 11px 10px; font-size: 0.86rem; }
+}
+/* A day that was marked absent and then cleared. Stated, because somebody
+   questioned this day and that is worth seeing — but not in the colour the
+   sheet uses for money coming off. */
+.hb-absent-clear { color: var(--text-secondary); font-weight: 600; }
+
+/* ---------------------------------------------------------------------------
+   Folds, and the rest of a long list.
+
+   Two things on the incidents page are reference rather than work: the
+   schedule of what each violation costs, and the form for recording one by
+   hand. Both were permanently open, and between them they pushed the
+   register — the thing the page exists to show — into a narrow column
+   halfway down. They fold now, and the register gets the page.
+   --------------------------------------------------------------------------- */
+.hb-fold {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  padding: 1.05rem 1.4rem;
+  font: 700 1.08rem var(--font-title); color: var(--text-primary);
+}
+.hb-fold:hover { color: var(--brand-olive); }
+.hb-fold:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: -3px; }
+.hb-fold small {
+  margin-left: auto; font: 600 0.8rem var(--font-body); color: var(--text-secondary);
+}
+
+/* The +/− is the whole affordance, so it has to look pressable rather than
+   like a character that happens to be there. */
+.hb-fold-x {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--brand-cream); color: var(--brand-olive);
+  font: 700 1.05rem/1 var(--font-body);
+}
+.is-open > .hb-fold .hb-fold-x { background: var(--brand-olive); color: #fff; }
+
+.hb-fold-card { padding: 0; }
+.hb-fold-card .table-container { padding: 0 0 0.4rem; }
+.hb-fold-card .scorecard-legend { padding: 0 1.4rem 1.2rem; margin: 0; }
+
+/* What is not being drawn, and how to get it. Stated as a count rather than
+   as a page number: "20 of 1,208" is the fact, and page 1 of 61 is not. */
+.hb-more-rows {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; padding: 0.9rem 1.1rem 0.2rem;
+}
+.hb-more-rows > span { font-size: 0.84rem; color: var(--text-secondary); }
+.hb-more-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* The scheduled read, and whether this cycle has had one. Two states worth
+   telling apart at a glance: read, which needs nothing, and due, which means
+   the figures below may not be the whole cycle yet. */
+.hb-sched {
+  margin: 0 0 0.9rem; padding: 0.7rem 0.95rem; border-radius: 10px;
+  font-size: 0.84rem; line-height: 1.55; max-width: 80ch;
+  border-left: 3px solid var(--brand-grey);
+  background: var(--brand-bone); color: var(--brand-brown);
+}
+.hb-sched.is-done { border-left-color: var(--brand-sage, #6f8e7c); }
+.hb-sched.is-due  { border-left-color: var(--brand-rust); }
+
+/* ---------------------------------------------------------------------------
+   The reading, before it is filed.
+
+   Filing is the step that takes money off people, so it happens in a window
+   of its own with the readings in front of it — not from a button at the top
+   of a list somebody has not scrolled through.
+   --------------------------------------------------------------------------- */
+.hb-review { width: min(1040px, 100%); }
+.hb-review .hb-detail-money span { max-width: 60ch; }
+
+/* What filing will do, said above the button rather than under it. */
+.hb-review-warn {
+  margin: 0 0 0.8rem; padding: 0.75rem 0.95rem; border-radius: 10px;
+  border-left: 3px solid var(--brand-rust); background: var(--brand-bone);
+  font-size: 0.86rem; line-height: 1.55; color: var(--brand-brown);
+}
+
+/* Readings already on the record. Beside the new ones, so the counts add up
+   in one glance instead of two. */
+.hb-review-dupe {
+  margin: 0 0 0.8rem; padding: 0.7rem 0.95rem; border-radius: 10px;
+  background: var(--wash-strong); font-size: 0.84rem; line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.hb-review-list { max-height: 46vh; overflow-y: auto; }
+.hb-review-list .data-table th {
+  position: sticky; top: 0; z-index: 1; background: var(--brand-grey);
+}
+.hb-review-list .data-table td { font-size: 0.86rem; }
+
+.hb-review-acts {
+  display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap;
+  padding-top: 1rem; margin-top: 0.4rem;
+  border-top: 1px solid rgba(83, 55, 43, 0.12);
+}
+
+/* ---------------------------------------------------------------------------
+   The LOP register's own controls.
+
+   Whether unlogged days are charged at all, and a way to undo a cycle of
+   them, sitting on the register they govern. Both lived on Attendance &
+   Leave, which is where they belong by subject and nowhere near where the
+   problem is noticed — on this list, or on a payslip.
+   --------------------------------------------------------------------------- */
+.hb-lop-bar {
+  display: grid; gap: 12px 18px; align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 1rem 1.2rem; margin-bottom: 1rem;
+  border-radius: 12px; background: var(--brand-bone);
+  border-left: 3px solid var(--brand-grey);
+}
+.hb-lop-bar.is-on  { border-left-color: var(--brand-rust); }
+.hb-lop-bar.is-off { border-left-color: var(--brand-sage, #6f8e7c); }
+
+.hb-lop-state strong { display: block; font-size: 0.98rem; margin-bottom: 3px; }
+.hb-lop-state p {
+  margin: 0; font-size: 0.84rem; line-height: 1.55; color: var(--brand-brown);
+  max-width: 70ch;
+}
+.hb-lop-acts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* Spans both columns: it qualifies the red button above it, so it has to be
+   readable before the button is pressed, not after. */
+.hb-lop-note {
+  grid-column: 1 / -1; margin: 0; padding-top: 2px;
+  font-size: 0.79rem; line-height: 1.5; color: var(--text-secondary);
+  max-width: 92ch;
+}
+
+@media (max-width: 760px) {
+  .hb-lop-bar { grid-template-columns: 1fr; }
+}
+
+/* More, and remove. Remove is quiet until hovered: it is the destructive one
+   on a row somebody is only reading. */
+.hb-row-acts { display: inline-flex; align-items: center; gap: 6px; }
+.hb-row-del {
+  border: 1px solid transparent; background: none; cursor: pointer;
+  border-radius: 8px; padding: 4px 7px; line-height: 1;
+  color: var(--text-secondary); font-size: 1rem;
+}
+.hb-row-del:hover {
+  color: var(--brand-rust); border-color: var(--brand-rust);
+  background: rgba(159, 64, 34, 0.07);
+}
+.hb-row-del:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+
+/* Where a penalty on the calculator came from. Quiet, but present: it is what
+   tells somebody why an incident survived an erase. */
+.calc-penalty-src { color: var(--text-secondary); font-style: italic; }
+
+/* Set aside, on the register of what the app measured. A word rather than a
+   bin, because it does not remove the incident — it stops the charge and
+   leaves the reason on the record. */
+.hb-row-reject {
+  border: 1px solid var(--border-strong); background: var(--bg-surface);
+  border-radius: 99px; padding: 4px 12px; cursor: pointer;
+  font: 700 0.74rem var(--font-body); color: var(--text-secondary);
+  white-space: nowrap;
+}
+.hb-row-reject:hover {
+  border-color: var(--brand-rust); color: var(--brand-rust);
+  background: rgba(159, 64, 34, 0.07);
+}
+.hb-row-reject:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 1px; }

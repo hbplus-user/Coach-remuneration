@@ -22,15 +22,78 @@ import {
   PHOTO_RETENTION_DAYS, CENTRE_RADIUS_METRES
 } from './leave.js';
 
-// The incident a day nobody turned up for is filed as. Present in every
-// variant of the penalty matrix and in `default`, so it always resolves.
-const NO_SHOW_VIOLATION = 'Coach No-Show';
+// What a day nobody turned up for used to be filed as, and why it no longer
+// is.
+//
+// One name covered two unrelated failures. A coach who never joined a booked
+// session left a client waiting; a coach who worked the day but forgot to
+// open the app left a gap in a log. Both arrived in the register as "Coach
+// No-Show", climbing one lifetime ladder together, so a run of missed punches
+// pushed a real no-show to the ₹650 ceiling and the list gave a reviewer no
+// way to tell which had happened.
+//
+// They are two incidents now. LEGACY_NO_SHOW stays only for what is already
+// on the record under that name; nothing new is filed as it.
+const NO_SHOW_VIOLATION = LEGACY_NO_SHOW;
+
+// The incidents that happen *to a session*, and so have a session and a
+// client behind them worth writing down.
+//
+// Named explicitly rather than matched on the word "session", because a type
+// list is read by people deciding policy and a regular expression quietly
+// adopting a new rule is how the wrong form gets shown.
+const SESSION_BOUND_VIOLATIONS = new Set([
+  SESSION_NO_SHOW,
+  LEGACY_NO_SHOW,
+  'Coach No-Show — No Communication',
+  'Early Session Termination / Short Session',
+  'Failure to Complete Mandatory Makeup Session',
+  // Being late to a session is as much about the session as missing it: the
+  // client was waiting either way, and "6 minutes late" means nothing
+  // without knowing late for what.
+  'Late Join (1–5 min)',
+  'Late Join (> 5 min)',
+  'Late Arrival (<5 min)',
+  'Late Arrival (>5 min)'
+]);
+const isSessionBound = (type) => SESSION_BOUND_VIOLATIONS.has(type);
 
 // Who a late-join incident is recorded by. The same convention as
 // "System — attendance": a name that says plainly this was measured, not
 // reported by a person, so these can be told apart from somebody's judgement
 // and removed again without touching anybody's.
 const LATE_REPORTER = 'System — late join';
+
+// The settler's signature on an incident it raised.
+const ATTENDANCE_REPORTER = 'System — attendance';
+
+/**
+ * Whether the settler raised this incident, rather than a person.
+ *
+ * Compared loosely, on purpose. Every rule that matters hangs off this —
+ * which register an incident appears in, whether erasing a cycle removes it,
+ * whether a regularisation can hold it — and all of them used to be an exact
+ * match against a string containing an em dash. An em dash survives a round
+ * trip through Postgres, a CSV, a copy-paste and a re-import perfectly well
+ * until the one time it does not, and the failure is silent: the incident
+ * simply stops being recognised as the system's, so erasing the cycle leaves
+ * it behind and it goes on being charged with nothing to explain it.
+ *
+ * Dashes of every kind, spacing and case are therefore normalised away. The
+ * cost of matching loosely here is that a person who types "system
+ * attendance" as their own name would be mistaken for the settler; the cost
+ * of matching exactly is a deduction nobody can remove.
+ */
+const normaliseReporter = (by) =>
+  String(by || '')
+    .toLowerCase()
+    // Every dash Unicode offers, plus the plain hyphen, flattened to a space.
+    .replace(/[\u2010-\u2015\u2212\u002d]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isSystemAttendance = (v) => normaliseReporter(v?.reported_by) === 'system attendance';
+const isSystemLateJoin  = (v) => normaliseReporter(v?.reported_by) === 'system late join';
 
 // What an appeal's state means, said once for the coach watching it and the
 // approver deciding it. These are the table's own values — the handlers
@@ -60,7 +123,14 @@ import {
   isPenaltyCounted,
   PENALTY_AWAITING_APPROVAL,
   PENALTY_REFUSED,
+  PENALTY_REG_RAISED,
+  PENALTY_REGULARIZED,
+  LEGACY_NO_SHOW,
+  SESSION_NO_SHOW,
+  APP_LOGIN_VIOLATION,
   getQuarterLabel,
+  autoScanDueCycle,
+  nextAutoScanAt,
   calculateTenureYears,
   getEducationScore,
   setEducationScores,
@@ -78,7 +148,7 @@ import {
   fetchReviews, fiveStarStreak, REVIEW_API_DEFAULT,
   fetchSessionSummary, SESSION_API_DEFAULT, fetchNightSessions,
   fetchAvailability, AVAILABILITY_API_DEFAULT, istTimeOf,
-  fetchLateJoins, SESSION_LIST_API_DEFAULT, LATE_GRACE_MINUTES
+  fetchLateJoins, fetchSessionsForDay, SESSION_LIST_API_DEFAULT, LATE_GRACE_MINUTES
 } from './reviews.js';
 
 // Phase 1 scope: only these modules are exposed in the UI.
@@ -725,7 +795,7 @@ const SquadTree = ({
                   </label>
                 )}
                 <strong>{c.name}</strong>
-                <small>{c.id}{c.coach_category ? ` \u00b7 ${c.coach_category}` : ''}</small>
+                <small>{c.id}{c.coach_category ? ` · ${c.coach_category}` : ''}</small>
                 {/* Somebody can be both: a coach on the roster and the account
                     that manages a squad. Without saying so, their card in the
                     unassigned column reads as an oversight when it is simply
@@ -1249,6 +1319,17 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                   {v.incident_time ? ` · ${v.incident_time}` : ''}
                 </small>
                 {v.consequence && <small>{v.consequence}</small>}
+                {/* Where it came from, because that decides how it can be
+                    removed: the settler's go in one sweep from the LOP
+                    register, the app's are tied to a session, and a
+                    person's can only be deleted one at a time. Without
+                    this, an incident that survived an erase looks like the
+                    erase is broken. */}
+                <small className="calc-penalty-src">
+                  {isSystemAttendance(v) ? 'raised by the settler · erasable from the LOP register'
+                    : isSystemLateJoin(v) ? 'measured from the app · API fetch register'
+                    : `filed by ${v.reported_by || 'somebody'} · delete it on its own row`}
+                </small>
               </span>
               <span>#{v.occurrence_no ?? 1}</span>
               <span>{String(v.status || '').replace(/_/g, ' ')}</span>
@@ -2362,6 +2443,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [vioDate, setVioDate] = useState("");
   const [vioTime, setVioTime] = useState("");
   const [vioEvidence, setVioEvidence] = useState("");
+  // Which session, and which client was left waiting. Asked for only by the
+  // incidents where a session exists to name — there is no booking table to
+  // read them from, so they are captured at the point somebody who was there
+  // is filling the form.
+  const [vioSession, setVioSession] = useState("");
+  const [vioClient, setVioClient] = useState("");
+  // The incident whose detail window is open. Held as the id rather than the
+  // record, so an incident that changes underneath — approved, regularised —
+  // is shown as it is now and not as it was when the window was opened.
+  const [incidentDetailId, setIncidentDetailId] = useState(null);
+  // The session that incident was about, read back from the app. Keyed by the
+  // incident it belongs to, so a panel opened on one incident can never show
+  // the session fetched for another.
+  const [detailSession, setDetailSession] = useState({ id: null });
 
   // 4. Org Work Form
   const [owWorkType, setOwWorkType] = useState("Workout Planning / Programming");
@@ -2541,7 +2636,35 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [penaltyFilter, setPenaltyFilter] = useState("All");
   // Incidents, narrowed the way payroll asks about them: which cycle will be
   // charged, and whose.
-  const [penaltyCycle, setPenaltyCycle] = useState("All");
+  // The cycle being looked at. "Current" rather than a month, so it follows
+  // the open cycle instead of pinning to whichever one was open the day this
+  // was written. Everything that has already been paid is behind a filter,
+  // because the register is read to decide what is about to be charged.
+  const [penaltyCycle, setPenaltyCycle] = useState("Current");
+  // Which of the four registers is open. They are four different jobs: a
+  // decision to make, what the settler took off for days with no login, what
+  // a person recorded, and what the app measured. One list holding all four
+  // is the thing that made this page unreadable.
+  const [penaltyTab, setPenaltyTab] = useState("approval");
+  // How many rows of the register are drawn. A settled cycle runs to a
+  // thousand incidents and the browser lays out every one of them, so the
+  // page arrives slowly and then cannot be scrolled past. Twenty is what
+  // fits on a screen; the rest is a click away.
+  const PENALTY_PAGE = 20;
+  const [penaltyLimit, setPenaltyLimit] = useState(PENALTY_PAGE);
+  // Both of these are reference material rather than the work: the schedule
+  // of what each violation costs, and the form for recording a new one.
+  // Shut by default so the register is what the page opens on.
+  // The last cycle the session list was read for without being asked. Held
+  // in app_settings rather than this browser, so it is once for the company
+  // and not once per laptop.
+  const [lateAutoRun, setLateAutoRun] = useState(null);
+  // The review window the manual read opens: every reading laid out, with
+  // the ones already on the record kept separate, and nothing filed until
+  // somebody presses File.
+  const [lateReview, setLateReview] = useState(null);
+  const [logFormOpen, setLogFormOpen] = useState(false);
+  const [matrixOpen, setMatrixOpen] = useState(false);
   const [penaltyCoach, setPenaltyCoach] = useState("All");
   const [trackerMode, setTrackerMode] = useState("record");
   // Close & pay: 'summary' is the ten columns Finance signs off against,
@@ -2590,12 +2713,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     if (!window.confirm(next
       ? 'Turn Loss of Pay ON?\n\nFrom now on, settling a day nobody logged in '
-        + 'for will take one day\u2019s pay from that coach, after any Holiday '
+        + 'for will take one day’s pay from that coach, after any Holiday '
         + 'or Paid leave balance has been used.\n\nMonths already settled are '
         + 'not changed.'
       : 'Turn Loss of Pay OFF?\n\nDays with no login will stop being settled '
         + 'and nothing further will be deducted.\n\nDeductions already made '
-        + 'stay as they are \u2014 this does not refund them.')) return;
+        + 'stay as they are — this does not refund them.')) return;
 
     setLopSwitchBusy(true);
     setLopSwitchNote(null);
@@ -2603,7 +2726,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setLopSwitchBusy(false);
 
     if (!res.ok) {
-      setLopSwitchNote({ bad: true, text: `Not saved \u2014 ${res.why} Nothing has changed.` });
+      setLopSwitchNote({ bad: true, text: `Not saved — ${res.why} Nothing has changed.` });
       return;
     }
     setChargeLop(next);
@@ -2638,6 +2761,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // Off unless the database says otherwise. A missing table or a failed read
     // must not start charging people.
     setChargeLop(next.settings?.charge_lop === true);
+    setLateAutoRun(next.settings?.late_scan_last_run ?? null);
     if (next.openPeriodMonth !== undefined) setOpenPeriodMonth(next.openPeriodMonth);
     if (!profile?.coach_id && next.coaches?.length > 0) {
       setCurrentCoachContext(next.coaches[0].id);
@@ -3308,6 +3432,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setVioDate(new Date().toISOString().substring(0, 10));
     setVioTime(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
     setVioEvidence("");
+    setVioSession("");
+    setVioClient("");
     setActiveModal("log-violation");
   };
 
@@ -4663,6 +4789,61 @@ export default function App({ session = null, profile = null, onSignOut = null }
     (String(v?.evidence || '').match(/\[session ([^\]]+)\]/) || [])[1] || null;
 
   /**
+   * Read back the session an incident was about, whenever one is asked for.
+   *
+   * The session is the app's to know, not this one's: it holds who was
+   * booked, when the slot was due and who was waiting, and it keeps holding
+   * it after the incident is filed. An incident filed before these were
+   * stored as fields has nothing but a sentence and a session id, and this is
+   * what turns that id back into something readable.
+   *
+   * Read, never written. What comes back is shown beside what was recorded
+   * rather than replacing it: the record is what the coach was charged on,
+   * and a booking edited afterwards must not quietly rewrite it.
+   */
+  useEffect(() => {
+    const v = violations.find(x => x.id === incidentDetailId);
+    if (!v || !isSessionBound(v.type)) { setDetailSession({ id: null }); return; }
+
+    const coach = coaches.find(c => c.id === v.coach_id);
+    const sid = v.session_id || sessionIdOf(v);
+
+    // The app keys its sessions by the coach's app id, so without one there
+    // is nothing to ask about. Said plainly rather than shown as a failure —
+    // it is a profile that needs filling in, not an API that is down.
+    if (!coach?.app_coach_id) {
+      setDetailSession({ id: v.id, state: 'no-app-id' });
+      return;
+    }
+
+    let dropped = false;
+    setDetailSession({ id: v.id, state: 'busy' });
+
+    (async () => {
+      const base = lateListBase();
+      const token = await apiTokenFor(base);
+      const res = await fetchSessionsForDay(coach.app_coach_id, {
+        base, day: v.incident_date, token
+      });
+      if (dropped) return;
+      if (!res.ok) { setDetailSession({ id: v.id, state: 'error', why: res.why }); return; }
+
+      // By id where the incident carries one. Where it does not — anything
+      // filed by hand — the day's sessions are still worth offering, because
+      // one of them is the session in question and a person can tell which.
+      const match = sid
+        ? res.sessions.find(x => String(x.id) === String(sid)) || null
+        : null;
+      setDetailSession({
+        id: v.id, state: 'done', session: match, sameDay: res.sessions, hadId: Boolean(sid)
+      });
+    })();
+
+    return () => { dropped = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentDetailId]);
+
+  /**
    * Read a cycle's sessions and work out which ones the coach joined late.
    *
    * Nothing is written. What comes back is a list to look at: every late join
@@ -4670,16 +4851,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * it lands on and what that step costs — plus the sessions with no join
    * recorded at all, which are not lateness and are never charged here.
    */
-  const scanLateJoins = async () => {
+  const scanLateJoins = async (wantedPeriod = null, { quiet = false } = {}) => {
     const months = [...new Set([...historicMonths, ...currentMonth].map(r => r.period_month))];
     // The open cycle, not the last row in the list. A pay cycle is named for
     // the month it ends in, so "October 2026" runs 16 Sep to 15 Oct — and
     // reading one cycle while looking at another cycle's pay is the one way to
     // come away believing the figures went nowhere.
-    const period = months.includes(latePeriod)
-      ? latePeriod
+    // What the caller asked for, then what the picker says, then the open
+    // cycle. The first is how the scheduled read names its own cycle without
+    // moving the picker underneath whoever is looking at the page.
+    const period = (wantedPeriod && months.includes(wantedPeriod)) ? wantedPeriod
+      : months.includes(latePeriod) ? latePeriod
       : (currentMonth[0]?.period_month || months[months.length - 1] || '');
-    if (!period) { showToast('No cycles on record yet.', 'warning'); return; }
+    if (!period) {
+      if (!quiet) showToast('No cycles on record yet.', 'warning');
+      return null;
+    }
 
     const records = [...currentMonth, ...historicMonths].filter(r => r.period_month === period);
     const { period_start: from, period_end: to } = records[0];
@@ -4698,7 +4885,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
           : `None of these coaches has an App Coach ID. The app's sessions are keyed `
             + `by it — set it under Details on the profile, then read again.`
       });
-      return;
+      return null;
     }
 
     setLateScan({ period, from, to, busy: true, of: withId.length });
@@ -4727,7 +4914,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // twice must not charge twice, and the session id is what makes the two
     // readings the same reading.
     const filed = new Set(violations
-      .filter(v => v.reported_by === LATE_REPORTER)
+      .filter(isSystemLateJoin)
       .map(sessionIdOf)
       .filter(Boolean));
 
@@ -4766,19 +4953,107 @@ export default function App({ session = null, profile = null, onSignOut = null }
       notHeld: acc.notHeld + res.notHeld
     }), { sessions: 0, onTime: 0, noJoinRecord: 0, notHeld: 0 });
 
-    setLateScan({
+    const scan = {
       period, from, to, findings, errors, noId, totals,
       coachesRead: results.length,
       readAt: new Date().toLocaleString('en-IN')
-    });
+    };
+    setLateScan(scan);
 
     const fresh = findings.filter(f => !f.already).length;
-    showToast(
-      fresh
-        ? `${fresh} late join(s) found in ${period}. Nothing is charged until you file them.`
-        : `No new late joins in ${period} across ${results.length} coach(es).`,
-      fresh ? 'warning' : 'success');
+    if (!quiet) {
+      showToast(
+        fresh
+          ? `${fresh} late join(s) found in ${period}. Nothing is charged until you file them.`
+          : `No new late joins in ${period} across ${results.length} coach(es).`,
+        fresh ? 'warning' : 'success');
+    }
+
+    // Handed back as well as put in state, because the scheduled read acts on
+    // it in the same breath and cannot wait for a re-render to see it.
+    return scan;
   };
+
+  /* ---------------------------------------------------------------------
+   * The scheduled read.
+   *
+   * At 4 a.m. India time on the 16th, the cycle that closed the previous day
+   * is read from the app's session list. Every late join in it is worked out
+   * and shown.
+   *
+   * Nothing is filed. The read and the filing have always been two steps
+   * here, and a schedule is the worst possible reason to collapse them: a
+   * job that charged people at 4 a.m. would take money off a coach before
+   * any human being had looked at the figure, and the first anybody would
+   * know of a bad reading is the payslip. So the schedule does the part that
+   * costs nothing, and a person still presses the button.
+   *
+   * There is no server doing this. The app is a page in a browser, so the
+   * read happens the first time somebody with the right role opens the page
+   * after the moment has passed — the same cycle, the same result, a few
+   * hours later than 4 a.m. The marker is written before the read starts
+   * rather than after, so two people opening the page at once cannot both
+   * run it; whoever claims the cycle does it.
+   * ------------------------------------------------------------------ */
+  const autoScanTried = useRef(false);
+
+  useEffect(() => {
+    if (!isStateLoaded) return;
+    // Reading the whole roster off the admin API is not something a Coach or
+    // Finance account should set off by opening a page.
+    if (!INCIDENT_APPROVER_ROLES.includes(currentRole) && currentRole !== 'Showrunner') return;
+
+    const due = autoScanDueCycle();
+    if (!due.month || lateAutoRun === due.month) return;
+    // Only cycles the app actually has records for. Before the first one
+    // closes there is nothing to read.
+    const months = new Set([...historicMonths, ...currentMonth].map(r => r.period_month));
+    if (!months.has(due.month)) return;
+    // Once per page, whatever else re-renders.
+    if (autoScanTried.current) return;
+    autoScanTried.current = true;
+
+    (async () => {
+      // Claim it first. A failed read leaves the cycle claimed and unread
+      // until somebody presses the button, which is the right way round:
+      // retrying an API that just refused, on every page load, is how an
+      // admin token gets rate-limited.
+      const claimed = await saveSetting('late_scan_last_run', due.month, 'Scheduled read');
+      if (!claimed.ok) return;
+      setLateAutoRun(due.month);
+      setLatePeriod(due.month);
+
+      const scan = await scanLateJoins(due.month, { quiet: true });
+      if (!scan) return;
+
+      // Filed, and filed approved. There is no proposer here whose judgement
+      // a manager would be checking: the reading is the app's own record of
+      // when a session was due and when the coach joined it, and two
+      // timestamps subtracted are the same number whoever looks at them.
+      //
+      // The duplicate guard is what makes this safe to run unattended. Every
+      // incident carries the id of the session it came from, so a cycle read
+      // again — by the schedule or by hand — files nothing it has filed
+      // before.
+      const res = commitLateJoins(scan, {
+        approved: true, by: 'Scheduled read', quiet: true
+      });
+
+      logAudit('Session List Read',
+        `Scheduled read of ${due.month}, due ${new Date(due.at).toLocaleString('en-IN')}. ` +
+        (res.filed > 0
+          ? `${res.filed} late join(s) worth ${rupees(res.worth)} across ${res.coaches} ` +
+            `coach(es) filed and approved — charged on the ${due.month} cycle.`
+          : `Nothing new to file.`));
+
+      if (res.filed > 0) {
+        showToast(
+          `${due.month} was read automatically: ${res.filed} late join(s) worth ` +
+          `${rupees(res.worth)} filed on that cycle.`, 'warning');
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStateLoaded, currentRole, lateAutoRun]);
 
   /**
    * File the late joins that were read, as incidents.
@@ -4787,44 +5062,53 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * does it. Each incident carries the session it came from, which is what
    * stops a second reading filing the same lateness twice.
    */
-  const fileLateJoins = () => {
+  /**
+   * Turn a reading into incidents.
+   *
+   * Shared by the two ways that happens — the window somebody opens, and
+   * the read that runs on the 16th — which differ in one thing and should
+   * differ in nothing else:
+   *
+   *   `approved` the scheduled read files its incidents approved. Approval
+   *              exists so that a person's judgement is checked by their
+   *              manager; a subtraction of two timestamps is not a
+   *              judgement, and there is no proposer to hold it against.
+   *
+   * Everything else — the duplicate guard, the locked-cycle guard, the
+   * streak reset, the audit line — is the same either way, because a
+   * difference between them is a difference nobody would find until a
+   * payslip was wrong.
+   */
+  const commitLateJoins = (scan, { approved = false, by = null, quiet = false } = {}) => {
     if (!verifyAccess("Super Admin,HR Manager,Reporting Manager,Showrunner")) {
       showToast(`The ${currentRole} role cannot record incidents.`, 'danger');
-      return;
+      return { filed: 0 };
     }
     if (payrollLocked) {
       showToast('Incidents are locked: the cycle is closed.', 'danger');
-      return;
+      return { filed: 0 };
     }
-    const scan = lateScan;
     const fresh = (scan?.findings || []).filter(f => !f.already);
-    if (fresh.length === 0) { showToast('Nothing new to file.', 'info'); return; }
+    if (fresh.length === 0) {
+      if (!quiet) showToast('Nothing new to file.', 'info');
+      return { filed: 0 };
+    }
 
     const records = [...currentMonth, ...historicMonths].filter(r => r.period_month === scan.period);
     if (records.some(r => r.status === 'FINANCE_LOCKED')) {
       showToast(`${scan.period} is finance-locked. Reopen it on Close & pay first.`, 'danger');
-      return;
+      return { filed: 0 };
     }
 
     const money = fresh.reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
     const affected = [...new Set(fresh.map(f => f.coach_id))];
 
-    if (!window.confirm(
-      `File ${fresh.length} late-join incident(s) for ${scan.period}?\n\n` +
-      `  • charged on the ${scan.period} cycle, ${scan.from} to ${scan.to}\n` +
-      `  • ${affected.length} coach(es)\n` +
-      `  • ${rupees(money)} in penalties\n` +
-      `  • each one carries the session it was read from, so reading again ` +
-      `will not charge it twice\n\n` +
-      (needsApproval
-        ? `\nYour role proposes incidents rather than charging them, so these go ` +
-          `to each coach's Reporting Manager first. Nothing is deducted, and no ` +
-          `streak is reset, until they approve.\n`
-        : `A violation resets a coach's five-star streak to zero, so the streaks ` +
-          `of those ${affected.length} coach(es) are reset as well.\n`) +
-      `\nCoaches can acknowledge or appeal these in the usual way.`)) return;
-
-    const needsApproval = RAISE_NEEDS_APPROVAL(currentRole);
+    // There was a window.confirm here whose message read `needsApproval`
+    // three lines above the `const` that declares it. Every press of File
+    // threw before it could ask, so nothing was ever filed from this panel.
+    // What it was trying to say is now in the window that opens instead,
+    // where it can be read properly and checked against the readings.
+    const needsApproval = approved ? false : RAISE_NEEDS_APPROVAL(currentRole);
     const stamp = Date.now().toString().substring(7);
     const rows = fresh.map((f, i) => ({
       id: `VIO_${stamp}${String(i).padStart(3, '0')}`,
@@ -4836,6 +5120,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
       incident_date: f.session.day,
       incident_time: f.session.time,
       reported_by: LATE_REPORTER,
+      // The session, as fields rather than as a sentence.
+      //
+      // All of this was already read from the app and then written into
+      // `evidence` as prose, where nothing could use it: the register could
+      // show the incident but not which session it was or who was waiting,
+      // and the only way back to that was to read the paragraph. The id is
+      // kept too, so the session can be read again later.
+      session_id: f.session.id ? String(f.session.id) : undefined,
+      session_label: f.session.name || undefined,
+      client_name: f.session.member || undefined,
       // Measured by the app, raised by a person. Who that person was decides
       // whether it charges straight away or waits for the manager.
       raised_by_role: currentRole,
@@ -4865,12 +5159,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }));
 
     logAudit('Late Joins Filed',
-      `${actorName} filed ${fresh.length} late-join incident(s) for ${scan.period} ` +
+      `${by || actorName} filed ${fresh.length} late-join incident(s) for ${scan.period} ` +
       `(${scan.from} to ${scan.to}) worth ${rupees(money)} across ${affected.length} ` +
       `coach(es), read from the app's own record of when each session started and ` +
       `when the coach joined it.`);
 
-    showToast(
+    if (!quiet) showToast(
       needsApproval
         ? `${fresh.length} incident(s) worth ${rupees(money)} sent to the Reporting ` +
           `Manager(s) of ${affected.length} coach(es). Nothing is charged until they approve.`
@@ -4878,6 +5172,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
           `the ${scan.period} cycle (${scan.from} to ${scan.to}) — open that cycle in the ` +
           `Payroll Calculator to see them, not a different one.`,
       needsApproval ? 'info' : 'success');
+
+    return { filed: fresh.length, worth: money, coaches: affected.length };
   };
 
   const openMonthsForCoach = (coachId, fromMonth, toMonth) => {
@@ -5021,7 +5317,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
             consequence: consequence.consequence,
             penalty_amount: consequence.amount,
             incident_date: day, incident_time: null,
-            reported_by: 'System — attendance',
+            reported_by: ATTENDANCE_REPORTER,
             evidence, status: 'Pending_Acknowledge'
           };
           newVios.push(row);
@@ -5218,7 +5514,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         penalty_amount: consequence.amount,
         incident_date: workingDay,
         incident_time: null,
-        reported_by: 'System — attendance',
+        reported_by: ATTENDANCE_REPORTER,
         evidence,
         status: 'Pending_Acknowledge'
       }]);
@@ -5250,16 +5546,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
             ? { ...d, outcome: 'leave', lop_days: 0, planned: false, cover_type_id: cover } : d));
 
         const { occurrence, consequence } = recordAttendanceViolation(
-          NO_SHOW_VIOLATION,
-          `No login recorded for ${workingDay}. Covered by ${leaveType(cover)?.label || cover}; ` +
-          `${day.expected} h were expected.`);
+          APP_LOGIN_VIOLATION,
+          `No login or logout recorded in the app for ${workingDay}. Covered by ` +
+          `${leaveType(cover)?.label || cover}; ${day.expected} h were expected.`);
 
         logAudit("Absence Covered From Balance",
           `${coach.name} (${coach.id}) — ${workingDay} taken from ${leaveType(cover)?.label || cover} ` +
-          `instead of Loss of Pay. No-Show occurrence #${occurrence}.`);
+          `instead of Loss of Pay. Not logged in, occurrence #${occurrence}.`);
         showToast(
           `No login on ${workingDay} — taken from their ${leaveType(cover)?.label || cover}. ` +
-          `Still recorded as No-Show #${occurrence}: ${consequence.consequence}.`, "warning");
+          `Recorded as not logged in #${occurrence}: ${consequence.consequence}. ` +
+          `They can ask for the day to be regularised.`, "warning");
         return;
       }
 
@@ -5281,25 +5578,28 @@ export default function App({ session = null, profile = null, onSignOut = null }
         `(logged ${logged} h of ${day.expected} h)${onLeave ? ', approved leave' : ', unplanned'}.`);
 
       // Nobody logged in at all, and no leave covers the day. That is two
-      // separate consequences: Loss of Pay for the day's pay, and a No-Show
-      // against conduct, which carries its own escalating ladder. Only the pay
-      // half was ever recorded, so a coach could miss day after day and the
-      // matrix would show nothing — while the reports counted a No-Show column
-      // that nothing ever wrote to.
+      // separate consequences: Loss of Pay for the day's pay, and an incident
+      // for the missing login, which carries its own escalating ladder.
+      //
+      // The incident says what the settler can actually see — that the app has
+      // no record of this day — and not that a client was let down, which it
+      // has no way of knowing. It is the mildest ladder in the book and the
+      // only one a coach can clear themselves, by asking for the day to be
+      // regularised.
       //
       // A half-worked day is not a no-show: they turned up. That still settles
       // as Loss of Pay alone.
       if (absence) {
         const { occurrence, consequence } = recordAttendanceViolation(
-          NO_SHOW_VIOLATION,
-          `No login recorded for ${workingDay}, and no Holiday or Paid balance was left ` +
-          `to cover it. ${day.expected} h were expected.`);
-        logAudit("No-Show Recorded",
-          `${coach.name} (${coach.id}) did not log in on ${workingDay} — ` +
+          APP_LOGIN_VIOLATION,
+          `No login or logout recorded in the app for ${workingDay}, and no Holiday ` +
+          `or Paid balance was left to cover it. ${day.expected} h were expected.`);
+        logAudit("Not Logged In Recorded",
+          `${coach.name} (${coach.id}) did not log in on the app on ${workingDay} — ` +
           `occurrence #${occurrence}, ${consequence.consequence}.`);
         showToast(
-          `No login on ${workingDay}: ${day.lopDays} day Loss of Pay, and No-Show ` +
-          `occurrence #${occurrence} — ${consequence.consequence}.`, "danger");
+          `No login on ${workingDay}: ${day.lopDays} day Loss of Pay, and not logged in ` +
+          `#${occurrence} — ${consequence.consequence}. Regularising the day clears it.`, "danger");
         return;
       }
 
@@ -5385,6 +5685,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     setAttendanceRegularizations(prev => [newReg, ...prev]);
 
+    // The incident the settler raised for this day stops being charged. If an
+    // approver entered it, the day is settled outright; if the coach asked, it
+    // waits with the request.
+    if (byApprover) {
+      reverseSettledDay(raiseRegCoach.id, raiseRegDate,
+        `Regularization entered and approved by ${actorName}.`, PENALTY_REGULARIZED);
+    } else {
+      const held = holdIncidentsForRegularization(raiseRegCoach.id, raiseRegDate, newReg.id);
+      if (held > 0) {
+        logAudit("Incident Held For Regularization",
+          `${raiseRegCoach.name} (${raiseRegCoach.id}) — ${held} attendance incident(s) on ` +
+          `${raiseRegDate} are not charged while the regularisation is decided.`);
+      }
+    }
+
     // An approved regularisation is the attendance: write the login it stands
     // for, the same record the approval path writes, or the day still reads as
     // nobody having turned up.
@@ -5439,7 +5754,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       // absence must give back its Loss of Pay before these hours are credited,
       // or it is charged and paid for at once.
       reverseSettledDay(reg.coach_id, reg.working_day,
-        `Regularization approved by ${actorName}.`);
+        `Regularization approved by ${actorName}.`, PENALTY_REGULARIZED);
 
       const newLog = {
         id: `ATT_REG_${Date.now()}`,
@@ -5476,6 +5791,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
         decided_at: new Date().toISOString(),
         decision_note: note
       } : r));
+
+      releaseIncidentsAfterRefusal(reg.coach_id, reg.working_day,
+        `Regularization refused by ${actorName}: ${note}`);
 
       logAudit("Attendance Regularization Rejected",
         `${reg.coach_name} (${reg.coach_id}) regularization for ${reg.working_day} rejected by ${currentRole}: ${note}`);
@@ -5908,7 +6226,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (kind === 'penalties') {
       name = `attendance-penalties_${currentPeriodMonth}`;
       rows.push(['Coach ID', 'Name', 'Date', 'Violation', 'Occurrence', 'Consequence', 'Charged']);
-      for (const v of violations.filter(x => x.reported_by === 'System — attendance'
+      for (const v of violations.filter(x => isSystemAttendance(x)
         && inCycle(x.incident_date) && inAttendanceScope(x.coach_id))) {
         const c = coaches.find(x => x.id === v.coach_id);
         rows.push([v.coach_id, c?.name || '', v.incident_date, v.type,
@@ -6252,7 +6570,51 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * excludes a waived one from pay. Deleting it would quietly reset the
    * ladder for everything after it.
    */
-  const reverseSettledDay = (coachId, workingDay, why) => {
+  /**
+   * A coach has asked for a day to be regularised, so the incident the
+   * settler raised for that day stops being charged while the question is
+   * open.
+   *
+   * The charge is paused rather than cancelled. A missed punch is as often
+   * the app's fault as the coach's, and taking the money first and refunding
+   * it after the manager agrees is the wrong way round — the refund lands in
+   * a later cycle than the deduction, and on a locked cycle it does not land
+   * at all. Nothing moves until somebody has decided.
+   *
+   * Only incidents the settler filed are touched. What a person recorded by
+   * hand is their judgement, and a regularisation request is not an answer
+   * to it.
+   */
+  const holdIncidentsForRegularization = (coachId, workingDay, regId) => {
+    let held = 0;
+    setViolations(prev => prev.map(v => {
+      if (v.coach_id !== coachId || v.incident_date !== workingDay) return v;
+      if (!isSystemAttendance(v)) return v;
+      if (!isPenaltyChargeable(v)) return v;
+      held += 1;
+      return {
+        ...v,
+        status: PENALTY_REG_RAISED,
+        regularization_id: regId,
+        decision_note: 'Held: the coach has asked for this day to be regularised.'
+      };
+    }));
+    return held;
+  };
+
+  /**
+   * The regularisation was refused, so the day stands as the app recorded it
+   * and the incident goes back to being charged — at the status it would have
+   * had if it had never been questioned.
+   */
+  const releaseIncidentsAfterRefusal = (coachId, workingDay, why) => {
+    setViolations(prev => prev.map(v =>
+      (v.coach_id === coachId && v.incident_date === workingDay
+        && v.status === PENALTY_REG_RAISED)
+        ? { ...v, status: 'Pending_Acknowledge', decision_note: why } : v));
+  };
+
+  const reverseSettledDay = (coachId, workingDay, why, settleAs = 'Waived') => {
     const row = attendanceDays.find(d => d.coach_id === coachId && d.working_day === workingDay);
     if (!row) return false;
 
@@ -6281,10 +6643,16 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setHistoricMonths(patch);
     }
 
+    // What the incident becomes matters as much as that it stops being
+    // charged. A waiver forgives the money and keeps the occurrence, which is
+    // right for a day that happened and was excused — and wrong for a day the
+    // app simply failed to record, where leaving the occurrence behind would
+    // push the coach's next real incident up a rung for something they have
+    // just been cleared of. The caller says which of the two this is.
     setViolations(prev => prev.map(v =>
       (v.coach_id === coachId && v.incident_date === workingDay
-        && v.reported_by === 'System — attendance' && isPenaltyChargeable(v))
-        ? { ...v, status: 'Waived', decision_note: why } : v));
+        && isSystemAttendance(v) && isPenaltyChargeable(v))
+        ? { ...v, status: settleAs, decision_note: why } : v));
 
     setAttendanceDays(prev => prev.filter(d =>
       !(d.coach_id === coachId && d.working_day === workingDay)));
@@ -6336,7 +6704,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const inWindow = (d) => d >= from && d <= to;
 
     const vios = violations.filter(v =>
-      v.reported_by === 'System — attendance' && inWindow(v.incident_date));
+      isSystemAttendance(v) && inWindow(v.incident_date));
     const days = attendanceDays.filter(d => inWindow(d.working_day));
 
     if (vios.length === 0 && days.length === 0) {
@@ -6352,10 +6720,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     if (!window.confirm(
       `Erase what the system settled in ${periodMonth} (${from} to ${to})?\n\n` +
-      `  \u2022 ${vios.length} system-raised incident(s), worth \u20b9${money.toLocaleString('en-IN')}\n` +
-      `  \u2022 ${lopDays} day(s) of Loss of Pay, given back\n` +
-      `  \u2022 ${covered.length} day(s) covered from leave, returned to balance\n` +
-      `  \u2022 across ${coachCount} coach(es)\n\n` +
+      `  • ${vios.length} system-raised incident(s), worth \u20b9${money.toLocaleString('en-IN')}\n` +
+      `  • ${lopDays} day(s) of Loss of Pay, given back\n` +
+      `  • ${covered.length} day(s) covered from leave, returned to balance\n` +
+      `  • across ${coachCount} coach(es)\n\n` +
       `Incidents filed by a person are not touched.\n\n` +
       `The occurrence ladder resets with them, so the next real no-show starts ` +
       `again at the first step. There is no undo.`)) return;
@@ -6433,8 +6801,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return false;
     }
 
+    const regId = `REG_${Date.now().toString().substring(6)}`;
+
+    // This has always told the coach that nothing is charged while it waits.
+    // Until the incident was actually held it was only true of the Loss of
+    // Pay: the attendance incident went on being deducted underneath.
+    holdIncidentsForRegularization(coach.id, workingDay, regId);
+
     setRegularisations(prev => [...prev, {
-      id: `REG_${Date.now().toString().substring(6)}`,
+      id: regId,
       coach_id: coach.id,
       working_day: workingDay,
       // No leave type: the day has already been paid for by the Holiday/Paid
@@ -6482,7 +6857,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       // incident with it — rather than booking the day against some other
       // balance. `reverseSettledDay` gives back whichever was taken.
       reverseSettledDay(coach.id, reg.working_day,
-        `Regularisation approved by ${actorName}.`);
+        `Regularisation approved by ${actorName}.`, PENALTY_REGULARIZED);
 
       // Then write the day down as worked, so the next sweep does not look at
       // an unlogged day and charge it all over again.
@@ -6503,6 +6878,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
         }
       ]);
       outcome = 'Worked';
+    }
+
+    if (decision === 'Rejected') {
+      releaseIncidentsAfterRefusal(coach?.id ?? reg.coach_id, reg.working_day,
+        `Regularisation refused by ${actorName}: ${note}`);
     }
 
     setRegularisations(prev => prev.map(r => r.id === reg.id
@@ -7971,6 +8351,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
       reported_by: actorName,
       raised_by_role: currentRole,
       evidence: vioEvidence,
+      // Left off entirely rather than stored blank, so a record that carries
+      // a session is distinguishable from one that was never asked for it.
+      ...(isSessionBound(vioType) && vioSession.trim()
+        ? { session_label: vioSession.trim() } : {}),
+      ...(isSessionBound(vioType) && vioClient.trim()
+        ? { client_name: vioClient.trim() } : {}),
       status: needsApproval ? PENALTY_AWAITING_APPROVAL : "Pending_Acknowledge"
     };
 
@@ -7982,7 +8368,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       const rm = coaches.find(c => c.id === vioCoachId)?.reporting_manager_id;
       logAudit("Incident Proposed",
         `${actorName} (${currentRole}) proposed ${vioType} (occurrence #${occurrence}) for ` +
-        `${coach.name}. ${rupees(finalAmount)} \u2014 waiting on ` +
+        `${coach.name}. ${rupees(finalAmount)} — waiting on ` +
         `${rm || 'a Reporting Manager'} to approve it. Nothing is charged yet.`);
       showToast(
         `Sent to ${coach.name}'s Reporting Manager. It is on the record and ` +
@@ -8018,6 +8404,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * otherwise have proposals nobody could ever decide — the same hole the
    * appeals queue had, and it stranded real people in it.
    */
+  // A new list starts at the top. Without this, switching from a cycle with
+  // 1,200 incidents to one with 30 leaves "showing 1,200 of 30".
+  useEffect(() => {
+    setPenaltyLimit(PENALTY_PAGE);
+  }, [penaltyTab, penaltyFilter, penaltyCycle, penaltyCoach]);
+
   const incidentsAwaitingMe = useMemo(() => {
     if (!INCIDENT_APPROVER_ROLES.includes(currentRole)) return [];
     return violations
@@ -8042,6 +8434,123 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * A refusal must say why. The coach can see this, and "no" with no reason
    * attached is what makes somebody ask the same question again next month.
    */
+  /**
+   * Refuse an incident that has already been recorded.
+   *
+   * The scheduled read files its late joins approved, because a subtraction
+   * of two timestamps is not a judgement and there is no proposer whose
+   * judgement a manager would be checking. That is right for the arithmetic
+   * and wrong for the exceptions: the app can see that a coach joined six
+   * minutes late, and cannot see that the client moved the session, or that
+   * the slot was double-booked, or that the app itself was down.
+   *
+   * So the charge stands by default and a manager can set it aside, with a
+   * reason the coach can read. Refused rather than deleted: the session was
+   * late, that is a fact and it stays on the record — what changes is that
+   * nobody pays for it, and it stops counting towards the next one.
+   */
+  const rejectIncident = (vioId) => {
+    if (!INCIDENT_APPROVER_ROLES.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot set aside a charge.`, 'danger');
+      return;
+    }
+    const vio = violations.find(v => v.id === vioId);
+    if (!vio) return;
+    if (!isPenaltyChargeable(vio)) {
+      showToast('That one is not being charged.', 'info');
+      return;
+    }
+    const coach = coaches.find(c => c.id === vio.coach_id);
+    if (currentRole === 'Reporting Manager'
+        && coach?.reporting_manager_id !== currentRmContext) {
+      showToast(`${coach?.name || vio.coach_id} does not report to you.`, 'danger');
+      return;
+    }
+
+    const cycle = (() => {
+      try { return getPeriodForDate(new Date(`${vio.incident_date}T12:00:00`)).period_month; }
+      catch { return null; }
+    })();
+    if ([...currentMonth, ...historicMonths]
+          .some(r => r.period_month === cycle && r.status === 'FINANCE_LOCKED')) {
+      showToast(`${cycle} is finance-locked. Reopen it on Close & pay first.`, 'danger');
+      return;
+    }
+
+    // A settler-raised incident and the Loss of Pay for the same day are one
+    // event recorded twice. Setting aside the incident without giving the day
+    // back would leave a deduction with nothing on the record explaining it —
+    // the coach sees a day of pay missing and finds the incident for it
+    // refused. They move together, exactly as they do when one is deleted.
+    const settledDay = isSystemAttendance(vio)
+      ? attendanceDays.find(d =>
+          d.coach_id === vio.coach_id && d.working_day === vio.incident_date)
+      : null;
+    const lopBack = Number(settledDay?.lop_days) || 0;
+    const coverBack = settledDay?.cover_type_id || null;
+
+    const note = window.prompt(
+      `Set aside ${vio.type} for ${coach?.name || vio.coach_id} on ${vio.incident_date}?\n\n` +
+      `${rupees(vio.penalty_amount)} stops being charged on ${cycle}, and it stops ` +
+      `counting towards their next one.\n` +
+      (lopBack > 0
+        ? `The ${lopBack} day(s) of Loss of Pay for that day come back too.\n` : '') +
+      (coverBack
+        ? `So does the ${leaveType(coverBack)?.label || coverBack} day spent covering it.\n` : '') +
+      `\nWhy? The coach can see this, and it is not optional:`);
+    if (note === null) return;
+    if (!note.trim()) {
+      showToast('Setting a charge aside needs a reason.', 'warning');
+      return;
+    }
+
+    // The day's pay first, then the incident's status — the same order a
+    // delete and a whole-cycle erase use, so all three leave the record in
+    // the same state.
+    if (lopBack > 0) {
+      const patch = (list) => list.map(r => {
+        if (r.coach_id !== vio.coach_id || r.period_month !== cycle) return r;
+        return {
+          ...r,
+          lop_days: Math.max(0, (Number(r.lop_days) || 0) - lopBack),
+          unplanned_lop_days: Math.max(0, (Number(r.unplanned_lop_days) || 0) - lopBack)
+        };
+      });
+      setCurrentMonth(patch);
+      setHistoricMonths(patch);
+    }
+    if (coverBack) {
+      const { year } = leaveYearFor(new Date(`${vio.incident_date}T12:00:00`));
+      setLeaveBalances(prev => prev.map(b =>
+        (b.coach_id === vio.coach_id && b.leave_year === year && b.type_id === coverBack)
+          ? { ...b, used: Math.max(0, (Number(b.used) || 0) - 1) } : b));
+    }
+    if (settledDay) {
+      setAttendanceDays(prev => prev.filter(d =>
+        !(d.coach_id === vio.coach_id && d.working_day === vio.incident_date)));
+    }
+
+    setViolations(prev => prev.map(v => v.id === vioId ? {
+      ...v,
+      status: PENALTY_REFUSED,
+      decided_by: actorName,
+      decided_at: new Date().toISOString(),
+      decision_note: note.trim()
+    } : v));
+
+    logAudit('Incident Set Aside',
+      `${actorName} set aside ${vio.type} #${vio.occurrence_no} for ` +
+      `${coach?.name || vio.coach_id} on ${vio.incident_date} ` +
+      `(${rupees(vio.penalty_amount)}, ${cycle} cycle)` +
+      (lopBack > 0 ? `, and gave back ${lopBack} day(s) of Loss of Pay` : '') +
+      (coverBack ? ` and 1 ${leaveType(coverBack)?.label || coverBack} day` : '') +
+      `: ${note.trim()}`);
+    showToast(
+      `Set aside. ${rupees(vio.penalty_amount)} no longer comes off ${cycle}` +
+      (lopBack > 0 ? `, and ${lopBack} day(s) of Loss of Pay came back` : '') + `.`,
+      'success');
+  };
+
   const decideIncident = (vioId, action) => {
     if (!INCIDENT_APPROVER_ROLES.includes(currentRole)) {
       showToast(`The ${currentRole} role cannot decide incidents.`, 'danger');
@@ -8408,13 +8917,109 @@ export default function App({ session = null, profile = null, onSignOut = null }
       action === 'Approve' ? "success" : "warning");
   };
 
-  // Delete violation
+  /**
+   * Delete one incident outright.
+   *
+   * Deleted, not waived: a waiver forgives the money and keeps the occurrence,
+   * so the coach's next incident is still priced a rung higher. That is right
+   * for something that happened and was excused, and wrong for something that
+   * should never have been recorded.
+   *
+   * Guarded on the cycle, not just the role. Removing an incident from a
+   * cycle Finance has closed changes a figure somebody has already paid
+   * against, and the payslip would no longer match the payment.
+   */
   const handleDeleteViolation = (vioId) => {
-    if (window.confirm("Are you sure you want to delete this violation record? This removes the payroll deduction.")) {
-      setViolations(prev => prev.filter(v => v.id !== vioId));
-      logAudit("Violation Deleted", `Removed violation incident ${vioId}`);
-      showToast("Violation deleted.");
+    if (!PROFILE_PAY_ROLES.includes(currentRole)) {
+      showToast(`The ${currentRole} role cannot remove a charge.`, 'danger');
+      return;
     }
+    const vio = violations.find(v => v.id === vioId);
+    if (!vio) return;
+
+    const cycle = (() => {
+      try { return getPeriodForDate(new Date(`${vio.incident_date}T12:00:00`)).period_month; }
+      catch { return null; }
+    })();
+    const locked = [...currentMonth, ...historicMonths]
+      .some(r => r.period_month === cycle && r.status === 'FINANCE_LOCKED');
+    if (locked) {
+      showToast(`${cycle} is finance-locked. Reopen it on Close & pay first.`, 'danger');
+      return;
+    }
+
+    const coach = coaches.find(c => c.id === vio.coach_id);
+
+    // An incident the settler raised and the Loss of Pay for the same day are
+    // one event seen twice: the app found no login, so it docked the day and
+    // recorded an incident for it. Removing one without the other leaves
+    // either a deduction nothing explains, or an explanation with no
+    // deduction. They are undone together or not at all.
+    //
+    // An incident a person filed has no day behind it — they watched
+    // something happen — so there is nothing to give back.
+    const settledDay = isSystemAttendance(vio)
+      ? attendanceDays.find(d =>
+          d.coach_id === vio.coach_id && d.working_day === vio.incident_date)
+      : null;
+    const lopBack = Number(settledDay?.lop_days) || 0;
+    const coverBack = settledDay?.cover_type_id || null;
+
+    if (!window.confirm(
+      `Delete this incident?\n\n` +
+      `  • ${vio.type}, occurrence #${vio.occurrence_no}\n` +
+      `  • ${coach?.name || vio.coach_id} on ${vio.incident_date}\n` +
+      `  • ${isPenaltyChargeable(vio)
+            ? `${rupees(vio.penalty_amount)} comes off the ${cycle} cycle`
+            : 'nothing is charged for it'}\n\n` +
+      (lopBack > 0
+        ? `  • the ${lopBack} day(s) of Loss of Pay for ${vio.incident_date} come back\n`
+        : '') +
+      (coverBack
+        ? `  • the ${leaveType(coverBack)?.label || coverBack} day spent covering it comes back\n`
+        : '') +
+      `\nIt is removed, not waived, so it stops counting towards this coach's \n` +
+      `occurrence ladder as well — their next one is priced a step lower.\n\n` +
+      `This cannot be undone.`)) return;
+
+    // The day's pay first, then the incident. Same order as erasing a whole
+    // cycle, so a single delete and a bulk erase leave the record in the
+    // same state.
+    if (lopBack > 0) {
+      const patch = (list) => list.map(r => {
+        if (r.coach_id !== vio.coach_id || r.period_month !== cycle) return r;
+        return {
+          ...r,
+          lop_days: Math.max(0, (Number(r.lop_days) || 0) - lopBack),
+          unplanned_lop_days: Math.max(0, (Number(r.unplanned_lop_days) || 0) - lopBack)
+        };
+      });
+      setCurrentMonth(patch);
+      setHistoricMonths(patch);
+    }
+    if (coverBack) {
+      const { year } = leaveYearFor(new Date(`${vio.incident_date}T12:00:00`));
+      setLeaveBalances(prev => prev.map(b =>
+        (b.coach_id === vio.coach_id && b.leave_year === year && b.type_id === coverBack)
+          ? { ...b, used: Math.max(0, (Number(b.used) || 0) - 1) } : b));
+    }
+    if (settledDay) {
+      setAttendanceDays(prev => prev.filter(d =>
+        !(d.coach_id === vio.coach_id && d.working_day === vio.incident_date)));
+    }
+
+    setViolations(prev => prev.filter(v => v.id !== vioId));
+    logAudit("Violation Deleted",
+      `${actorName} deleted ${vio.type} #${vio.occurrence_no} for ` +
+      `${coach?.name || vio.coach_id} on ${vio.incident_date} ` +
+      `(${rupees(vio.penalty_amount)}, ${cycle} cycle)` +
+      (lopBack > 0 ? `, and gave back ${lopBack} day(s) of Loss of Pay` : '') +
+      (coverBack ? ` and 1 ${leaveType(coverBack)?.label || coverBack} day` : '') +
+      `.`);
+    showToast(
+      `Deleted. ${rupees(vio.penalty_amount)} no longer comes off ${cycle}` +
+      (lopBack > 0 ? `, and ${lopBack} day(s) of Loss of Pay came back` : '') + `.`,
+      'success');
   };
 
   // Acknowledge violation (by Coach)
@@ -8559,7 +9164,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
       extra_sessions: pay.extraSessions,
       violations: inPeriod.length,
       late_count: inPeriod.filter(v => v.type && v.type.includes('Late Arrival')).length,
-      noshow_count: inPeriod.filter(v => v.type && v.type.includes('No-Show')).length,
+      // Sessions missed, which is what this column has always meant. A
+      // missing login is not one, and since the two were split it no longer
+      // carries the words "No-Show" either way.
+      noshow_count: inPeriod.filter(
+        v => v.type === LEGACY_NO_SHOW || v.type === SESSION_NO_SHOW
+          || (v.type || '').includes('No-Show')).length,
       milestone: pay.milestoneIncentive,
       consistency: pay.consistencyBonus,
       streak: Number(record.five_star_streak) || 0,
@@ -9272,7 +9882,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       return;
     }
 
-    const names = moving.slice(0, 8).map(c => `  \u2022 ${c.name} (${c.id}) \u2014 from ${squadTitle(c.reporting_manager_id)}`);
+    const names = moving.slice(0, 8).map(c => `  • ${c.name} (${c.id}) — from ${squadTitle(c.reporting_manager_id)}`);
     const more = moving.length > names.length ? `\n  \u2026 and ${moving.length - names.length} more` : '';
 
     if (!window.confirm(
@@ -9293,7 +9903,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     showToast(to
       ? `${moving.length} coach${moving.length === 1 ? '' : 'es'} now report to ${squadTitle(to)}.`
-      : `${moving.length} coach${moving.length === 1 ? ' has' : 'es have'} no manager \u2014 nobody ` +
+      : `${moving.length} coach${moving.length === 1 ? ' has' : 'es have'} no manager — nobody ` +
         `approves their leave or decides an incident against them until one is set.`,
       to ? 'success' : 'warning');
   };
@@ -9338,7 +9948,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
     showToast(to
       ? `${coach.name} now reports to ${label(to)}.`
-      : `${coach.name} now has no manager \u2014 nobody approves their leave or decides ` +
+      : `${coach.name} now has no manager — nobody approves their leave or decides ` +
         `an incident against them until one is set.`,
       to ? 'success' : 'warning');
   };
@@ -9362,7 +9972,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const squadShortName = (rmId) => {
     if (!rmId) return null;
     const label = RM_SCOPES.find(r => r.id === rmId)?.label;
-    return label ? (label.split('\u2014').pop() || label).trim() : rmId;
+    return label ? (label.split('—').pop() || label).trim() : rmId;
   };
 
   /** What to call a squad to a person: its manager, or failing that its name. */
@@ -9440,7 +10050,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       updateUserDraft(user.id, { rmEditing: false });
       const who = user.full_name || user.email;
       showToast(granted.length > 1
-        ? `${who} can now act as ${granted.join(', ')} \u2014 currently ${updated.role ?? draft.role}.`
+        ? `${who} can now act as ${granted.join(', ')} — currently ${updated.role ?? draft.role}.`
         : `${who} is now ${granted[0]}.`);
     } catch (e) {
       showToast(e.message || String(e), "danger");
@@ -9914,7 +10524,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </div>
                       </div>
                       {(() => {
-                        const fromAttendance = periodVios.filter(v => v.reported_by === 'System — attendance');
+                        const fromAttendance = periodVios.filter(isSystemAttendance);
                         const charged = periodVios
                           .filter(isPenaltyChargeable)
                           .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
@@ -14712,7 +15322,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <strong>Charge Loss of Pay</strong>
                       <p>
                         {chargeLop
-                          ? 'On. Settling a day with no login takes one day\u2019s pay \u2014 base pay \u00f7 26 \u2014 after Holiday and Paid leave have been drawn on.'
+                          ? 'On. Settling a day with no login takes one day’s pay — base pay \u00f7 26 — after Holiday and Paid leave have been drawn on.'
                           : 'Off. Days with no login are left unsettled and nothing is deducted. Turn this on once coaches are logging in and out of the app, or every absent day will read as a full day of Loss of Pay for people who were working normally.'}
                       </p>
                     </div>
@@ -14750,7 +15360,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     const rec = [...currentMonth, ...historicMonths].find(r => r.period_month === chosen);
                     const inWindow = (d) => rec && d >= rec.period_start && d <= rec.period_end;
                     const vios = rec ? violations.filter(v =>
-                      v.reported_by === 'System — attendance' && inWindow(v.incident_date)) : [];
+                      isSystemAttendance(v) && inWindow(v.incident_date)) : [];
                     const money = vios.filter(isPenaltyChargeable)
                       .reduce((sum, v) => sum + (Number(v.penalty_amount) || 0), 0);
                     const lop = rec ? attendanceDays
@@ -16730,7 +17340,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               }
                               const lopDays = settledRows.reduce((n, r) => n + (Number(r.lop_days) || 0), 0);
                               const monthVios = violations.filter(v => v.coach_id === coach.id
-                                && inMonth(v.incident_date) && v.reported_by === 'System — attendance');
+                                && inMonth(v.incident_date) && isSystemAttendance(v));
                               const vioCharged = monthVios.filter(isPenaltyChargeable)
                                 .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
                               const perDay = seesMoney ? lopPerDay(coach.coach_category,
@@ -16901,7 +17511,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               }
                               const dayVios = violations.filter(v =>
                                 v.coach_id === coach.id && v.incident_date === shown
-                                && v.reported_by === 'System — attendance');
+                                && isSystemAttendance(v));
                               const charged = dayVios.filter(isPenaltyChargeable)
                                 .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
                               const lopCost = Number(row.lop_days) > 0 && seesMoney
@@ -17546,7 +18156,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <option value="All">All Violation Types</option>
                       <option value="Late Arrival (<5 min)">Late Arrival (&lt;5 min)</option>
                       <option value="Late Arrival (>5 min)">Late Arrival (&gt;5 min)</option>
-                      <option value="Coach No-Show">Coach No-Show</option>
+                      <option value="Did Not Join the Session">Did Not Join the Session</option>
+                      <option value="Not Logged In on the App">Not Logged In on the App</option>
+                      {/* Retired, and kept here only because incidents filed
+                          under it are still on the record. */}
+                      <option value="Coach No-Show">Coach No-Show (before the split)</option>
                       <option value="Unplanned Absence (<4 hrs notice)">Unplanned Absence</option>
                       <option value="Repeated Roster Violations">Repeated Roster Violations</option>
                       <option value="Conduct">Conduct/Behavioral (HOP)</option>
@@ -17589,7 +18203,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       if (currentRole === "Reporting Manager" && coach.reporting_manager_id !== currentRmContext) return false;
 
                       const matchesSearch = coach.name.toLowerCase().includes(vioSearch.toLowerCase()) || coach.id.toLowerCase().includes(vioSearch.toLowerCase()) || v.id.toLowerCase().includes(vioSearch.toLowerCase());
-                      const matchesType = vioTypeFilter === "All" || v.type.includes(vioTypeFilter) || (vioTypeFilter === "Conduct" && !["Late Arrival", "Coach No-Show", "Unplanned Absence"].some(x => v.type.includes(x)));
+                      const matchesType = vioTypeFilter === "All" || v.type.includes(vioTypeFilter) || (vioTypeFilter === "Conduct" && !["Late Arrival", "Coach No-Show", "Did Not Join the Session", "Not Logged In on the App", "Unplanned Absence"].some(x => v.type.includes(x)));
                       const matchesStatus = vioStatusFilter === "All" || v.status === vioStatusFilter;
                       return matchesSearch && matchesType && matchesStatus;
                     }).map(v => {
@@ -18081,93 +18695,121 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 </div>
               </div>
 
-              {/* What a Showrunner has proposed, waiting on the manager who can
-                  charge it. First on the page because somebody is not being
-                  paid correctly until it is dealt with, in whichever
-                  direction. */}
-              {incidentsAwaitingMe.length > 0 && (
-                <div className="card" style={{ marginBottom: '1.5rem' }}>
-                  <div className="card-header-row">
-                    <h3>Waiting for your approval · {incidentsAwaitingMe.length}</h3>
-                    <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                      Proposed by a Showrunner. Nothing is deducted until you agree.
-                    </span>
-                  </div>
-                  <div className="table-container">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Coach</th>
-                          <th>When</th>
-                          <th>Violation</th>
-                          <th>Occurrence</th>
-                          <th>Consequence</th>
-                          <th className="text-right">Penalty</th>
-                          <th>Raised by</th>
-                          <th>What happened</th>
-                          <th className="actions-col">Decide</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {incidentsAwaitingMe.map(v => {
-                          const c = coaches.find(x => x.id === v.coach_id);
-                          return (
-                            <tr key={v.id}>
-                              <td>
-                                <strong>{c?.name || v.coach_id}</strong>
-                                <br /><small className="text-muted">{v.coach_id}</small>
-                              </td>
-                              {/* Formatted here rather than through a helper:
-                                  the two formatDate helpers in this file are
-                                  each local to another block, and reaching for
-                                  one from here is a blank screen. */}
-                              <td style={{ whiteSpace: 'nowrap' }}>
-                                {v.incident_date
-                                  ? new Date(v.incident_date).toLocaleDateString('en-IN',
-                                      { day: 'numeric', month: 'short', year: 'numeric' })
-                                  : '\u2014'}
-                                {v.incident_time && <><br /><small className="text-muted">{v.incident_time}</small></>}
-                              </td>
-                              <td>{v.type}</td>
-                              <td>#{v.occurrence_no}</td>
-                              <td><small>{v.consequence}</small></td>
-                              <td className="text-right"><strong>{rupees(v.penalty_amount)}</strong></td>
-                              <td>
-                                <small>{v.reported_by}</small>
-                                {v.raised_by_role && (
-                                  <><br /><small className="text-muted">{v.raised_by_role}</small></>
-                                )}
-                              </td>
-                              {/* The whole of it. A manager asked to take money
-                                  off somebody should not have to click through
-                                  to find out what they did. */}
-                              <td><small className="text-muted">{v.evidence || '\u2014 no detail given \u2014'}</small></td>
-                              <td className="actions-col">
-                                <div className="table-btn-group">
-                                  <button
-                                    className="btn-row-icon icon-save"
-                                    title={`Approve \u2014 ${rupees(v.penalty_amount)} will be deducted`}
-                                    onClick={() => decideIncident(v.id, 'Approve')}
-                                  >
-                                    <i className="bx bx-check"></i>
-                                  </button>
-                                  <button
-                                    className="btn-row-icon icon-cancel"
-                                    title="Refuse — nothing is charged and it does not count"
-                                    onClick={() => decideIncident(v.id, 'Reject')}
-                                  >
-                                    <i className="bx bx-x"></i>
-                                  </button>
-                                </div>
-                              </td>
+              {/* The approval queue now lives in the register's
+                  Approval tab, beside the other three. */}
+
+              {/* What the read found, before any of it is filed.
+                  Own window, because filing is the step that costs money and
+                  it should be the only thing on screen while it is decided —
+                  and because the duplicates belong next to the new ones,
+                  where "163 found, 9 already on the record" is one glance
+                  instead of a count that does not add up. */}
+              {lateReview && (() => {
+                const all = lateReview.findings || [];
+                const fresh = all.filter(f => !f.already);
+                const dupes = all.filter(f => f.already);
+                const money = fresh.reduce((t, f) => t + (Number(f.amount) || 0), 0);
+                const coachCount = new Set(fresh.map(f => f.coach_id)).size;
+                const close = () => setLateReview(null);
+                const proposing = RAISE_NEEDS_APPROVAL(currentRole);
+
+                return (
+                  <div className="hb-detail-backdrop" role="presentation" onClick={close}>
+                    <div className="hb-detail hb-review" role="dialog" aria-modal="true"
+                      aria-label={`Late joins read for ${lateReview.period}`}
+                      onClick={(ev) => ev.stopPropagation()}>
+                      <header className="hb-detail-head">
+                        <div>
+                          <h3>{lateReview.period} — {fresh.length} to file</h3>
+                          <span className="hb-st hb-st-info">
+                            Read {lateReview.readAt} · nothing charged yet
+                          </span>
+                        </div>
+                        <button type="button" className="hb-detail-x" onClick={close}
+                          aria-label="Close">&times;</button>
+                      </header>
+
+                      <div className="hb-detail-money">
+                        <span>
+                          {fresh.length} late join{fresh.length === 1 ? '' : 's'} across{' '}
+                          {coachCount} coach{coachCount === 1 ? '' : 'es'}, charged on the{' '}
+                          {lateReview.period} cycle
+                        </span>
+                        <strong>{rupees(money)}</strong>
+                      </div>
+
+                      {/* Said before the button, not after it. */}
+                      <p className="hb-review-warn">
+                        {proposing
+                          ? `Your role proposes incidents rather than charging them, so these
+                             go to each coach’s Reporting Manager. Nothing is deducted, and no
+                             streak is reset, until they approve.`
+                          : `Filing these deducts ${rupees(money)} on the ${lateReview.period}
+                             cycle and resets the five-star streak of ${coachCount} coach${
+                               coachCount === 1 ? '' : 'es'} to zero. Coaches can acknowledge
+                             or appeal in the usual way.`}
+                      </p>
+
+                      {dupes.length > 0 && (
+                        <p className="hb-review-dupe">
+                          <strong>{dupes.length} already on the record</strong> and skipped.
+                          Each incident carries the id of the session it was read from, so
+                          reading a cycle twice cannot charge the same lateness twice.
+                        </p>
+                      )}
+
+                      <div className="table-container hb-review-list">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Coach</th><th>Session</th><th>Client</th>
+                              <th>Due</th><th>Joined</th><th>Late</th>
+                              <th>Occurrence</th><th className="text-right">Penalty</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                          </thead>
+                          <tbody>
+                            {[...fresh, ...dupes].map((f, i) => (
+                              <tr key={`${f.session.id || i}`}
+                                className={f.already ? 'row-unrecorded' : undefined}>
+                                <td>
+                                  <strong>{f.coach}</strong>
+                                  {f.already && <div className="hb-sub">already filed</div>}
+                                </td>
+                                <td>{f.session.name}<div className="hb-sub">{f.session.day}</div></td>
+                                <td>{f.session.member || <span className="text-muted">—</span>}</td>
+                                <td style={{ whiteSpace: 'nowrap' }}>{f.session.time}</td>
+                                <td style={{ whiteSpace: 'nowrap' }}>{f.session.joinedTime}</td>
+                                <td style={{ whiteSpace: 'nowrap' }}>{f.session.minutes.toFixed(1)} min</td>
+                                <td>{f.already ? '—' : `#${f.occurrence}`}</td>
+                                <td className="text-right">
+                                  {f.already
+                                    ? <span className="text-muted">nothing</span>
+                                    : <strong>{rupees(f.amount)}</strong>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="hb-review-acts">
+                        <button type="button" className="hb-btn" onClick={close}>Cancel</button>
+                        <button type="button" className="btn btn-danger"
+                          disabled={fresh.length === 0}
+                          onClick={() => {
+                            const res = commitLateJoins(lateReview);
+                            if (res.filed > 0) close();
+                          }}>
+                          <i className="bx bx-error"></i>{' '}
+                          {fresh.length === 0
+                            ? 'Nothing new to file'
+                            : `File ${fresh.length} incident(s) — ${rupees(money)}`}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Late joins, measured from the app.
                   Every other incident on this page is somebody's report. This
@@ -18200,21 +18842,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 const fresh = findings.filter(f => !f.already);
                 const money = fresh.reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
 
-                // One line per coach, before the session-by-session list. A
-                // hundred and eighty rows answer "how late was that session";
-                // only this answers "what is this about to cost whom", which
-                // is the question somebody about to charge money is asking.
-                const byCoach = new Map();
-                for (const f of findings) {
-                  const e = byCoach.get(f.coach_id)
-                    || { id: f.coach_id, coach: f.coach, n: 0, filed: 0, money: 0, worst: 0 };
-                  e.n += 1;
-                  if (f.already) e.filed += 1; else e.money += Number(f.amount) || 0;
-                  e.worst = Math.max(e.worst, f.session.minutes);
-                  byCoach.set(f.coach_id, e);
-                }
-                const perCoach = [...byCoach.values()]
-                  .sort((x, y) => y.money - x.money || y.n - x.n);
                 // Only once there is something to show. A read that failed
                 // reports its reason and nothing else: a totals line built from
                 // a scan that never happened reads as a quiet, confident zero.
@@ -18238,6 +18865,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       own no-shows are left to attendance, so nothing is charged twice.
                     </p>
 
+                    {/* The schedule, said plainly. "It runs automatically"
+                        is not enough to act on: somebody reconciling a cycle
+                        needs to know whether this one has been read, and if
+                        not, when it will be. */}
+                    {(() => {
+                      const due = autoScanDueCycle();
+                      const done = lateAutoRun === due.month;
+                      const when = (ms) => new Date(ms).toLocaleString('en-IN', {
+                        day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+                      });
+                      return (
+                        <p className={`hb-sched ${done ? 'is-done' : 'is-due'}`}>
+                          <strong>Read and filed automatically at 4 a.m. on the 16th</strong>, for
+                          the cycle that closed the day before.{' '}
+                          {done
+                            ? <>{due.month} has been done · next {when(nextAutoScanAt())}.</>
+                            : <>{due.month} fell due {when(due.at)} and runs when this page next
+                                loads for somebody who can record incidents.</>}
+                          {' '}Its incidents are filed approved and land in the API fetch register
+                          on the cycle each session falls in. Reading a cycle again files nothing
+                          twice — each incident carries the id of the session it came from.
+                          Reading by hand below still shows everything first.
+                        </p>
+                      );
+                    })()}
+
                     <div className="tracker-toolbar-controls" style={{ marginBottom: '0.75rem' }}>
                       <select
                         className="header-select"
@@ -18259,17 +18912,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <option key={c.id} value={c.id}>{c.id} &mdash; {c.name}</option>
                         ))}
                       </select>
+                      {/* Read, then show what was read in a window of its
+                          own. The reading used to unroll down the page under
+                          the button, with the File button at the top where
+                          it could be pressed before anybody had scrolled to
+                          what they were filing. */}
                       <button
                         className="btn btn-secondary"
                         disabled={!chosen || Boolean(scan?.busy)}
-                        onClick={scanLateJoins}
+                        onClick={async () => {
+                          const res = await scanLateJoins(null, { quiet: true });
+                          if (res) setLateReview(res);
+                        }}
                       >
                         <i className="bx bx-cloud-download"></i>{' '}
                         {scan?.busy ? 'Reading the app…' : 'Fetch late joins'}
                       </button>
                       {showing && fresh.length > 0 && (
-                        <button className="btn btn-danger" onClick={fileLateJoins}>
-                          <i className="bx bx-error"></i> File {fresh.length} incident(s) &mdash; {rupees(money)}
+                        <button className="btn btn-danger" onClick={() => setLateReview(scan)}>
+                          <i className="bx bx-error"></i> Review {fresh.length} incident(s) &mdash; {rupees(money)}
                         </button>
                       )}
                     </div>
@@ -18315,100 +18976,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </p>
                         )}
 
+                        {/* The readings themselves are not listed here.
+                            They are in the window the read opens, where they
+                            can be checked before anything is filed, and once
+                            filed they are in the API fetch register with
+                            every other incident. Repeating them down this
+                            card made a third copy that agreed with neither:
+                            it showed ₹0 against a coach with 66 late joins,
+                            because the money had already moved. */}
                         {fresh.length > 0 && (
                           <p className="hb-reviews-error">
-                            <strong>Nothing below is charged yet.</strong> These are
-                            {' '}{fresh.length} reading(s) worth {rupees(money)}, shown so they can
-                            be checked first. They reach payroll only when you press
-                            {' '}<strong>File {fresh.length} incident(s)</strong> above — reading
-                            the app never takes money off anybody.
+                            <strong>{fresh.length} reading(s) worth {rupees(money)} are waiting.</strong>
+                            {' '}Nothing is charged yet. Press
+                            {' '}<strong>Review {fresh.length} incident(s)</strong> above to see
+                            them and decide.
                           </p>
                         )}
 
-                        {perCoach.length > 0 && (
-                          <div className="table-container" style={{ marginBottom: '1rem' }}>
-                            <table className="data-table">
-                              <thead>
-                                <tr>
-                                  <th>Coach</th>
-                                  <th>Late joins</th>
-                                  <th>Worst</th>
-                                  <th className="text-right">To be charged</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {perCoach.map(c => (
-                                  <tr key={c.id}>
-                                    <td><strong>{c.coach}</strong> <small className="text-muted">{c.id}</small></td>
-                                    <td>
-                                      {c.n}
-                                      {c.filed > 0 && <small className="text-muted"> · {c.filed} already filed</small>}
-                                    </td>
-                                    <td>{c.worst.toFixed(1)} min</td>
-                                    <td className="text-right">
-                                      {c.money > 0 ? <strong>{rupees(c.money)}</strong> : rupees(0)}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                        {fresh.length === 0 && findings.length > 0 && (
+                          <p className="hb-reviews-ok">
+                            All {findings.length} late join(s) in this cycle are already on the
+                            record. They are in the{' '}
+                            <button type="button" className="linklike"
+                              onClick={() => { setPenaltyTab('api'); setPenaltyCycle(scan.period); }}>
+                              API fetch register for {scan.period}
+                            </button>.
+                          </p>
                         )}
 
-                        {findings.length > 0 && (
-                          <div className="table-container">
-                            <table className="data-table">
-                              <thead>
-                                <tr>
-                                  <th>Coach</th>
-                                  <th>Session</th>
-                                  <th>Due</th>
-                                  <th>Joined</th>
-                                  <th>Late by</th>
-                                  <th>Violation</th>
-                                  <th>Occurrence</th>
-                                  <th>Consequence</th>
-                                  <th className="text-right">Penalty</th>
-                                  <th>Charged?</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {findings.map(f => (
-                                  <tr key={`${f.coach_id}|${f.session.id || f.session.start}`}>
-                                    <td><strong>{f.coach}</strong><br /><small className="text-muted">{f.coach_id}</small></td>
-                                    <td>
-                                      {f.session.day}
-                                      <br />
-                                      <small className="text-muted">
-                                        {f.session.name}{f.session.member ? ` · ${f.session.member}` : ''}
-                                      </small>
-                                    </td>
-                                    <td style={{ whiteSpace: 'nowrap' }}>{f.session.time}</td>
-                                    <td style={{ whiteSpace: 'nowrap' }}>{f.session.joinedTime}</td>
-                                    <td style={{ whiteSpace: 'nowrap' }}>
-                                      <strong>{f.session.minutes.toFixed(1)} min</strong>
-                                    </td>
-                                    <td>{f.session.type}</td>
-                                    <td>{f.already ? '—' : `#${f.occurrence}`}</td>
-                                    <td>
-                                      {f.already
-                                        ? <span className="badge badge-muted">Already filed</span>
-                                        : <small>{f.consequence}</small>}
-                                    </td>
-                                    <td className="text-right">
-                                      {f.already ? '—' : rupees(f.amount)}
-                                    </td>
-                                    <td>
-                                      {f.already
-                                        ? <span className="badge badge-success">Filed</span>
-                                        : <span className="badge badge-warning">Not yet</span>}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
                       </>
                     )}
                   </div>
@@ -18525,20 +19120,32 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 // one beside it. The form is the same state and the same submit
                 // handler as the modal — opening the modal from a coach page
                 // and typing here are one path, so neither can drift.
+                // What each state means for the money, which is the only
+                // question anybody reads this column to answer.
+                //
+                // "Waiting for coach" used to sit here in warning yellow, and
+                // it was the most misleading thing on the page: it is not a
+                // hold. The charge lands whether or not the coach ever clicks
+                // acknowledge, so the badge drew the eye to a state nobody can
+                // act on, and left the states that *are* waiting on somebody
+                // looking the same as the ones that are not. A recorded
+                // incident is now just recorded.
                 const STATUS_UI = {
-                  Pending_RM_Approval: ['Waiting for the manager', 'info', 'Not charged yet'],
-                  Rejected: ['Refused by the manager', 'good', 'Not charged \u00b7 does not count'],
-                  Pending_Acknowledge: ['Waiting for coach', 'warn', 'Will be charged'],
-                  Acknowledged: ['Acknowledged', 'mute', 'Will be charged'],
+                  Pending_RM_Approval: ['Manager approval required', 'warn', 'Not charged yet'],
+                  Rejected: ['Refused by the manager', 'good', 'Not charged · does not count'],
+                  Regularization_Raised: ['Regularization raised', 'warn', 'Not charged while it waits'],
+                  Regularized: ['Day regularized', 'good', 'Not charged · does not count'],
+                  Pending_Acknowledge: ['Recorded', 'mute', 'Will be charged'],
+                  Acknowledged: ['Recorded', 'mute', 'Will be charged'],
                   Appealed: ['Appealed', 'info', 'Charged unless the appeal wins'],
+                  Appeal_Raised: ['Appealed', 'info', 'Charged unless the appeal wins'],
                   Appeal_Approved: ['Appeal upheld', 'good', 'Not charged'],
+                  Appeal_Rejected: ['Appeal refused', 'mute', 'Will be charged'],
+                  Upheld: ['Upheld', 'mute', 'Will be charged'],
                   Waived: ['Waived', 'good', 'Not charged · still counts']
                 };
                 const uiFor = (v) => STATUS_UI[v.status]
                   || [v.status, 'mute', isPenaltyChargeable(v) ? 'Will be charged' : 'Not charged'];
-
-                const present = [...new Set(violations.map(v => v.status))];
-                const chips = ['All', ...present];
 
                 // Which cycle an incident is charged on. A cycle runs the 16th
                 // to the 15th, so a date in early October belongs to October's
@@ -18556,14 +19163,112 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   .filter(Boolean)
                   .sort((a, b) => a.name.localeCompare(b.name));
 
+                // Where an incident came from, which is the question the
+                // four registers answer. Only the settler and the session
+                // scan sign their work, so anything unsigned was typed by a
+                // person — the safe way round: a source nobody recognises
+                // reads as somebody's judgement and keeps its approval step,
+                // rather than being filed away as automatic.
+                const sourceOf = (v) =>
+                  isSystemAttendance(v) ? 'lop'
+                  : isSystemLateJoin(v) ? 'api'
+                  : 'manual';
+
+                // Approval is not a source, it is a queue: everything that is
+                // waiting on somebody, wherever it came from. So an incident
+                // can be in two registers at once, and should be — a manager
+                // wants it in the queue, and whoever is reconciling the pay
+                // run wants it with the rest of its kind.
+                const awaitingDecision = (v) =>
+                  v.status === PENALTY_AWAITING_APPROVAL || v.status === PENALTY_REG_RAISED;
+
+                const inTab = (v, tab) =>
+                  tab === 'approval' ? awaitingDecision(v) : sourceOf(v) === tab;
+
+                // Only the states that actually occur in the register being
+                // looked at. A chip for a state the open tab can never hold
+                // is a filter that always returns nothing.
+                const chipsFor = (tab) =>
+                  ['All', ...new Set(violations.filter(v => inTab(v, tab)).map(v => v.status))];
+
+                // "Current" follows the open cycle rather than naming a month.
+                //
+                // Except in the approval queue, where it means every cycle.
+                // An incident is charged on the cycle its date falls in, and
+                // a Showrunner's proposal is often decided weeks later — so
+                // a queue scoped to the open cycle hides the older half of
+                // the work, and the hidden half is the overdue half. Picking
+                // a cycle by hand still narrows it.
+                const effCycle = penaltyCycle === 'Current'
+                  ? (penaltyTab === 'approval' ? 'All' : currentPeriodMonth)
+                  : penaltyCycle;
+
+                const TABS = [
+                  ['approval', 'Approval',  'Waiting on a decision. Nothing here is charged yet, and each one lands on the cycle its own date falls in — so every cycle is shown until you pick one.'],
+                  ['lop',      'LOP',       'Days the app recorded no login. The coach is marked absent, and can ask for the day to be regularised.'],
+                  ['manual',   'Manual',    'Recorded by a person who saw it.'],
+                  ['api',      'API fetch', 'Measured from the HB+ app’s own session list.']
+                ];
+
+                // What the day's absence actually cost, for the LOP register.
+                // The incident is only half of it: the other half is the day
+                // of pay, or the leave day spent covering it.
+                const absenceLineFor = (v) => {
+                  const d = attendanceDays.find(x =>
+                    x.coach_id === v.coach_id && x.working_day === v.incident_date);
+                  if (!d) return null;
+                  if (d.cover_type_id) {
+                    return `covered from ${leaveType(d.cover_type_id)?.label || d.cover_type_id}`;
+                  }
+                  if (Number(d.lop_days) > 0) {
+                    return `${d.lop_days} day Loss of Pay`;
+                  }
+                  return null;
+                };
+
                 const matches = (v) =>
-                  (penaltyFilter === 'All' || v.status === penaltyFilter)
-                  && (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
+                  inTab(v, penaltyTab)
+                  && (penaltyFilter === 'All' || v.status === penaltyFilter)
+                  && (effCycle === 'All' || cycleOf(v.incident_date) === effCycle)
                   && (penaltyCoach === 'All' || v.coach_id === penaltyCoach);
 
                 const inScope = violations.filter(matches);
-                const shown = [...inScope]
+
+                // A tab's count is of what that tab would show under the
+                // cycle and coach in force — not of everything ever. A badge
+                // saying 61 over a list of 4 is worse than no badge.
+                const tabCount = (tab) => violations.filter(v =>
+                  inTab(v, tab)
+                  && (effCycle === 'All' || cycleOf(v.incident_date) === effCycle)
+                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length;
+                const ordered = [...inScope]
                   .sort((a, b) => new Date(b.incident_date) - new Date(a.incident_date));
+                // Only this many are built. The totals above still count the
+                // whole list, because what is about to be charged does not
+                // depend on how far anybody has scrolled.
+                const shown = ordered.slice(0, penaltyLimit);
+                const hidden = ordered.length - shown.length;
+
+                const moreRow = hidden > 0 ? (
+                  <div className="hb-more-rows">
+                    <span>
+                      Showing {shown.length} of {ordered.length}
+                      {' · '}{hidden} more
+                    </span>
+                    <div className="hb-more-acts">
+                      <button type="button" className="hb-btn"
+                        onClick={() => setPenaltyLimit(n => n + PENALTY_PAGE)}>
+                        Show {Math.min(PENALTY_PAGE, hidden)} more
+                      </button>
+                      {hidden > PENALTY_PAGE && (
+                        <button type="button" className="hb-btn"
+                          onClick={() => setPenaltyLimit(ordered.length)}>
+                          Show all {ordered.length}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : null;
 
                 // The totals follow the filter: a figure for everything, under
                 // a list of one cycle, is the wrong number to act on.
@@ -18592,12 +19297,146 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 return (
                   <div className="hb-inc">
                     <div className="hb-inc-main">
+                      {/* Four registers, because they are four jobs. The
+                          status chips below filter within whichever one is
+                          open, so choosing a tab never hides a state and
+                          choosing a state never hides a source. */}
+                      <div className="hb-tabs" role="tablist" aria-label="Incident registers">
+                        {TABS.map(([key, label]) => (
+                          <button
+                            key={key} type="button" role="tab"
+                            aria-selected={penaltyTab === key}
+                            className={`hb-tab ${penaltyTab === key ? 'is-on' : ''}`}
+                            onClick={() => { setPenaltyTab(key); setPenaltyFilter('All'); }}>
+                            {label}
+                            <span className="hb-tab-n">{tabCount(key)}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="hb-tab-why">
+                        {TABS.find(t => t[0] === penaltyTab)?.[2]}
+                        {penaltyTab === 'approval' && (
+                          <> An incident here also appears in the register it came from.</>
+                        )}
+                      </p>
+
+                      {/* The two controls that govern this register, next to
+                          the thing they govern.
+                          
+                          Both already existed, on Attendance & Leave, in a
+                          settings card. That is a reasonable place for them
+                          and a hopeless place to find them: the problem is
+                          noticed here, or on a payslip, and nothing on either
+                          screen said the switch existed. */}
+                      {penaltyTab === 'lop' && (() => {
+                        // Shown to anyone who can see this register, acted on
+                        // only by the roles that may change pay. Hiding it
+                        // from a Showrunner meant somebody looking at a
+                        // thousand charges had no way to learn that a switch
+                        // governing them existed, let alone who to ask.
+                        const mayChangePay = PROFILE_PAY_ROLES.includes(currentRole);
+                        // What erasing this cycle would actually reach, worked
+                        // out here rather than discovered by pressing it.
+                        //
+                        // Erase only removes what the settler raised. Anything
+                        // a person filed is their judgement and is left alone,
+                        // and a cycle Finance has closed is refused outright.
+                        // Both were true before and neither was visible, so an
+                        // erase that legitimately did nothing looked identical
+                        // to one that was broken.
+                        const cycleRows = violations.filter(v =>
+                          effCycle !== 'All' && cycleOf(v.incident_date) === effCycle);
+                        const erasable = cycleRows.filter(isSystemAttendance);
+                        const byHand = cycleRows.filter(v => !isSystemAttendance(v));
+                        const erasableWorth = erasable.filter(isPenaltyChargeable)
+                          .reduce((t, v) => t + (Number(v.penalty_amount) || 0), 0);
+                        const cycleLocked = [...currentMonth, ...historicMonths]
+                          .some(r => r.period_month === effCycle && r.status === 'FINANCE_LOCKED');
+                        const blocked = !mayChangePay
+                            ? `Only Super Admin, HR Manager or Finance can erase charges — you are acting as ${currentRole}`
+                          : effCycle === 'All' ? 'Choose a single pay cycle first'
+                          : cycleLocked ? `${effCycle} is finance-locked — reopen it on Close & pay`
+                          : erasable.length === 0 ? `Nothing in ${effCycle} was raised by the settler`
+                          : null;
+
+                        return (
+                        <div className={`hb-lop-bar ${chargeLop ? 'is-on' : 'is-off'}`}>
+                          <div className="hb-lop-state">
+                            <strong>
+                              Loss of Pay is {chargeLop ? 'on' : 'paused'}
+                            </strong>
+                            <p>
+                              {chargeLop
+                                ? `Settling a day with no login records this incident and takes
+                                   one day’s pay, after Holiday and Paid leave are drawn on.`
+                                : `Settling skips a day with no login entirely — no incident,
+                                   no deduction, nothing written down. While coaches are still
+                                   being moved onto the app, a day with no login means nothing
+                                   was captured, not that nobody worked.`}
+                            </p>
+                          </div>
+                          <div className="hb-lop-acts">
+                            <button type="button"
+                              role="switch" aria-checked={chargeLop}
+                              disabled={!mayChangePay}
+                              className={`hb-switch ${chargeLop ? 'on' : ''}`}
+                              title={mayChangePay ? undefined
+                                : `Only Super Admin, HR Manager or Finance can change this`}
+                              aria-label={chargeLop ? 'Pause Loss of Pay' : 'Start charging Loss of Pay'}
+                              onClick={() => toggleChargeLop(!chargeLop)}>
+                              <span />
+                            </button>
+                            {/* Erasing is per cycle, because a cycle is what
+                                gets paid. With every cycle on screen there is
+                                no one answer to "erase what". */}
+                            <button type="button" className="btn btn-danger"
+                              disabled={Boolean(blocked)}
+                              title={blocked || `Erase ${erasable.length} settler-raised incident(s) from ${effCycle}`}
+                              onClick={() => clearSystemAttendanceFor(effCycle)}>
+                              <i className="bx bx-eraser"></i>{' '}
+                              {blocked
+                                ? 'Cannot erase'
+                                : `Erase ${erasable.length} from ${effCycle}`}
+                            </button>
+                          </div>
+                          <p className="hb-lop-note">
+                            {blocked
+                              ? <><strong>{blocked}.</strong>{' '}</>
+                              : <><strong>{erasable.length} incident(s) worth {rupees(erasableWorth)}</strong>{' '}
+                                  would go, and the Loss of Pay and any leave day spent covering
+                                  them comes back.{' '}</>}
+                            {byHand.length > 0 && (
+                              <>{byHand.length} incident(s) in {effCycle} were filed by a person,
+                                not the settler — erase never touches those. Remove one with the
+                                bin on its row.{' '}</>
+                            )}
+                            They are deleted, not waived: a waived incident keeps its place on the
+                            ladder, which is wrong for a day that never happened.
+                          </p>
+                        </div>
+                        );
+                      })()}
+
                       <div className="hb-inc-filters">
                         <label>
                           <span>Pay cycle</span>
                           <select value={penaltyCycle} onChange={(e) => setPenaltyCycle(e.target.value)}>
+                            {/* The open cycle by name, so it is obvious which
+                                one "current" is, and it follows the cycle
+                                rather than pinning to a month. */}
+                            {/* The default reads as what it actually does,
+                                which is not the same in both places: the
+                                approval queue deliberately spans cycles, and
+                                an option labelled "this cycle" over a list
+                                holding October would just be wrong. */}
+                            <option value="Current">
+                              {penaltyTab === 'approval'
+                                ? 'Every cycle — everything waiting'
+                                : `This cycle — ${currentPeriodMonth}`}
+                            </option>
                             <option value="All">Every cycle</option>
-                            {cycles.map(c => <option key={c} value={c}>{c}</option>)}
+                            {cycles.filter(c => c !== currentPeriodMonth)
+                              .map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
                         </label>
                         <label>
@@ -18609,14 +19448,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             ))}
                           </select>
                         </label>
-                        {(penaltyCycle !== 'All' || penaltyCoach !== 'All' || penaltyFilter !== 'All') && (
+                        {(penaltyCycle !== 'Current' || penaltyCoach !== 'All' || penaltyFilter !== 'All') && (
                           <button className="hb-btn" onClick={() => {
-                            setPenaltyCycle('All'); setPenaltyCoach('All'); setPenaltyFilter('All');
-                          }}>Clear</button>
+                            setPenaltyCycle('Current'); setPenaltyCoach('All'); setPenaltyFilter('All');
+                          }}>Back to this cycle</button>
                         )}
                       </div>
                       <div className="hb-inc-chips" role="group" aria-label="Filter by status">
-                        {chips.map(k => (
+                        {chipsFor(penaltyTab).map(k => (
                           <button
                             key={k} type="button" aria-pressed={penaltyFilter === k}
                             className={`hb-btn ${penaltyFilter === k ? 'hb-btn-dark' : ''}`}
@@ -18624,24 +19463,142 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           >
                             {k === 'All' ? 'All' : (STATUS_UI[k]?.[0] || k)}
                             <span className="hb-inc-n">
-                              {k === 'All'
-                              ? violations.filter(v =>
-                                  (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
-                                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length
-                              : violations.filter(v => v.status === k
-                                  && (penaltyCycle === 'All' || cycleOf(v.incident_date) === penaltyCycle)
-                                  && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length}
+                              {violations.filter(v =>
+                                inTab(v, penaltyTab)
+                                && (k === 'All' || v.status === k)
+                                && (effCycle === 'All' || cycleOf(v.incident_date) === effCycle)
+                                && (penaltyCoach === 'All' || v.coach_id === penaltyCoach)).length}
                             </span>
                           </button>
                         ))}
                       </div>
 
+                      {/* The approval queue is a different job from reading
+                          the register, so it gets a different table: who
+                          proposed it, what they say happened, which cycle it
+                          will land on, and the two buttons. A manager asked
+                          to take money off somebody should be able to decide
+                          here, without opening anything. */}
+                      {penaltyTab === 'approval' && (
+                        <div className="card">
+                          <div className="hb-pay-count">
+                            {ordered.length} waiting ·{' '}
+                            <strong>{rupees(ordered.reduce((t, v) => t + (Number(v.penalty_amount) || 0), 0))} proposed</strong>
+                            {' '}· nothing deducted until it is approved
+                          </div>
+                          <div className="table-container">
+                            <table className="data-table">
+                              <thead>
+                                <tr>
+                                  <th>Coach</th>
+                                  <th>When</th>
+                                  {/* The cycle it will be charged on, which
+                                      follows the incident's own date and not
+                                      the day somebody gets round to deciding
+                                      it. An October incident approved in
+                                      December is still October's. */}
+                                  <th>Charged on</th>
+                                  <th>Violation</th>
+                                  <th>Occurrence</th>
+                                  <th>Consequence</th>
+                                  <th className="text-right">Penalty</th>
+                                  <th>Raised by</th>
+                                  <th>What happened</th>
+                                  <th className="actions-col">Decide</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {shown.length === 0 && (
+                                  <tr><td colSpan={10} className="text-muted">
+                                    Nothing is waiting on a decision
+                                    {effCycle === 'All' ? '' : ` in ${effCycle}`}.
+                                  </td></tr>
+                                )}
+                                {shown.map(v => {
+                                  const c = coaches.find(x => x.id === v.coach_id);
+                                  // A Reporting Manager decides their own
+                                  // squad and nobody else's; anyone who can
+                                  // approve at all decides the rest.
+                                  const mine = currentRole === 'Reporting Manager'
+                                    ? c?.reporting_manager_id === currentRmContext : true;
+                                  const mayDecide = INCIDENT_APPROVER_ROLES.includes(currentRole)
+                                    && mine && v.status === PENALTY_AWAITING_APPROVAL;
+                                  return (
+                                    <tr key={v.id}>
+                                      <td>
+                                        <strong>{c?.name || v.coach_id}</strong>
+                                        <br /><small className="text-muted">{v.coach_id}</small>
+                                      </td>
+                                      <td style={{ whiteSpace: 'nowrap' }}>
+                                        {v.incident_date
+                                          ? new Date(v.incident_date).toLocaleDateString('en-IN',
+                                              { day: 'numeric', month: 'short', year: 'numeric' })
+                                          : '—'}
+                                        {v.incident_time && (
+                                          <><br /><small className="text-muted">{v.incident_time}</small></>
+                                        )}
+                                      </td>
+                                      <td style={{ whiteSpace: 'nowrap' }}>
+                                        {cycleOf(v.incident_date)}
+                                        <br /><small className="text-muted">if approved</small>
+                                      </td>
+                                      <td>{v.type}</td>
+                                      <td>#{v.occurrence_no}</td>
+                                      <td><small>{v.consequence}</small></td>
+                                      <td className="text-right"><strong>{rupees(v.penalty_amount)}</strong></td>
+                                      <td>
+                                        <small>{v.reported_by}</small>
+                                        {v.raised_by_role && (
+                                          <><br /><small className="text-muted">{v.raised_by_role}</small></>
+                                        )}
+                                      </td>
+                                      <td><small className="text-muted">{v.evidence || '— no detail given —'}</small></td>
+                                      <td className="actions-col">
+                                        {mayDecide ? (
+                                          <div className="table-btn-group">
+                                            <button
+                                              className="btn-row-icon icon-save"
+                                              title={`Approve — ${rupees(v.penalty_amount)} charged on ${cycleOf(v.incident_date)}`}
+                                              onClick={() => decideIncident(v.id, 'Approve')}>
+                                              <i className="bx bx-check"></i>
+                                            </button>
+                                            <button
+                                              className="btn-row-icon icon-cancel"
+                                              title="Refuse — nothing is charged and it does not count"
+                                              onClick={() => decideIncident(v.id, 'Reject')}>
+                                              <i className="bx bx-x"></i>
+                                            </button>
+                                          </div>
+                                        ) : v.status === PENALTY_REG_RAISED ? (
+                                          // Held because the coach asked for
+                                          // the day, which is decided on the
+                                          // regularisation, not here.
+                                          <small className="text-muted">On the regularisation</small>
+                                        ) : (
+                                          <small className="text-muted">
+                                            {mine ? 'Not your decision' : 'Another manager’s squad'}
+                                          </small>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                          {moreRow}
+                        </div>
+                      )}
+
+                      {penaltyTab !== 'approval' && (
                       <div className="card">
                         <div className="hb-pay-count">
-                          {shown.length} of {violations.length} recorded ·{' '}
+                          {ordered.length} recorded ·{' '}
                           <strong>{rupees(chargeable)} will be charged</strong>
-                          {notCharged > 0 && <> · {rupees(notCharged)} waived or won on appeal</>}
-                          {penaltyCycle !== 'All' && <> · charged on the {penaltyCycle} cycle</>}
+                          {notCharged > 0 && <> · {rupees(notCharged)} not charged</>}
+                          {effCycle === 'All'
+                            ? <> · every cycle</>
+                            : <> · on the {effCycle} cycle</>}
                         </div>
                         <div className="table-container">
                           <table className="data-table hb-inc-table">
@@ -18654,14 +19611,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                 <th>How many times</th>
                                 <th>Status</th>
                                 <th>Pay</th>
+                                <th><span className="hb-sr">Detail</span></th>
                               </tr>
                             </thead>
                             <tbody>
                               {shown.length === 0 && (
-                                <tr><td colSpan={7} className="text-muted">
-                                  {violations.length === 0
-                                    ? 'No incidents recorded.'
-                                    : 'Nothing with that status.'}
+                                <tr><td colSpan={8} className="text-muted">
+                                  {violations.length === 0 ? 'No incidents recorded.'
+                                    : penaltyFilter !== 'All' ? 'Nothing with that status in this register.'
+                                    : penaltyTab === 'approval'
+                                      ? `Nothing is waiting on a decision${effCycle === 'All' ? '' : ` in ${effCycle}`}.`
+                                    : penaltyTab === 'lop'
+                                      ? `No day went unlogged${effCycle === 'All' ? '' : ` in ${effCycle}`}.`
+                                    : penaltyTab === 'manual'
+                                      ? `Nobody recorded an incident by hand${effCycle === 'All' ? '' : ` in ${effCycle}`}.`
+                                      : `The app measured nothing${effCycle === 'All' ? '' : ` in ${effCycle}`}. Read a cycle on Late joins to fill this.`}
                                 </td></tr>
                               )}
                               {shown.map(v => {
@@ -18706,12 +19670,93 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                       #{v.occurrence_no}
                                       <div className="hb-sub">counted {String(window).toLowerCase()}</div>
                                     </td>
-                                    <td><span className={`hb-st hb-st-${tone}`}>{label}</span></td>
+                                    <td>
+                                      <span className={`hb-st hb-st-${tone}`}>{label}</span>
+                                      {/* The incident is only half of what a
+                                          day with no login costs. The other
+                                          half is the day of pay, or the leave
+                                          day spent covering it, and reading
+                                          one without the other is how a
+                                          deduction looks unexplained. */}
+                                      {sourceOf(v) === 'lop' && (
+                                        v.status === PENALTY_REGULARIZED ? (
+                                          // Still worth saying it was marked
+                                          // absent — somebody asked about
+                                          // this day — but in the past tense,
+                                          // and not in the colour of a
+                                          // deduction. The day is cleared.
+                                          <div className="hb-absent hb-absent-clear">
+                                            Was marked absent · cleared
+                                          </div>
+                                        ) : (
+                                          <div className="hb-absent">
+                                            Absent
+                                            {absenceLineFor(v) && <> · {absenceLineFor(v)}</>}
+                                          </div>
+                                        )
+                                      )}
+                                    </td>
                                     <td>
                                       <div className="hb-sub">{payLine}</div>
                                       {isPenaltyChargeable(v) && Number(v.penalty_amount) > 0 && (
                                         <strong>{rupees(v.penalty_amount)}</strong>
                                       )}
+                                    </td>
+                                    <td>
+                                      <div className="hb-row-acts">
+                                        <button type="button" className="hb-more"
+                                          title="What happened, in full"
+                                          onClick={() => setIncidentDetailId(v.id)}>
+                                          More
+                                        </button>
+                                        {/* What the app measured is not
+                                            deleted, it is set aside. The
+                                            session really was late — that is
+                                            a timestamp, not an opinion — and
+                                            erasing the record of it would
+                                            lose a fact to spare a charge.
+                                            Refusing keeps the fact, drops the
+                                            money, and says why.
+
+                                            Everywhere else the incident is
+                                            somebody's entry or a settled day,
+                                            and removing it outright is the
+                                            right undo. */}
+                                        {/* Set aside: the charge stops and the
+                                            reason goes on the record, where
+                                            the coach can read it. Offered
+                                            wherever the app charged somebody
+                                            without a person deciding to —
+                                            the measured late joins, and the
+                                            days the settler found no login
+                                            for. Those are the two registers
+                                            whose incidents nobody chose. */}
+                                        {(penaltyTab === 'api' || penaltyTab === 'lop')
+                                          && INCIDENT_APPROVER_ROLES.includes(currentRole)
+                                          && isPenaltyChargeable(v) && (
+                                          <button type="button" className="hb-row-reject"
+                                            title={`Set aside — ${rupees(v.penalty_amount)} stops being charged, with a reason the coach sees`}
+                                            onClick={() => rejectIncident(v.id)}>
+                                            Reject
+                                          </button>
+                                        )}
+                                        {/* Removing it outright stays for the
+                                            registers where the incident is a
+                                            record somebody can simply be
+                                            wrong about. Not on API fetch: a
+                                            timestamp is a fact, and deleting
+                                            it loses the fact to spare the
+                                            charge. */}
+                                        {penaltyTab !== 'api'
+                                          && PROFILE_PAY_ROLES.includes(currentRole) && (
+                                          <button type="button" className="hb-row-del"
+                                            title={`Delete — ${rupees(v.penalty_amount)} stops being charged and the incident goes`}
+                                            aria-label="Delete this incident"
+                                            onClick={() => handleDeleteViolation(v.id)}>
+                                            <i className="bx bx-trash"></i>
+                                          </button>
+                                        )}
+                                      </div>
                                     </td>
                                   </tr>
                                 );
@@ -18719,17 +19764,184 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             </tbody>
                           </table>
                         </div>
+                        {moreRow}
                         <p className="text-muted scorecard-legend">
                           A penalty is deducted on the payslip for the period its incident date falls in,
                           under Taxes &amp; Deductions. Nothing is keyed in there — it comes from here.
                         </p>
                       </div>
+                      )}
                     </div>
 
+                    {/* What actually happened, for the one incident being
+                        asked about. The row can only ever carry a number and a
+                        badge; this is where the session, the client and the
+                        reasoning live. */}
+                    {(() => {
+                      const v = violations.find(x => x.id === incidentDetailId);
+                      if (!v) return null;
+                      const c = coaches.find(x => x.id === v.coach_id);
+                      const [label, tone, payLine] = uiFor(v);
+                      const close = () => setIncidentDetailId(null);
+                      const reg = [...regularisations, ...attendanceRegularizations]
+                        .find(r => r.coach_id === v.coach_id && r.working_day === v.incident_date);
+                      // What the app says about the session now, where it
+                      // has been read. It fills the gaps on an incident filed
+                      // before these were stored as fields, and confirms them
+                      // on one that was.
+                      const look = detailSession.id === v.id ? detailSession : {};
+                      const live = look.session || null;
+                      const sessionName = live?.name || v.session_label;
+                      const clientName = live?.member || v.client_name;
+                      const sessionDay = live?.day || v.incident_date;
+                      const sessionTime = live?.time || v.incident_time;
+
+                      const facts = [
+                        // Not the type: the heading above already says it.
+                        ['Coach', `${c?.name || v.coach_id} · ${v.coach_id}`],
+                        ['Session', sessionName],
+                        ['Client waiting', clientName],
+                        ['Session date', sessionDay && new Date(sessionDay).toLocaleDateString('en-IN',
+                          { day: 'numeric', month: 'long', year: 'numeric' })],
+                        ['Session time', sessionTime && `${sessionTime} IST`],
+                        ['Coach joined', live?.joinedTime ? `${live.joinedTime} IST` : null],
+                        ['Charged on', cycleOf(v.incident_date)],
+                        ['Occurrence', `#${v.occurrence_no} · counted ${String(
+                          VIOLATION_TRACKING[v.type] || 'Lifetime').toLowerCase()}`],
+                        ['Consequence', v.consequence],
+                        ['Recorded by', v.reported_by],
+                        ['Decided by', v.decided_by],
+                        ['Reason given', v.decision_note]
+                      ].filter(([, value]) => value);
+
+                      return (
+                        <div className="hb-detail-backdrop" role="presentation" onClick={close}>
+                          <div className="hb-detail" role="dialog" aria-modal="true"
+                            aria-label={`${v.type} on ${v.incident_date}`}
+                            onClick={(ev) => ev.stopPropagation()}>
+                            <header className="hb-detail-head">
+                              <div>
+                                <h3>{v.type}</h3>
+                                <span className={`hb-st hb-st-${tone}`}>{label}</span>
+                              </div>
+                              <button type="button" className="hb-detail-x"
+                                onClick={close} aria-label="Close">&times;</button>
+                            </header>
+
+                            <div className="hb-detail-money">
+                              <span>{payLine}</span>
+                              {Number(v.penalty_amount) > 0 && (
+                                <strong>{rupees(v.penalty_amount)}</strong>
+                              )}
+                            </div>
+
+                            <dl className="hb-detail-facts">
+                              {facts.map(([k, val]) => (
+                                <div key={k}><dt>{k}</dt><dd>{val}</dd></div>
+                              ))}
+                            </dl>
+
+                            {/* Where the session came from, and what to do
+                                when it could not be read. A panel that is
+                                simply missing the client looks like a session
+                                that had none. */}
+                            {isSessionBound(v.type) && look.state === 'busy' && (
+                              <p className="hb-detail-gap">Reading the session from the app…</p>
+                            )}
+                            {isSessionBound(v.type) && look.state === 'no-app-id' && (
+                              <p className="hb-detail-gap">
+                                {c?.name || 'This coach'} has no App Coach ID on their profile,
+                                and the app keys its sessions by it. Set it under Details and
+                                this panel will show the session, the client and the slot.
+                              </p>
+                            )}
+                            {isSessionBound(v.type) && look.state === 'error' && (
+                              <p className="hb-detail-gap">
+                                The session could not be read from the app. {look.why}
+                              </p>
+                            )}
+                            {isSessionBound(v.type) && look.state === 'done' && live && (
+                              <p className="hb-detail-live">
+                                Session read from the HB+ app
+                                {live.status ? ` · ${live.status}` : ''}
+                                {live.online ? ' · online' : ' · at a centre'}.
+                              </p>
+                            )}
+
+                            {/* Filed by hand, so there is no session id to
+                                look up. The day's sessions are still the
+                                answer — a person can see which one it was. */}
+                            {isSessionBound(v.type) && look.state === 'done' && !live && (
+                              <div className="hb-detail-note">
+                                <span>WHICH SESSION?</span>
+                                {look.sameDay && look.sameDay.length > 0 ? (
+                                  <>
+                                    <p>
+                                      This incident does not name a session
+                                      {look.hadId ? ', and the one it points at is no longer on the day' : ''}.
+                                      {' '}The app has {look.sameDay.length} session
+                                      {look.sameDay.length === 1 ? '' : 's'} for {c?.name || 'this coach'} that day:
+                                    </p>
+                                    <ul className="hb-detail-list">
+                                      {look.sameDay.slice(0, 8).map((x, i) => (
+                                        <li key={x.id || i}>
+                                          <strong>{x.time}</strong> · {x.name}
+                                          {x.member ? ` · ${x.member}` : ''}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </>
+                                ) : (
+                                  <p>
+                                    The app has no session for {c?.name || 'this coach'} on
+                                    this day, so there is nothing to read back. Incidents
+                                    filed by hand carry whatever was typed into the form.
+                                  </p>
+                                )}
+                              </div>
+                            )}
+
+                            {v.evidence && (
+                              <div className="hb-detail-note">
+                                <span>NOTE ON THE RECORD</span>
+                                <p>{v.evidence}</p>
+                              </div>
+                            )}
+
+                            {reg && (
+                              <div className="hb-detail-note">
+                                <span>REGULARIZATION FOR THIS DAY</span>
+                                <p>
+                                  {reg.status === 'Pending'
+                                    ? `${c?.name || 'The coach'} has asked for this day to be regularised (${reg.check_in_time}–${reg.check_out_time}). It is waiting on a manager, and nothing is charged until they decide.`
+                                    : `Asked for ${reg.check_in_time}–${reg.check_out_time}; ${String(reg.status).toLowerCase()}${reg.decided_by ? ` by ${reg.decided_by}` : ''}.`}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Below the register, not beside it, and shut until
+                        it is wanted. Recording an incident is the rarer job:
+                        the page is opened to read what is about to be
+                        charged, and a permanent form took a third of the
+                        width from the thing being read. */}
                     {mayLog && (
-                      <aside className="card hb-inc-form" aria-label="Log an incident">
-                        <h3>Log an incident</h3>
-                        <form onSubmit={handleLogViolationSubmit}>
+                      <aside className={`card hb-inc-form ${logFormOpen ? 'is-open' : ''}`}
+                        aria-label="Log an incident">
+                        <button type="button" className="hb-fold"
+                          aria-expanded={logFormOpen}
+                          onClick={() => setLogFormOpen(o => !o)}>
+                          <span className="hb-fold-x" aria-hidden="true">
+                            {logFormOpen ? '−' : '+'}
+                          </span>
+                          <span>Log an incident</span>
+                          <small>{logFormOpen ? 'Hide' : 'Record one by hand'}</small>
+                        </button>
+                        <form onSubmit={handleLogViolationSubmit}
+                          hidden={!logFormOpen}>
                           <div className="hb-f">
                             <label htmlFor="inc-coach">Coach</label>
                             <select id="inc-coach" value={vioCoachId} required
@@ -18759,6 +19971,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <input id="inc-time" type="text" value={vioTime} required
                               placeholder="e.g. 07:05 AM" onChange={(e) => setVioTime(e.target.value)} />
                           </div>
+
+                          {/* Only where a session exists to name. Asking which
+                              client was affected by a missed punch would be a
+                              question with no answer. */}
+                          {isSessionBound(vioType) && (
+                            <div className="hb-inc-session">
+                              <p className="hb-inc-session-why">
+                                A session was missed, so say which one. Without this the
+                                incident reads as a number and nobody reviewing it can tell
+                                what happened.
+                              </p>
+                              <div className="hb-f">
+                                <label htmlFor="inc-session">Which session</label>
+                                <input id="inc-session" type="text" value={vioSession}
+                                  placeholder="e.g. 7:00 AM Strength — Batch B"
+                                  onChange={(e) => setVioSession(e.target.value)} />
+                              </div>
+                              <div className="hb-f">
+                                <label htmlFor="inc-client">Which client was waiting</label>
+                                <input id="inc-client" type="text" value={vioClient}
+                                  placeholder="Client name, or the batch"
+                                  onChange={(e) => setVioClient(e.target.value)} />
+                              </div>
+                            </div>
+                          )}
 
                           <div className="hb-inc-mean">
                             <span>WHAT THIS WILL MEAN</span>
@@ -18807,8 +20044,22 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 );
               })()}
 
-              <div className="card">
-                <div className="table-container">
+              {/* The schedule of what each violation costs. Reference, not
+                  work: it is the same every day and it is long, so it sits
+                  folded under the register rather than pushing it up the
+                  page. */}
+              <div className={`card hb-fold-card ${matrixOpen ? 'is-open' : ''}`}>
+                <button type="button" className="hb-fold"
+                  aria-expanded={matrixOpen}
+                  onClick={() => setMatrixOpen(o => !o)}>
+                  <span className="hb-fold-x" aria-hidden="true">{matrixOpen ? '−' : '+'}</span>
+                  <span>What each violation costs</span>
+                  <small>
+                    {matrixOpen ? 'Hide' : `The ladder for ${
+                      penaltyVariant === 'ONLINE' ? 'Annexure 1B' : penaltyVariant}`}
+                  </small>
+                </button>
+                <div className="table-container" hidden={!matrixOpen}>
                   <table className="data-table penalty-matrix-table">
                     <thead>
                       <tr>
@@ -18865,7 +20116,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     </tbody>
                   </table>
                 </div>
-                <p className="text-muted scorecard-legend">
+                <p className="text-muted scorecard-legend" hidden={!matrixOpen}>
                   Occurrences are counted per coach, per violation type.
                   <strong> Quarterly</strong> types start again each quarter, so a late arrival in
                   a new quarter is a first occurrence.
@@ -19410,7 +20661,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     Every squad and the coaches in it.{' '}
                     {canMoveSquads
                       ? 'Drag a coach onto another squad to change who they report to — you are asked to confirm before anything moves. The same field is on their record under Coach Master.'
-                      : 'A coach\u2019s manager is set on their own record under Coach Master — this reads it rather than sets it.'}
+                      : 'A coach’s manager is set on their own record under Coach Master — this reads it rather than sets it.'}
                   </p>
                 </div>
               </div>

@@ -1884,7 +1884,20 @@ export const VIOLATION_TRACKING = {
 
   "Late Arrival (<5 min)": "Quarterly",
   "Late Arrival (>5 min)": "Quarterly",
+  // Kept for the incidents already on the record under this name. Nothing new
+  // is filed as it; the two causes below replaced it.
   "Coach No-Show": "Lifetime",
+
+  // A client was left waiting. It never resets, exactly as the no-show it
+  // succeeds never reset.
+  "Did Not Join the Session": "Lifetime",
+
+  // A missed punch resets with the month, as Annexure 1B already has it. A
+  // coach who forgets twice in January should not be priced in March as
+  // though they had done it a third time: nobody was let down, and the day
+  // itself can still be regularised.
+  "Not Logged In on the App": "Monthly",
+
   "Unplanned Absence (<4 hrs notice)": "Lifetime",
   "Repeated Roster Violations": "Lifetime"
 };
@@ -1914,6 +1927,26 @@ export const PENALTY_MATRIX = {
       { consequence: "₹450 Fine", amount: 450 },
       { consequence: "₹550 Fine", amount: 550 },
       { consequence: "₹650 Fine", amount: 650 }
+    ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "₹350 Fine", amount: 350 },
+      { consequence: "₹450 Fine", amount: 450 },
+      { consequence: "₹550 Fine", amount: 550 },
+      { consequence: "₹650 Fine", amount: 650 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
     ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },
@@ -1948,6 +1981,26 @@ export const PENALTY_MATRIX = {
       { consequence: "Deduct 4 Sessions Pay", amount: 960 },
       { consequence: "Immediate Termination Review", amount: 0 }
     ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "Deduct 1 Session Pay", amount: 240 },
+      { consequence: "Deduct 2 Sessions Pay", amount: 480 },
+      { consequence: "Deduct 4 Sessions Pay", amount: 960 },
+      { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
+    ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },
       { consequence: "₹100 Fine", amount: 100 },
@@ -1980,6 +2033,26 @@ export const PENALTY_MATRIX = {
       { consequence: "Deduct 2 Sessions Pay", amount: 640 },
       { consequence: "Deduct 4 Sessions Pay", amount: 1280 },
       { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "Deduct 1 Session Pay", amount: 320 },
+      { consequence: "Deduct 2 Sessions Pay", amount: 640 },
+      { consequence: "Deduct 4 Sessions Pay", amount: 1280 },
+      { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
     ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },
@@ -2014,6 +2087,26 @@ export const PENALTY_MATRIX = {
       { consequence: "Deduct 4 Sessions Pay", amount: 1120 },
       { consequence: "Immediate Termination Review", amount: 0 }
     ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "Deduct 1 Session Pay", amount: 280 },
+      { consequence: "Deduct 2 Sessions Pay", amount: 560 },
+      { consequence: "Deduct 4 Sessions Pay", amount: 1120 },
+      { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
+    ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },
       { consequence: "₹100 Fine", amount: 100 },
@@ -2046,6 +2139,26 @@ export const PENALTY_MATRIX = {
       { consequence: "₹450 Fine", amount: 450 },
       { consequence: "₹550 Fine", amount: 550 },
       { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "₹350 Fine", amount: 350 },
+      { consequence: "₹450 Fine", amount: 450 },
+      { consequence: "₹550 Fine", amount: 550 },
+      { consequence: "Immediate Termination Review", amount: 0 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
     ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },
@@ -2144,6 +2257,26 @@ export const PENALTY_MATRIX = {
       { consequence: "₹450 Fine", amount: 450 },
       { consequence: "₹550 Fine", amount: 550 },
       { consequence: "₹650 Fine", amount: 650 }
+    ],
+    // The successor to "Coach No-Show" for the case that name was
+    // written for: a booked session the coach never joined. Same ladder,
+    // to the rupee, so telling the two causes apart repriced neither.
+    "Did Not Join the Session": [
+      { consequence: "₹350 Fine", amount: 350 },
+      { consequence: "₹450 Fine", amount: 450 },
+      { consequence: "₹550 Fine", amount: 550 },
+      { consequence: "₹650 Fine", amount: 650 }
+    ],
+    // Failing to log in or out of the app is an administrative failure, not an
+    // abandoned client, and it is the one attendance incident a coach can cure
+    // by asking for the day to be regularised. Priced as Annexure 1B already
+    // prices the same failure online — a warning first, and never the no-show
+    // ladder, which it shared until the two were told apart.
+    "Not Logged In on the App": [
+      { consequence: "Written Warning", amount: 0 },
+      { consequence: "₹100 Fine", amount: 100 },
+      { consequence: "₹200 Fine", amount: 200 },
+      { consequence: "₹300 Fine", amount: 300 }
     ],
     "Unplanned Absence (<4 hrs notice)": [
       { consequence: "Written Warning", amount: 0 },

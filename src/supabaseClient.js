@@ -268,7 +268,14 @@ const MAPPERS = {
       // Who could raise it, who decided it and why. `pick` drops what is
       // undefined, so an incident raised before these columns existed still
       // saves without them.
-      'raised_by_role', 'decided_by', 'decided_at', 'decision_note'
+      'raised_by_role', 'decided_by', 'decided_at', 'decision_note',
+      // What a missed session actually was: which session, and which client
+      // was left waiting. A row saying only "occurrence #57" tells whoever
+      // reviews it nothing they can act on.
+      'session_id', 'session_label', 'client_name',
+      // The regularisation request that is holding this incident open, so the
+      // two stay tied together when either is looked at.
+      'regularization_id'
     ]), DATE_ISH),
     fromRow: r => r
   },

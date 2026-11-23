@@ -360,6 +360,42 @@ export function getQuarterLabel(dateStr) {
 /**
  * Calculate active occurrences of a violation type within its tracking window
  */
+/**
+ * The incident a day with no login used to be filed as, before the two causes
+ * that shared the name were told apart.
+ */
+export const LEGACY_NO_SHOW = 'Coach No-Show';
+export const SESSION_NO_SHOW = 'Did Not Join the Session';
+export const APP_LOGIN_VIOLATION = 'Not Logged In on the App';
+
+/** Only the settler files under this name, so it identifies the cause. */
+const SYSTEM_ATTENDANCE = 'System — attendance';
+
+/**
+ * Whether an incident sits on the same occurrence ladder as the type being
+ * priced.
+ *
+ * Normally that is just "same type". The exception is the history: for years
+ * a coach who missed a session and a coach who forgot to open the app were
+ * both filed as "Coach No-Show", and the split would have handed every coach
+ * a clean ladder — a real no-show at #57 would have been repriced as #1, the
+ * cheapest rung. So the old records keep counting, against whichever of the
+ * two they actually were. The settler is the only thing that ever filed one
+ * automatically, and it signs them, so the cause is on the record and does
+ * not have to be guessed.
+ *
+ * Nothing is rewritten. Incidents already charged and paid keep the name they
+ * were charged under; only the counting reads through it.
+ */
+export const sameLadder = (v, violationType) => {
+  if (v?.type === violationType) return true;
+  if (v?.type !== LEGACY_NO_SHOW) return false;
+  const bySystem = v?.reported_by === SYSTEM_ATTENDANCE;
+  if (violationType === APP_LOGIN_VIOLATION) return bySystem;
+  if (violationType === SESSION_NO_SHOW) return !bySystem;
+  return false;
+};
+
 export function getViolationOccurrenceNumber(coachId, violationType, incidentDateStr, allViolations) {
   // The tracking window belongs to the violation type, per Annexure-1. It was
   // read off a violation record, which never carries the field — so every type
@@ -369,7 +405,7 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
   // Filter other historical violations of the same type for this coach
   const historical = allViolations.filter(v => 
     v.coach_id === coachId && 
-    v.type === violationType && 
+    sameLadder(v, violationType) && 
     new Date(v.incident_date) <= new Date(incidentDateStr) &&
     // An appeal that succeeded, or an incident the manager refused, did not
     // happen. One still awaiting approval did, and counts.
@@ -407,9 +443,21 @@ export function getViolationOccurrenceNumber(coachId, violationType, incidentDat
 export const PENALTY_AWAITING_APPROVAL = 'Pending_RM_Approval';
 export const PENALTY_REFUSED = 'Rejected';
 
+// The coach has asked for the day to be regularised, and the charge waits on
+// that answer. A missed punch is as often the app's fault as the coach's, so
+// taking the money while the question is open and giving it back later is the
+// wrong way round: nothing is charged until somebody has decided.
+export const PENALTY_REG_RAISED = 'Regularization_Raised';
+
+// The day was regularised: the login exists after all, so the incident did
+// not happen. Not charged, and — unlike a waiver — not counted either, or a
+// coach cleared of a missed punch would still be pushed up a rung by it.
+export const PENALTY_REGULARIZED = 'Regularized';
+
 export const isPenaltyChargeable = (v) =>
   v?.status !== 'Appeal_Approved' && v?.status !== 'Waived'
-  && v?.status !== PENALTY_AWAITING_APPROVAL && v?.status !== PENALTY_REFUSED;
+  && v?.status !== PENALTY_AWAITING_APPROVAL && v?.status !== PENALTY_REFUSED
+  && v?.status !== PENALTY_REG_RAISED && v?.status !== PENALTY_REGULARIZED;
 
 /**
  * Whether an incident still counts towards the occurrence ladder.
@@ -420,7 +468,8 @@ export const isPenaltyChargeable = (v) =>
  * must not push the coach's next real incident up a step.
  */
 export const isPenaltyCounted = (v) =>
-  v?.status !== 'Appeal_Approved' && v?.status !== PENALTY_REFUSED;
+  v?.status !== 'Appeal_Approved' && v?.status !== PENALTY_REFUSED
+  && v?.status !== PENALTY_REGULARIZED;
 
 export function getPenaltyConsequence(variantId, violationType, occurrenceNo, penaltyMatrix) {
   // A violation is looked for in the coach's own variant first, then in the
@@ -621,7 +670,11 @@ export function computeMonthlyPay(coach, monthData, scoreData, activeViolationsF
   // Eligibility: Attendance >= 95%, 0 violations in month, 0 Coach No-Shows
   const attendancePct = Number(monthData.attendance_pct) || 0;
   const monthViolationsCount = activeViolationsForMonth.length;
-  const coachNoShows = activeViolationsForMonth.filter(v => v.type === 'Coach No-Show').length;
+  // Every name a missed session has ever been filed under. Matching only the
+  // retired one would have handed the bonus back the moment the type was
+  // renamed, to coaches who had missed sessions that month.
+  const coachNoShows = activeViolationsForMonth.filter(
+    v => v.type === LEGACY_NO_SHOW || v.type === SESSION_NO_SHOW).length;
   
   // Loss of Pay that was not planned costs the bonus: the point of it is
   // reliability, so an absence nobody could plan around defeats it. Leave that
@@ -840,6 +893,65 @@ export function buildPeriod(year, monthIndex) {
 }
 
 /** The period that the given date falls inside. */
+/* ---------------------------------------------------------------------------
+ * When the app's own session list is read, without anybody asking.
+ * ------------------------------------------------------------------------ */
+
+/** 4 a.m. India time, on the 16th. */
+export const AUTO_SCAN_HOUR_IST = 4;
+
+/**
+ * The cycle whose automatic read is due by `now`, and the moment it fell due.
+ *
+ * A cycle runs the 16th to the 15th and is named for the month it ends in, so
+ * "December 2026" is 16 Nov to 15 Dec. The read happens at 4 a.m. on the
+ * 16th: the earliest hour at which the cycle that just closed is complete and
+ * nothing is still being delivered into it. Running at 15th midnight would
+ * read a cycle that still had a day in it; running later in the day would
+ * read it after somebody had already started reconciling by hand.
+ *
+ * Expressed as "which cycle is overdue", not "is it 4 a.m. right now",
+ * deliberately. Nothing in this app is running at 4 a.m. — it is a page in a
+ * browser — so a check that only fires on the minute would never fire at all.
+ * This answers the question a page can actually answer when it opens: has the
+ * moment passed, and has anybody done it yet.
+ */
+export function autoScanDueCycle(now = Date.now()) {
+  // `now` as India reads it, so "the 16th" means the 16th there and not
+  // wherever the laptop happens to be.
+  const ist = new Date(now + 5.5 * 3600 * 1000);
+  let year = ist.getUTCFullYear();
+  let month = ist.getUTCMonth();           // 0-based
+
+  const triggerAt = (y, m) =>
+    new Date(`${y}-${String(m + 1).padStart(2, '0')}-16T0${AUTO_SCAN_HOUR_IST}:00:00+05:30`).getTime();
+
+  // Before this month's 16th at 4 a.m., the cycle that is due is the one the
+  // previous 16th closed.
+  if (now < triggerAt(year, month)) {
+    month -= 1;
+    if (month < 0) { month = 11; year -= 1; }
+  }
+
+  return {
+    // The cycle that ended on the 15th of this month carries this month's name.
+    month: `${MONTH_NAMES[month]} ${year}`,
+    at: triggerAt(year, month)
+  };
+}
+
+/**
+ * When the next automatic read falls, after the one that is currently due.
+ * Shown so the page can say when it will happen rather than only that it will.
+ */
+export function nextAutoScanAt(now = Date.now()) {
+  const due = autoScanDueCycle(now);
+  const d = new Date(due.at + 5.5 * 3600 * 1000);
+  let y = d.getUTCFullYear(), m = d.getUTCMonth() + 1;
+  if (m > 11) { m = 0; y += 1; }
+  return new Date(`${y}-${String(m + 1).padStart(2, '0')}-16T0${AUTO_SCAN_HOUR_IST}:00:00+05:30`).getTime();
+}
+
 export function getPeriodForDate(date) {
   const d = new Date(date);
   const day = d.getDate();
