@@ -17,6 +17,7 @@ import {
 
 import {
   LEAVE_TYPES, leaveTypesFor, applicableLeaveTypes, leaveType, leaveYearFor, accruedDays,
+  yearEndCarry,
   checkLeaveApplication, assessAttendanceDay, loggedHoursForDay, workingDayOf,
   standardDailyHours, halfDayHours, lopPerDay, MIN_LOGIN_MINUTES, SHORTFALL_VIOLATION,
   PHOTO_RETENTION_DAYS, CENTRE_RADIUS_METRES
@@ -180,7 +181,7 @@ const UNASSIGNED_VARIANT = {
 const findVariant = (variants, variantId) =>
   (variants || []).find(v => v.id === variantId) || UNASSIGNED_VARIANT;
 
-const ENABLED_VIEWS = ["dashboard", "coaches", "score-tracker", "pay-calculator", "attendance", "certifications", "penalties", "user-access", "org-chart"];
+const ENABLED_VIEWS = ["dashboard", "my-profile", "coaches", "score-tracker", "pay-calculator", "attendance", "certifications", "penalties", "user-access", "org-chart"];
 const isViewEnabled = (view) => ENABLED_VIEWS.includes(view);
 
 // Coach disciplines offered on the Add Coach form, mapped to the policy variant
@@ -276,7 +277,26 @@ const PROFILE_PAY_ROLES = ['Super Admin', 'HR Manager', 'Finance'];
 // person is paid, and the roles that do not set pay have no reason to hold
 // one. Named separately from PROFILE_PAY_ROLES so changing one does not
 // quietly change the other.
+// Payslips are issued, not browsed. A Reporting Manager runs a squad rather
+// than its payroll, a Showrunner is built to keep pay out of view, and a
+// coach receives their payslip rather than pulling it from the system. The
+// squad manager sees what each of their coaches is paid, and nothing more —
+// see PAY_DETAIL_ROLES.
 const PAYSLIP_ROLES = ['Super Admin', 'HR Manager', 'Finance'];
+
+// How the pay was arrived at: scores, bands, rates, every incentive and
+// penalty line, the org-wide totals, the exports, the lock, and the calculator
+// to model a case in. A Reporting Manager runs a squad rather than its
+// payroll, so they are shown what each coach is paid and nothing behind it —
+// one name, one figure. Enough to answer a coach who asks, not enough to
+// read the pay policy off the screen.
+const PAY_DETAIL_ROLES = ['Super Admin', 'HR Manager', 'Finance', 'Auditor'];
+
+// The coach page's Pay & payslips tab — the payroll calculator, the month by
+// month pay history and the slips themselves. Shut to a Showrunner, who is
+// kept away from pay altogether, and to a Reporting Manager, whose sight of
+// pay is the one figure per coach on the pay run.
+const HIDES_PAY_TAB = (role) => HIDES_PAY(role) || !PAY_DETAIL_ROLES.includes(role);
 
 const OFFERED_VARIANT_IDS = ['V1', 'V3', 'V5', 'V6'];
 
@@ -1020,7 +1040,6 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       ['Night Sessions', nightSessions, seed.nightSessions, 'the score card — Incentive', 'nightSessions', 'period'],
       ['5-Star Streak', streak, seed.streak, 'the score card — Incentive', 'streak', 'period'],
       ['Missed Sessions', missedSessions, seed.missedSessions ?? 0, 'the score card — Incentive', 'missedSessions', 'period'],
-      ['Loss of Pay (days)', lopDays, seed.lopDays ?? 0, 'the score card — Incentive, or by settling a day', 'lopDays', 'period'],
       ['Policy Variant', variantId, seed.variantId, 'the coach profile', 'variantId', 'profile'],
       ['Org Work Pay', orgWorkPay, seed.orgWorkPay, 'the coach page — Org Work', null, null],
       ['Total Penalty', penalties, seed.penalties, 'the Penalties tab', null, null],
@@ -1253,31 +1272,22 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
       </tr>
     ];
 
-    // Waiving sits with the penalty it reduces. It is the one editable cell on
-    // this side of the screen, and deliberately so: somebody looking at a
-    // ₹15,600 charge wants to forgive part of it there, not in a column away
-    // from the figure they are reading.
+    // What was waived, and what that leaves. Both are stated here and keyed
+    // in on the input side — nothing on this half of the screen is typed
+    // into, so a figure read off it is always one the calculator worked out.
     if (penaltyTotal > 0 && canWaive) {
-      rows.push(
-        <tr key="penalty-waived">
-          <td className="calc-label">
-            Penalty Waived (₹)
-            <span className="calc-hint">
-              forgive part or all of it — the incidents keep their amounts and their place on the ladder
-            </span>
-          </td>
-          <td className="calc-output-cell">
-            <input
-              type="number" min="0" max={penaltyTotal} step="any"
-              className="calc-input calc-waive-input"
-              value={penaltyWaiver}
-              onChange={(e) => setPenaltyWaiver(e.target.value)}
-              aria-label="Penalty waived this month"
-            />
-          </td>
-        </tr>
-      );
       if (waived > 0) {
+        rows.push(
+          <tr key="penalty-waived">
+            <td className="calc-label">
+              Penalty Waived (₹)
+              <span className="calc-hint">
+                entered on the left — the incidents keep their amounts and their place on the ladder
+              </span>
+            </td>
+            <td className="calc-output-cell">− {rupees(waived)}</td>
+          </tr>
+        );
         rows.push(
           <tr key="penalty-charged">
             <td className="calc-label">
@@ -1509,20 +1519,27 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
                  : `blank uses the standard ${rupees(BEYOND_AVAILABILITY_RATE)}`)}
             {inputRow("Night Sessions Count", num(nightSessions, setNightSessions), "10 PM – 4 AM")}
             {inputRow("5-Star Streak Count", num(streak, setStreak), "consecutive")}
-            {inputRow("Consistency Bonus Eligible?", (
-              <select className="calc-input" value={consistency} onChange={(e) => setConsistency(e.target.value)}>
-                <option value="NO">NO</option>
-                <option value="YES">YES</option>
-              </select>
-            ), "zero violations and zero no-shows")}
+            {/* The consistency bonus is not asked for anywhere. It is
+                worked out from the record — 95% attendance, no incidents, no
+                missed sessions, no unplanned Loss of Pay — and the figure it
+                comes to is on the computed side. Offering it as an input
+                invited it to be set, which it never was. */}
             {inputRow("Org Work Pay This Month (₹)", num(orgWorkPay, setOrgWorkPay), "Flexi & Flexi-Fixed only")}
             {inputRow("Missed Sessions", num(missedSessions, setMissedSessions),
               "charged at 1x up to 5, 1.5x up to 10, 2x above")}
-            {inputRow("Loss of Pay (days)", num(lopDays, setLopDays, 31),
-              category === 'Flexi'
-                ? 'recorded only — a Flexi coach has no base pay to deduct from'
-                : 'base pay ÷ 26 per day, taken before tax')}
+            {/* Loss of Pay is not asked for here. It is the count of days
+                settled with no login on Attendance & Leave, and it is stated
+                on the computed side with what it costs. */}
             {inputRow("Total Penalty (₹)", num(penalties, setPenalties), "recorded incidents; missed sessions are charged separately")}
+            {/* Waiving is an input like any other, so it is keyed in on this
+                side with them. The breakdown opposite states what was waived
+                and what is left to charge, and states it only — one figure is
+                either entered or computed, never both. */}
+            {canWaive && penaltyTotal > 0 && inputRow("Penalty Waived (₹)",
+              num(penaltyWaiver, setPenaltyWaiver, penaltyTotal),
+              waived > 0
+                ? `${rupees(waived)} forgiven of ${rupees(penaltyTotal)} — the incidents keep their amounts and their place on the ladder`
+                : `forgive part or all of the ${rupees(penaltyTotal)} charged — the incidents keep their amounts and their place on the ladder`)}
             {/* Per-session rate applies to every category: Flexi and Flexi-Fixed
                 pay it on all sessions, Fixed on the ones beyond its threshold. */}
             {/* Overriding what a coach is paid is a pay decision, not a
@@ -1704,14 +1721,25 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
               `${pay.missedSessionMultiplier}× × ${pay.missedSessions} × ${rupees(pay.missedSessionRate)}` +
                 (category === 'Fixed' ? ' — fixed pay ÷ 26 ÷ 5' : '')
             )}
-            {Number(lopDays) > 0 && outputRow(
-              "Loss of Pay (₹)",
-              `− ${rupees(pay.lossOfPay)}`,
-              category === 'Flexi'
-                ? `${pay.lopDays} day(s) — recorded, nothing deducted`
-                : `${pay.lopDays} day(s) × ${rupees(lopPerDayHere)} — base pay ÷ 26`
-            )}
             {penaltyRow()}
+            {/* Under the penalty, because it is the other thing that comes
+                off the month and the two are read together. Always drawn:
+                "no days lost" is an answer, and its absence was being read
+                as the figure not having been worked out. */}
+            {outputRow(
+              "Loss of Pay (days)",
+              pay.lopDays || 0,
+              'days settled with no login — recorded on Attendance & Leave'
+            )}
+            {outputRow(
+              "Loss of Pay (₹)",
+              pay.lossOfPay > 0 ? `− ${rupees(pay.lossOfPay)}` : rupees(0),
+              category === 'Flexi'
+                ? 'a Flexi coach has no base pay to deduct from — recorded only'
+                : pay.lopDays > 0
+                  ? `${pay.lopDays} day(s) × ${rupees(lopPerDayHere)} — base pay ÷ 26`
+                  : `${rupees(lopPerDayHere)} a day — base pay ÷ 26, if any are lost`
+            )}
             {outputRow("Gross Monthly Pay (₹)", rupees(grossPay), null, true)}
             {outputRow("Income Tax u/s 194J (₹)", `− ${rupees(incomeTax)}`, "10% TDS on professional fees")}
             {outputRow("Net Monthly Pay (₹)", rupees(netPay), "what reaches the coach", true)}
@@ -1814,7 +1842,7 @@ function PayCalculator({ variants, seed, onSeedChange, coachOptions, selectedCoa
 
         <p className="calc-notes">
           Night premium is ₹60/session for Flexi &amp; Flexi-Fixed only. Milestone slabs: Fixed 156 → ₹1,000, 182 → ₹2,000; Flexi / Flexi-Fixed 96 → ₹1,152, 135 → ₹2,025, 186 → ₹3,640.
-          Consistency bonus is ₹500 with zero violations and zero no-shows. The 5-star streak resets on any violation or no-show.
+          Consistency bonus is ₹500, worked out from the record: 95% attendance, no incidents, no missed sessions and no unplanned Loss of Pay. The 5-star streak resets on any violation or no-show.
         </p>
       </div>
     </div>
@@ -2067,7 +2095,7 @@ const COACH_DETAIL_TABS = [
   { key: 'pay',       label: 'Pay & payslips',     tone: 'blue',   pay: true },
   { key: 'leave',     label: 'Leave & attendance', tone: 'indigo' },
   { key: 'incidents', label: 'Incidents',          tone: 'amber' },
-  { key: 'details',   label: 'Details',            tone: 'teal' }
+  { key: 'details',   label: 'Profile',            tone: 'teal' }
 ];
 
 // Section 194J of the Income Tax Act: 10% withheld at source on professional
@@ -2248,7 +2276,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // A coach's account of a day they did not log in for. Raised only by the
   // coach; decided by Super Admin, HR, or their own Reporting Manager.
   const [regularisations, setRegularisations] = useState([]);
-  const [regDraft, setRegDraft] = useState({ type: "", reason: "" });
   const [holidays, setHolidays] = useState([]);
   const [attendanceCoachId, setAttendanceCoachId] = useState("");
   // Attendance Regularization state: tracks missed punches / regularization requests
@@ -2305,6 +2332,17 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [awayView, setAwayView] = useState('month');
   const [awayMonth, setAwayMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [attendanceTab, setAttendanceTab] = useState('leave');
+  // Attendance and leave are two jobs, not one screen: logging a day and
+  // spending a balance have nothing to say to each other.
+  const [coachSubTab, setCoachSubTab] = useState('attendance');
+  const [leaveApplyOpen, setLeaveApplyOpen] = useState(false);
+  const [leaveTypeOpen, setLeaveTypeOpen] = useState(false);
+  // The rate cards: reference, not working. Shut unless asked for — they are
+  // several screens of tables under the thing people came to read.
+  const [refTablesOpen, setRefTablesOpen] = useState(false);
+  // Which leave type's details are open, and which half of them is showing.
+  const [leaveDetailType, setLeaveDetailType] = useState(null);
+  const [leaveDetailTab, setLeaveDetailTab] = useState('history');
   const onTab = (key) => currentRole === 'Coach' || attendanceTab === key;
   // A photograph opened full size, fetched on demand — the list holds paths,
   // not images, and signing every one of them to render thumbnails would be a
@@ -2506,6 +2544,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [coachesVariantFilter, setCoachesVariantFilter] = useState("All");
   const [coachesCategoryFilter, setCoachesCategoryFilter] = useState("All");
   const [coachesStatusFilter, setCoachesStatusFilter] = useState("All");
+  // A suspended or exited coach is still on the books — they hold history, a
+  // last payslip and open incidents — but they are not who the directory is
+  // for. They are kept in their own section, shut until asked for.
+  const [coachesShowInactive, setCoachesShowInactive] = useState(false);
+  const [orgShowInactive, setOrgShowInactive] = useState(false);
 
   // Coach Master drill-down: null shows the directory, an id shows that coach's page
   const [coachDetailId, setCoachDetailId] = useState(null);
@@ -2526,6 +2569,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [scorecardTab, setScorecardTab] = useState("core");
   const [penaltyVariant, setPenaltyVariant] = useState("V1");
   const [trackerTab, setTrackerTab] = useState("experience");
+  const [trackerMoneyTab, setTrackerMoneyTab] = useState("incentive");
+  // Which pay cycle the coach's milestone bar is reading. Null means the one
+  // running now, so it follows the cycle over without being reset.
+  // Which pay cycle the coach's dashboard is reading — the score, what was
+  // charged, the dials and the milestone bar all follow it. Null means the
+  // one running now, so it rolls over on its own.
+  const [coachCycle, setCoachCycle] = useState(null);
   // Bulk upload: the month/file dialog, then the preview that must be accepted.
   const [bulkDialog, setBulkDialog] = useState(null);   // { mode, tab, month }
   const [bulkPreview, setBulkPreview] = useState(null); // { tab, month, scope, fileName, changes, skipped, rejected }
@@ -2555,6 +2605,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
   // Attendance Regularization modal states
   const [raiseRegModal, setRaiseRegModal] = useState(false);
+  // Two different claims wear the same name. 'hours' says the day was worked
+  // and the clock missed it, and writes the times. 'exempt' says the day
+  // should not be charged at all, and writes no times — there were none.
+  const [raiseRegMode, setRaiseRegMode] = useState('hours');
   const [raiseRegCoach, setRaiseRegCoach] = useState(null);
   const [raiseRegDate, setRaiseRegDate] = useState("");
   const [raiseRegInTime, setRaiseRegInTime] = useState("09:00");
@@ -2659,6 +2713,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // in app_settings rather than this browser, so it is once for the company
   // and not once per laptop.
   const [lateAutoRun, setLateAutoRun] = useState(null);
+  // Reading the whole roster's tracked figures for one cycle: what was
+  // found, before anybody writes it.
+  const [trackedScan, setTrackedScan] = useState(null);
+  const [trackedAutoRun, setTrackedAutoRun] = useState(null);
+  const [trackedFetchMonth, setTrackedFetchMonth] = useState(null);
+  const [lopRegCycle, setLopRegCycle] = useState(null);
   // The review window the manual read opens: every reading laid out, with
   // the ones already on the record kept separate, and nothing filed until
   // somebody presses File.
@@ -2669,8 +2729,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [trackerMode, setTrackerMode] = useState("record");
   // Close & pay: 'summary' is the ten columns Finance signs off against,
   // 'full' is the seventeen-column breakdown behind them.
-  const [payMode, setPayMode] = useState("summary");
-  const [payFilter, setPayFilter] = useState("Everyone");
   const [trackerFind, setTrackerFind] = useState("");
   const [trackerPick, setTrackerPick] = useState("");
   const fmtTrackerDay = (d) =>
@@ -2762,6 +2820,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     // must not start charging people.
     setChargeLop(next.settings?.charge_lop === true);
     setLateAutoRun(next.settings?.late_scan_last_run ?? null);
+    setTrackedAutoRun(next.settings?.tracked_scan_last_run ?? null);
     if (next.openPeriodMonth !== undefined) setOpenPeriodMonth(next.openPeriodMonth);
     if (!profile?.coach_id && next.coaches?.length > 0) {
       setCurrentCoachContext(next.coaches[0].id);
@@ -2972,10 +3031,24 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // One group at a time, the way the score card reads, so the table stops
   // running off the side. The coach identity group always stays.
   const trackerIdentity = trackerVisible.find(g => g.key === 'info');
+  // Two tables, not one. Experience, technical knowledge, performance and the
+  // final band are what the coach scored; incentives, violations and bonuses
+  // are what the month paid and what it cost. Reading them in one strip
+  // invited the two to be added up, and they do not add up — a violation
+  // count is not a score, and a bonus is not a band.
+  const TRACKER_MONEY_GROUPS = ['incentive', 'violations', 'bonuses'];
   const trackerTabs = trackerVisible.filter(g => g.key !== 'info');
-  const trackerActive = trackerTabs.find(g => g.key === trackerTab) || trackerTabs[0];
+  const trackerScoreTabs = trackerTabs.filter(g => !TRACKER_MONEY_GROUPS.includes(g.key));
+  const trackerMoneyTabs = trackerTabs.filter(g => TRACKER_MONEY_GROUPS.includes(g.key));
+
+  const trackerActive = trackerScoreTabs.find(g => g.key === trackerTab) || trackerScoreTabs[0];
   const trackerGroups = [trackerIdentity, trackerActive].filter(Boolean);
   const trackerColumns = trackerGroups.flatMap(g => g.columns);
+
+  const trackerMoneyActive = trackerMoneyTabs.find(g => g.key === trackerMoneyTab)
+    || trackerMoneyTabs[0];
+  const trackerMoneyGroups = [trackerIdentity, trackerMoneyActive].filter(Boolean);
+  const trackerMoneyColumns = trackerMoneyGroups.flatMap(g => g.columns);
 
   // Write-through. Supabase gets a debounced diff of whatever changed;
   // localStorage keeps a mirror so a dropped connection is not data loss.
@@ -4352,7 +4425,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setReviewSync({
         coachId: coach.id, period: run.period_month,
         error: `${coach.name} has no App Coach ID. The feed is keyed by it — ` +
-               `set it on their profile under Details, then try again.`
+               `set it on their Profile tab, then try again.`
       });
       return;
     }
@@ -4470,7 +4543,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       setSessionSync({
         coachId: coach.id, period: run.period_month,
         error: `${coach.name} has no App Coach ID. The summary is keyed by it — ` +
-               `set it on their profile under Details, then try again.`
+               `set it on their Profile tab, then try again.`
       });
       return;
     }
@@ -4552,7 +4625,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     }
     if (!coach.app_coach_id) {
       showToast(`${coach.name} has no App Coach ID. The app's figures are keyed ` +
-                `by it — set it under Details on their profile, then try again.`, 'danger');
+                `by it — set it on their Profile tab, then try again.`, 'danger');
       return;
     }
 
@@ -4664,7 +4737,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     if (!coach.app_coach_id) {
       setAvailSync({ coachId: coach.id, error:
         `${coach.name} has no App Coach ID. The feed is keyed by it — set it on ` +
-        `their profile under Details, then try again.` });
+        `their Profile tab, then try again.` });
       return;
     }
 
@@ -4883,7 +4956,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
         error: wanted.length === 0
           ? 'No coach to read.'
           : `None of these coaches has an App Coach ID. The app's sessions are keyed `
-            + `by it — set it under Details on the profile, then read again.`
+            + `by it — set it on the Profile tab, then read again.`
       });
       return null;
     }
@@ -4995,6 +5068,142 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * rather than after, so two people opening the page at once cannot both
    * run it; whoever claims the cycle does it.
    * ------------------------------------------------------------------ */
+  /**
+   * Read the whole roster's tracked figures for one cycle.
+   *
+   * Sessions and reviews only. Night sessions are deliberately left out:
+   * that feed answers one night at a time, so a month of them is thirty
+   * requests a coach and a thousand for a roster — it stays a per-coach
+   * action on the score card.
+   *
+   * Nothing is written here. The reading is collected, shown, and only
+   * written when somebody says to.
+   */
+  const scanTrackedData = async (periodMonth, { quiet = false } = {}) => {
+    const records = [...currentMonth, ...historicMonths]
+      .filter(r => r.period_month === periodMonth);
+    if (records.length === 0) {
+      if (!quiet) showToast(`No records in ${periodMonth} to read against.`, 'error');
+      return null;
+    }
+
+    const sBase = import.meta.env.VITE_SESSION_API_BASE || SESSION_API_DEFAULT;
+    const rBase = import.meta.env.VITE_REVIEW_API_BASE || REVIEW_API_DEFAULT;
+    const sToken = await apiTokenFor(sBase);
+    const rToken = await apiTokenFor(rBase);
+
+    setTrackedScan({ period: periodMonth, busy: true, rows: [] });
+    if (!quiet) showToast(`Reading ${periodMonth} from the HB+ app…`, 'info');
+
+    const targets = records
+      .map(run => ({ run, coach: coaches.find(c => c.id === run.coach_id) }))
+      .filter(x => x.coach && x.coach.status === 'Active')
+      .sort((x, y) => String(x.coach.name).localeCompare(String(y.coach.name)));
+
+    const readOne = async ({ run, coach }) => {
+      const base = {
+        coachId: coach.id, name: coach.name, locked: run.status === 'FINANCE_LOCKED',
+        was: {
+          sessions: Number(run.sessions_completed) || 0,
+          missed: Number(run.missed_sessions) || 0,
+          streak: Number(run.five_star_streak) || 0
+        }
+      };
+      if (!coach.app_coach_id) {
+        return { ...base, problem: 'No App Coach ID — the feeds are keyed by it' };
+      }
+      const [sRes, rRes] = await Promise.all([
+        fetchSessionSummary(coach.app_coach_id, {
+          base: sBase, fromDay: run.period_start, toDay: run.period_end, token: sToken
+        }),
+        fetchReviews(coach.app_coach_id, { base: rBase, token: rToken })
+      ]);
+
+      const found = {};
+      const failed = [];
+      if (sRes.ok) {
+        if (sRes.payable != null) found.sessions = sRes.payable;
+        if (sRes.coachMissed != null) found.missed = sRes.coachMissed;
+        if (sRes.memberMissed != null) found.memberMissed = sRes.memberMissed;
+      } else failed.push(`sessions — ${sRes.why}`);
+
+      if (rRes.ok) {
+        const breakers = violations
+          .filter(v => v.coach_id === coach.id && isPenaltyCounted(v))
+          .map(v => v.incident_date);
+        found.streak = fiveStarStreak(rRes.reviews, breakers, {
+          from: new Date(`${run.period_start}T00:00:00`),
+          to: new Date(`${run.period_end}T23:59:59`)
+        }).streak;
+      } else failed.push(`reviews — ${rRes.why}`);
+
+      const changed = ['sessions', 'missed', 'streak']
+        .filter(k => found[k] != null && found[k] !== base.was[k]);
+      return { ...base, found, changed, problem: failed.length ? failed.join(' · ') : null };
+    };
+
+    // In fours. The admin API is one service behind all of these, and
+    // thirty-three coaches at once is how a read gets rate-limited.
+    const rows = [];
+    for (let i = 0; i < targets.length; i += 4) {
+      // eslint-disable-next-line no-await-in-loop
+      rows.push(...await Promise.all(targets.slice(i, i + 4).map(readOne)));
+    }
+
+    const scan = {
+      period: periodMonth, at: Date.now(), rows,
+      changed: rows.filter(r => r.changed?.length).length,
+      problems: rows.filter(r => r.problem).length,
+      locked: rows.filter(r => r.locked).length
+    };
+    setTrackedScan(scan);
+    return scan;
+  };
+
+  /**
+   * Write a reading onto the cycle's score cards.
+   *
+   * Only the cells the app owns — sessions worked, sessions the coach missed,
+   * and the five-star streak — and only where the figure differs from what is
+   * held. A finance-locked card is left alone: its month is settled.
+   */
+  const commitTrackedData = (scan, { by = null, quiet = false } = {}) => {
+    if (!scan) return { written: 0 };
+    if (!SCORE_EDIT_ROLES.includes(currentRole) && !by) {
+      showToast(`The ${currentRole} role cannot write score cards.`, 'error');
+      return { written: 0 };
+    }
+    const wanted = new Map();
+    for (const r of scan.rows) {
+      if (r.locked || !r.changed?.length) continue;
+      const patch = {};
+      if (r.found.sessions != null) patch.sessions_completed = r.found.sessions;
+      if (r.found.missed != null) patch.missed_sessions = r.found.missed;
+      if (r.found.memberMissed != null) patch.member_missed = r.found.memberMissed;
+      if (r.found.streak != null) patch.five_star_streak = r.found.streak;
+      if (Object.keys(patch).length) wanted.set(r.coachId, patch);
+    }
+    if (wanted.size === 0) {
+      if (!quiet) showToast('Nothing to write — every figure already matches.', 'info');
+      return { written: 0 };
+    }
+
+    const touch = (e) => (e.period_month === scan.period && wanted.has(e.coach_id)
+      ? { ...e, ...wanted.get(e.coach_id) } : e);
+    setCurrentMonth(prev => prev.map(touch));
+    setHistoricMonths(prev => prev.map(touch));
+
+    logAudit('Tracked Data Read',
+      `${scan.period}: ${wanted.size} score card(s) filled from the app` +
+      `${by ? ` by ${by}` : ''}` +
+      `${scan.locked ? `; ${scan.locked} locked card(s) left alone` : ''}` +
+      `${scan.problems ? `; ${scan.problems} coach(es) could not be read` : ''}.`);
+    if (!quiet) {
+      showToast(`${wanted.size} score card${wanted.size === 1 ? '' : 's'} filled from the app.`, 'success');
+    }
+    return { written: wanted.size };
+  };
+
   const autoScanTried = useRef(false);
 
   useEffect(() => {
@@ -5054,6 +5263,43 @@ export default function App({ session = null, profile = null, onSignOut = null }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStateLoaded, currentRole, lateAutoRun]);
+
+  const autoTrackedTried = useRef(false);
+
+  /**
+   * The same 4 a.m. on the 16th the late-join read runs on, for the roster's
+   * tracked figures. Claimed in the settings table first, so two people with
+   * the app open do not both read the month.
+   */
+  useEffect(() => {
+    if (!isStateLoaded) return;
+    if (!SCORE_EDIT_ROLES.includes(currentRole)) return;
+
+    const due = autoScanDueCycle();
+    if (!due.month || trackedAutoRun === due.month) return;
+    const months = new Set([...historicMonths, ...currentMonth].map(r => r.period_month));
+    if (!months.has(due.month)) return;
+    if (autoTrackedTried.current) return;
+    autoTrackedTried.current = true;
+
+    (async () => {
+      const claimed = await saveSetting('tracked_scan_last_run', due.month, 'Scheduled read');
+      if (!claimed.ok) return;
+      setTrackedAutoRun(due.month);
+
+      const scan = await scanTrackedData(due.month, { quiet: true });
+      if (!scan) return;
+      // Written without asking, as the late-join read is: these are the app's
+      // own counts of sessions and reviews, and there is no judgement in
+      // them for anyone to check. A locked card is still left alone.
+      const res = commitTrackedData(scan, { by: 'Scheduled read', quiet: true });
+      if (res.written > 0) {
+        showToast(
+          `${due.month} was read automatically: ${res.written} score card` +
+          `${res.written === 1 ? '' : 's'} filled from the app.`, 'info');
+      }
+    })();
+  }, [isStateLoaded, currentRole, trackedAutoRun]);
 
   /**
    * File the late joins that were read, as incidents.
@@ -5622,6 +5868,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
     setRaiseRegOutTime("18:00");
     setRaiseRegReason("Forgot to Log In & Log Out");
     setRaiseRegNote("");
+    setRaiseRegMode('hours');
     setRaiseRegModal(true);
   };
 
@@ -5862,39 +6109,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * which policy they are on — and going to find each of those is how a
    * decision gets made without them.
    */
-  const demographicsFor = (coach) => {
-    if (!coach) return [];
-    const vCfg = findVariant(variants, coach.variant_id);
-    const stage = coach.employment_stage || 'Training';
-    const stageDate = stage === 'Training' ? coach.training_end_date
-      : stage === 'Probation' ? coach.probation_end_date : null;
-    const overdue = stageDate && new Date(stageDate) < new Date();
-
-    return [
-      { label: 'Email', value: coach.email || '—' },
-      { label: 'Phone', value: coach.phone || '—' },
-      { label: 'Gender', value: coach.gender || '— not set, so some leave types cannot be offered' },
-      { label: 'Coach type', value: coach.coach_type || vCfg.discipline || '—' },
-      { label: 'Category', value: coach.coach_category || '—' },
-      { label: 'Policy variant', value: vCfg.placeholder ? 'none assigned' : `${vCfg.name} (${vCfg.id})` },
-      { label: 'Works', value: coach.work_mode === 'Centre'
-          ? `at ${coach.centre_name || 'a centre'} — within ${CENTRE_RADIUS_METRES} m`
-          : 'remotely — anywhere' },
-      { label: 'Weekly off', value: coach.coach_category === 'Flexi'
-          ? 'none — a day with no availability is off'
-          : (coach.weekly_off_day == null ? '— not set' : WEEKDAYS[coach.weekly_off_day]) },
-      { label: 'Joined', value: coach.date_of_joining
-          ? new Date(coach.date_of_joining).toLocaleDateString('en-IN')
-          : '— not set, so tenure scores as the five-year maximum' },
-      { label: 'Stage', value: stage
-          + (stageDate ? ` — ends ${new Date(stageDate).toLocaleDateString('en-IN')}` : '')
-          + (overdue ? ' (past its date, awaiting HR)' : ''),
-        flag: overdue || !stageDate },
-      { label: 'Reporting Manager', value: coach.reporting_manager_id
-          || '— none, so nobody can approve their leave', flag: !coach.reporting_manager_id },
-      { label: 'Leave year', value: `${leaveYearFor(new Date()).start} to ${leaveYearFor(new Date()).end}` }
-    ];
-  };
 
   /** Where a coach stands this moment: in, out, away or on leave. */
   const presenceOf = (coach) => {
@@ -6121,6 +6335,83 @@ export default function App({ session = null, profile = null, onSignOut = null }
       });
     }
     setBalancePreview({ fileName: file.name, rows, year });
+  };
+
+  /**
+   * Closing one leave year and opening the next.
+   *
+   * Nothing rolls over by itself. At year end each balance is settled by its
+   * own policy — Paid Leave carries up to its cap and the excess is encashed,
+   * everything else lapses — and the new year opens with that as its opening
+   * figure, nothing used and nothing adjusted. Accrual is left null so the
+   * policy credits it month by month, as it does in any year.
+   *
+   * It is written as new rows against the new leave year, so last year's
+   * record stays exactly as it was closed and can still be read.
+   */
+  const leaveYearClosePreview = () => {
+    const { year } = leaveYearFor(new Date());
+    const rows = [];
+    for (const c of coaches.filter(x => x.status === 'Active')) {
+      for (const t of leaveTypesFor(c).filter(x => x.id !== 'LOP')) {
+        const b = leaveBalanceFor(c, t.id);
+        const { carried, encashed, lapsed } = yearEndCarry(t.id, b.available);
+        rows.push({
+          coachId: c.id, name: c.name, type: t.id, label: t.label,
+          closing: b.available, carried, encashed, lapsed
+        });
+      }
+    }
+    const already = leaveBalances.some(b => Number(b.leave_year) === year + 1);
+    return {
+      year, next: year + 1, rows, already,
+      coaches: new Set(rows.map(r => r.coachId)).size,
+      carried: Math.round(rows.reduce((n, r) => n + r.carried, 0) * 10) / 10,
+      encashed: Math.round(rows.reduce((n, r) => n + r.encashed, 0) * 10) / 10,
+      lapsed: Math.round(rows.reduce((n, r) => n + r.lapsed, 0) * 10) / 10
+    };
+  };
+
+  const closeLeaveYear = () => {
+    if (!['Super Admin', 'HR Manager'].includes(currentRole)) {
+      showToast("Only Human Resources or a Super Admin can close the leave year.", "error");
+      return;
+    }
+    const pv = leaveYearClosePreview();
+    if (pv.rows.length === 0) {
+      showToast("No active coaches to close the year for.", "info");
+      return;
+    }
+    if (pv.already) {
+      showToast(`${pv.next} balances already exist — the year has been closed once. Correct them with the upload instead.`, "error");
+      return;
+    }
+    const ok = window.confirm(
+      `Close leave year ${pv.year} and open ${pv.next}?\n\n` +
+      `${pv.coaches} active coach(es).\n` +
+      `${pv.carried} day(s) carry over as opening balances.\n` +
+      `${pv.encashed} day(s) to encash — pay these out separately.\n` +
+      `${pv.lapsed} day(s) lapse.\n\n` +
+      `${pv.year} stays on the record as it is. The new year opens with nothing ` +
+      `used and nothing adjusted, and accrual starts again from the policy. ` +
+      `Upload Human Resources' figures afterwards if any opening needs to differ.`
+    );
+    if (!ok) return;
+
+    setLeaveBalances(prev => [
+      ...prev,
+      ...pv.rows.map(r => ({
+        coach_id: r.coachId, leave_year: pv.next, type_id: r.type,
+        opening: r.carried, accrued: null, used: 0, adjusted: 0,
+        adjust_reason: null
+      }))
+    ]);
+
+    logAudit("Leave Year Closed",
+      `${pv.year} closed and ${pv.next} opened for ${pv.coaches} coach(es): ` +
+      `${pv.carried} day(s) carried, ${pv.encashed} encashed, ${pv.lapsed} lapsed.`);
+    showToast(`${pv.next} opened. ${pv.carried} day(s) carried over` +
+      `${pv.encashed ? `, ${pv.encashed} to encash` : ''}.`, "success");
   };
 
   const applyBalancePreview = () => {
@@ -6435,11 +6726,20 @@ export default function App({ session = null, profile = null, onSignOut = null }
     const holidaysForCoach = holidays.filter(h => h.leave_year === year
       && (!h.centre_name || h.centre_name === coach?.centre_name)).length;
 
-    const accrued = leaveType(typeId)?.holidayOnly
+    // Three ways a type is entitled, and they are not interchangeable.
+    // Holiday Leave is the published list. An accruing type is credited by
+    // the month. A type with an annual entitlement and no accrual — bereavement,
+    // maternity, paternity — is simply held in full against the year: it is
+    // granted on an event, not earned by waiting. Reading only the accrual
+    // left those three at nil, so nobody could apply for any of them.
+    const policy = leaveType(typeId);
+    const accrued = policy?.holidayOnly
       ? holidaysForCoach
       : (row.accrued != null
         ? Number(row.accrued)
-        : accruedDays(typeId, { eligibleFrom, asOf: new Date() }));
+        : (policy?.accrual
+            ? accruedDays(typeId, { eligibleFrom, asOf: new Date() })
+            : (policy?.annualDays ?? 0)));
     const opening = Number(row.opening) || 0;
     const used = Number(row.used) || 0;
     const adjusted = Number(row.adjusted) || 0;
@@ -6447,6 +6747,103 @@ export default function App({ session = null, profile = null, onSignOut = null }
       year, opening, accrued, used, adjusted,
       available: Math.round((opening + accrued + adjusted - used) * 10) / 10
     };
+  };
+
+  /**
+   * A leave type's balance, told as the events that made it.
+   *
+   * The stored row keeps four totals — opening, accrued, used, adjusted — and
+   * a coach asking "why is this 6.5?" cannot read an answer out of four
+   * numbers. So the figures are unpacked back into the things that moved
+   * them: what carried over, each month credited, every application that
+   * spent it, and any correction by hand. The running balance is computed
+   * forward from those, and lands on the same figure the card shows.
+   */
+  const leaveLedgerFor = (coach, typeId) => {
+    const policy = leaveType(typeId);
+    const b = leaveBalanceFor(coach, typeId);
+    const { year, start } = leaveYearFor(new Date());
+    const today = new Date();
+    const rows = [];
+
+    if (b.opening > 0) {
+      rows.push({ on: start, change: b.opening, why: 'Carried over from the last leave year' });
+    }
+
+    if (policy?.holidayOnly) {
+      if (b.accrued > 0) {
+        rows.push({
+          on: start, change: b.accrued,
+          why: `The published holiday list for ${year} — ${b.accrued} day${b.accrued === 1 ? '' : 's'}`
+        });
+      }
+    } else if (policy?.accrual) {
+      // One row a cycle, taken as the difference in what had accrued by each
+      // 16th — so a coach who became eligible mid-year sees it start there.
+      const eligibleFrom = coach?.probation_end_date || coach?.date_of_joining || null;
+      let prev = 0;
+      for (let m = 0; m < 12; m += 1) {
+        const at = new Date(`${year}-01-16T00:00:00`);
+        at.setMonth(at.getMonth() + m);
+        if (at > today) break;
+        const sofar = accruedDays(typeId, { eligibleFrom, asOf: at });
+        const delta = Math.round((sofar - prev) * 10) / 10;
+        prev = sofar;
+        if (delta > 0) {
+          rows.push({
+            on: at.toISOString().slice(0, 10), change: delta,
+            why: `Credited for ${at.toLocaleDateString('en-IN', { month: 'long' })}`
+          });
+        }
+      }
+    } else if (policy?.annualDays) {
+      rows.push({
+        on: start, change: policy.annualDays,
+        why: `Entitlement for ${year} — granted in full, taken as it is needed`
+      });
+    }
+
+    // What spent it. A refused or cancelled application is shown too, at no
+    // cost, because "I applied and it came back" is part of the story.
+    const inYear = (d) => d >= start && d <= leaveYearFor(new Date()).end;
+    const apps = leaveApplications
+      .filter(a => a.coach_id === coach?.id && a.type_id === typeId && inYear(a.from_date));
+    let spent = 0;
+    for (const a of apps) {
+      const spends = a.status === 'Approved' || a.status === 'Pending';
+      const n = Number(a.days) || 0;
+      if (spends) spent += n;
+      const span = a.from_date === a.to_date
+        ? new Date(`${a.from_date}T12:00:00`).toLocaleDateString('en-IN',
+            { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+        : `${a.from_date} to ${a.to_date}`;
+      rows.push({
+        on: a.applied_at ? String(a.applied_at).slice(0, 10) : a.from_date,
+        change: spends ? -n : 0,
+        why: `Leave applied for ${span}`,
+        status: a.status
+      });
+    }
+
+    // The stored total is the one that pays; anything it holds beyond the
+    // applications on file came from an import or an older system, and is
+    // said so rather than quietly dropped.
+    const unexplained = Math.round((b.used - spent) * 10) / 10;
+    if (unexplained > 0) {
+      rows.push({ on: start, change: -unexplained, why: 'Recorded as taken before this register' });
+    }
+
+    if (b.adjusted !== 0) {
+      rows.push({
+        on: start, change: b.adjusted,
+        why: `Adjusted by Human Resources${b.adjusted > 0 ? '' : ' — balance reduced'}`
+      });
+    }
+
+    rows.sort((x, y) => String(x.on).localeCompare(String(y.on)));
+    let run = 0;
+    return rows.map(r => { run = Math.round((run + r.change) * 10) / 10; return { ...r, balance: run }; })
+      .reverse();
   };
 
   // -------------------------------------------------------------------------
@@ -7361,17 +7758,34 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   // Open Payslip Modal
+  /** Who may open a payslip. The role decides it; the coach does not matter. */
+  /**
+   * Who may open a payslip.
+   *
+   * The pay roles may open anyone's. A coach may open their own, and only
+   * once Finance has settled that cycle: before the lock the figures still
+   * move, and a statement that changes after it is read is worse than no
+   * statement. Called with no coach — as the pay run's column does, deciding
+   * whether to draw itself at all — it answers for the role alone.
+   */
+  const maySeePayslipFor = (coachId, period) => {
+    if (PAYSLIP_ROLES.includes(currentRole)) return true;
+    if (currentRole !== 'Coach' || !coachId || coachId !== selfCoachId) return false;
+    return [...currentMonth, ...historicMonths].some(
+      r => r.coach_id === coachId && r.period_month === period
+        && r.status === 'FINANCE_LOCKED');
+  };
+
+  /** Whether the pay run is shown itemised, or as a name and a figure. */
+  const maySeePayDetail = PAY_DETAIL_ROLES.includes(currentRole);
+
   const handleOpenPayslipModal = (coachId, period) => {
-    // Payslips are issued, not browsed. Only the roles that run pay may open
-    // one: Super Admin, HR Manager and Finance. A Reporting Manager runs a
-    // squad rather than its payroll, a Showrunner is built to keep pay out of
-    // view, and a coach receives their payslip rather than pulling it from
-    // the system. Checked here rather than only on the buttons, because a
-    // button that is not rendered is not a permission.
-    if (!PAYSLIP_ROLES.includes(currentRole)) {
+    // Checked here rather than only on the buttons, because a button that is
+    // not rendered is not a permission.
+    if (!maySeePayslipFor(coachId, period)) {
       showToast(
         currentRole === 'Coach'
-          ? "Payslips are issued by HR — ask them for yours."
+          ? `Your ${period} payslip is issued once Finance settles that cycle.`
           : `Payslips are not available to the ${currentRole} role.`, "error");
       return;
     }
@@ -9071,6 +9485,54 @@ export default function App({ session = null, profile = null, onSignOut = null }
   };
 
   // Lock current cycle (Finance)
+  /**
+   * Lock or unlock one pay cycle — whichever is on screen, not only the open
+   * one. A past month is settled and reopened from here too, because that is
+   * where the figures for it are being read.
+   *
+   * Locking freezes every recorded card in that month and issues its
+   * payslips; unlocking takes them back. A card still in DRAFT is left alone:
+   * there is nothing in it to freeze.
+   */
+  const setCycleLock = (periodMonth, lock) => {
+    if (!LOCK_ROLES.includes(currentRole)) {
+      showToast("Your role cannot lock a cycle.", "error");
+      return;
+    }
+    const all = [...currentMonth, ...historicMonths].filter(e => e.period_month === periodMonth);
+    if (all.length === 0) {
+      showToast(`No records in ${periodMonth} to lock.`, "info");
+      return;
+    }
+    if (!lock) {
+      const ok = window.confirm(
+        `Unlock ${periodMonth}?\n\n` +
+        `Its payslips are withdrawn until it is locked again, and Showrunners ` +
+        `and managers can edit its score cards. The change is written to the audit log.`
+      );
+      if (!ok) return;
+    }
+
+    const touch = (e) => {
+      if (e.period_month !== periodMonth) return e;
+      if (lock) return e.status !== 'DRAFT' ? { ...e, status: 'FINANCE_LOCKED' } : e;
+      return e.status === 'FINANCE_LOCKED' ? { ...e, status: 'HR_REVIEWED' } : e;
+    };
+    setCurrentMonth(prev => prev.map(touch));
+    setHistoricMonths(prev => prev.map(touch));
+    // The global flag only ever meant the open cycle, so it only moves with it.
+    if (periodMonth === currentPeriodMonth) setPayrollLocked(lock);
+
+    const drafts = all.filter(e => e.status === 'DRAFT').length;
+    logAudit(lock ? "Payroll Lock" : "Payroll Unlock",
+      `${periodMonth} ${lock ? 'locked and payslips issued' : 'unlocked and payslips withdrawn'} ` +
+      `for ${all.length - drafts} record(s)${drafts ? `; ${drafts} still in draft` : ''}.`);
+    showToast(lock
+      ? `${periodMonth} is locked. Payslips are issued.${drafts ? ` ${drafts} card(s) still in draft were left alone.` : ''}`
+      : `${periodMonth} is unlocked. Payslips are withdrawn until it is locked again.`,
+      lock ? "success" : "warning");
+  };
+
   const handleLockCycle = () => {
     const nextLocked = !payrollLocked;
     setPayrollLocked(nextLocked);
@@ -10143,6 +10605,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
       </div>
 
       {/* Sidebar Navigation */}
+      {/* On a phone the menu slides over the page, and the only way back
+          was the hamburger underneath it. A sheet that covers the screen
+          needs a way out of its own. */}
+      {sidebarActive && (
+        <div className="sidebar-scrim" aria-hidden="true"
+             onClick={() => setSidebarActive(false)} />
+      )}
       <aside className={`sidebar ${sidebarActive ? 'active-sidebar' : ''}`}>
         <div className="brand">
           <div className="brand-logo">
@@ -10152,6 +10621,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
             <h2>HB<span>+</span></h2>
             <p>Remuneration &amp; Performance</p>
           </div>
+          <button type="button" className="sidebar-close" aria-label="Close the menu"
+                  onClick={() => setSidebarActive(false)}>
+            <i className="bx bx-x"></i>
+          </button>
         </div>
 
         <nav className="nav-menu">
@@ -10163,6 +10636,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
             <li className={`nav-item ${activeView === 'dashboard' ? 'active' : ''}`} onClick={() => handleNavClick('dashboard')}>
               <a href="#dashboard"><i className="bx bxs-dashboard nav-icon"></i><span>Dashboard</span></a>
             </li>
+            {/* A coach's own record, off the dashboard. It is read when
+                something is wrong with it, not every day, and it was taking
+                the top of the screen from the month they came to look at. */}
+            {currentRole === 'Coach' && (
+              <li className={`nav-item ${activeView === 'my-profile' ? 'active' : ''}`} onClick={() => handleNavClick('my-profile', 'Coach')}>
+                <a href="#my-profile"><i className="bx bxs-user-detail nav-icon"></i><span>Profile</span></a>
+              </li>
+            )}
             {verifyAccess("Super Admin,HR Manager,Finance,Reporting Manager,Showrunner,Auditor") && (
               <li className={`nav-item ${activeView === 'coaches' ? 'active' : ''}`} onClick={() => handleNavClick('coaches', "Super Admin,HR Manager,Finance,Reporting Manager,Showrunner,Auditor")}>
                 <a href="#coaches"><i className="bx bxs-group nav-icon"></i><span>Coach Master</span></a>
@@ -10425,9 +10906,18 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <div className="control-group" id="coach-context-group">
                 <label htmlFor="coach-select"><i className="bx bxs-user-detail"></i> Select Coach</label>
                 <select id="coach-select" className="header-select" value={currentCoachContext} onChange={(e) => handleCoachSelectChange(e.target.value)}>
-                  {coaches.map(c => (
-                    <option key={c.id} value={c.id}>{c.id} - {c.name}</option>
-                  ))}
+                  {/* Who is coaching now. A suspended or exited coach is still
+                      on the books and still reachable from Coach Master, but
+                      they are not someone this header is used to switch to.
+                      One stays listed if it is the current selection, or the
+                      box would show a blank while pointing at them. */}
+                  {coaches
+                    .filter(c => c.status === 'Active' || c.id === currentCoachContext)
+                    .map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.id} - {c.name}{c.status === 'Active' ? '' : ` (${c.status})`}
+                      </option>
+                    ))}
                 </select>
               </div>
             )}
@@ -10457,14 +10947,23 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 }
 
-                const myRecord = currentMonth.find(r => r.coach_id === me.id);
+                // Every cycle this coach has a record for, newest first, and
+                // the one being read. It was pinned to the open cycle, so a
+                // coach could not look at the month they were asking about.
+                const myCycles = [...historicMonths, ...currentMonth]
+                  .filter(r => r.coach_id === me.id)
+                  .sort((a2, b2) => new Date(b2.period_start) - new Date(a2.period_start));
+                const myRecord = myCycles.find(r => r.period_month === coachCycle)
+                  || myCycles.find(r => r.period_month === currentPeriodMonth)
+                  || myCycles[0];
+                const shownCycle = myRecord?.period_month || currentPeriodMonth;
+                const isOpenCycle = shownCycle === currentPeriodMonth;
                 const vCfg = findVariant(variants, me.variant_id);
                 const myScore = myRecord ? resolvePeriodScore(me, myRecord, vCfg) : null;
                 const open = openLogFor(me.id);
                 const todays = logsFor(me.id, todayWorkingDay);
                 const hoursToday = loggedHoursForDay(todays, nowTick);
                 const expected = standardDailyHours(me.coach_category);
-                const myLeave = leaveApplications.filter(a => a.coach_id === me.id);
                 const myVios = violations.filter(v => v.coach_id === me.id && isPenaltyCounted(v));
                 const periodVios = myRecord ? myVios.filter(v =>
                   new Date(v.incident_date) >= new Date(myRecord.period_start) &&
@@ -10502,6 +11001,35 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </button>
                     </div>
 
+                    {/* One picker for the whole dashboard: the score, what
+                        was charged, the dials and the milestone bar all read
+                        the cycle chosen here. Today's clock is the exception
+                        — it is today whichever month is being looked at. */}
+                    {myCycles.length > 0 && (
+                      <div className="hb-cycle-bar hb-cycle-own">
+                        <div>
+                          <strong>Pay cycle · {shownCycle}</strong>
+                          <span>
+                            {myRecord?.period_start
+                              ? `${new Date(myRecord.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(myRecord.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                              : ''}
+                            {isOpenCycle ? ' · running now' : ' · a closed cycle'}
+                          </span>
+                        </div>
+                        <label className="hb-cycle-pick">
+                          <span>Show cycle</span>
+                          <select className="header-select" value={shownCycle}
+                                  onChange={(e) => setCoachCycle(e.target.value)}>
+                            {myCycles.map(r => (
+                              <option key={r.period_month} value={r.period_month}>
+                                {r.period_month}{r.period_month === currentPeriodMonth ? ' · running now' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
+
                     <div className="stats-row">
                       <div className="stat-card stat-teal">
                         <div className="stat-icon"><i className="bx bxs-time-five"></i></div>
@@ -10520,7 +11048,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <div className="stat-info">
                           <h3>HB+ Score</h3>
                           <h2>{myScore?.score != null ? Number(myScore.score).toFixed(2) : '—'}</h2>
-                          <p>{myScore?.band || 'Not scored yet'} · {currentPeriodMonth}</p>
+                          <p>{myScore?.band || 'Not scored yet'} · {shownCycle}</p>
                         </div>
                       </div>
                       {(() => {
@@ -10533,7 +11061,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           <div className={`stat-card ${charged || lop ? 'stat-red' : 'stat-amber'}`}>
                             <div className="stat-icon"><i className="bx bxs-receipt"></i></div>
                             <div className="stat-info">
-                              <h3>Charged This Cycle</h3>
+                              <h3>Charged · {shownCycle}</h3>
                               <h2>{rupees(charged)}</h2>
                               <p>
                                 {periodVios.length} incident{periodVios.length === 1 ? '' : 's'}
@@ -10547,153 +11075,151 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       <div className="stat-card stat-red">
                         <div className="stat-icon"><i className="bx bxs-error-circle"></i></div>
                         <div className="stat-info">
-                          <h3>Incidents This Cycle</h3>
+                          <h3>Incidents · {shownCycle}</h3>
                           <h2>{periodVios.length}</h2>
                           <p>{myVios.length} on record overall</p>
                         </div>
                       </div>
                     </div>
 
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <details className="demographics" open>
-                        <summary>Your details</summary>
-                        <div className="demographics-grid">
-                          {demographicsFor(me).map(d => (
-                            <div key={d.label}>
-                              <span>{d.label}</span>
-                              <strong className={d.flag ? 'text-red' : ''}>{d.value}</strong>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
-                      <p className="calc-notes">
-                        Anything wrong here is changed by Human Resources, not by you.
-                      </p>
-                    </div>
+                    {/* How far through the session target this cycle is.
+                        Above the settlement table because it is the thing
+                        that moves during a month, where the table below only
+                        settles at the end of one. Any cycle can be read, not
+                        just the open one. */}
+                    {(() => {
+                      // The cycle chosen at the top, like everything else here.
+                      const pick = myRecord;
+                      if (!pick) return null;
+                      // The same target the pay policy uses: a Fixed coach
+                      // carries the month's full load, a Flexi one does not.
+                      const target = me.coach_category === 'Fixed'
+                        ? (vCfg.discipline === 'Yoga' ? 117 : 156)
+                        : 96;
+                      const done = Number(pick.sessions_completed) || 0;
+                      const pct = target > 0 ? Math.min(100, (done / target) * 100) : 0;
+                      const left = Math.max(target - done, 0);
+                      const isNow = pick.period_month === currentPeriodMonth;
+                      return (
+                        <div className="card ms-card" style={{ marginTop: '1.25rem' }}>
+                          <div className="card-header-row">
+                            <h3>Sessions milestone</h3>
+                            <span className="text-muted">{pick.period_month}</span>
+                          </div>
 
+                          <div className="ms-figs">
+                            <strong>{done}</strong>
+                            <span>of {target} sessions{isNow ? ' this cycle' : ` in ${pick.period_month}`}</span>
+                          </div>
+
+                          {/* key: a new cycle redraws the bar from nothing, so
+                              the figure is watched arriving rather than
+                              appearing already there. */}
+                          <div className="ms-bar" role="progressbar"
+                               aria-valuenow={done} aria-valuemin={0} aria-valuemax={target}
+                               aria-label={`${done} of ${target} sessions`}>
+                            <div key={pick.period_month} className="ms-bar-fill"
+                                 style={{ '--pct': `${pct}%`, width: `${pct}%` }} />
+                          </div>
+
+                          <p className="calc-notes">
+                            {left === 0
+                              ? `Target met — ${done} of ${target}. The milestone bonus is worked out on the settled cycle.`
+                              : `${Math.round(pct)}% of target · ${left} session${left === 1 ? '' : 's'} to go. The milestone bonus triggers once the target is reached.`}
+                          </p>
+                        </div>
+                      );
+                    })()}
+
+                    {/* One cycle, one row: what it scored, what it paid and
+                        the slip. It used to be two tables saying overlapping
+                        things — a settlement list and a payslip list — which
+                        is two places to look for one answer. It sits where
+                        the details block was, because what reaches you this
+                        month is the question people open this screen with. */}
                     <div className="card" style={{ marginTop: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Your Leave</h3>
-                        <button className="btn btn-secondary btn-sm"
-                          onClick={() => setActiveView('attendance')}>
-                          Apply or cancel
-                        </button>
-                      </div>
-                      {myLeave.length === 0 ? (
-                        <p className="text-muted">Nothing applied for yet.</p>
-                      ) : (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead><tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th>Appeal</th></tr></thead>
-                            <tbody>
-                              {myLeave.slice(0, 8).map(a => {
-                                const appeal = appealForLeave(a);
-                                return (
-                                <tr key={a.id}>
-                                  <td>{leaveType(a.type_id)?.label}</td>
-                                  <td>{a.from_date} → {a.to_date}</td>
-                                  <td className="num-col">{a.days}</td>
-                                  <td>
-                                    <span className={`badge ${
-                                      a.status === 'Approved' ? 'badge-success'
-                                        : a.status === 'Rejected' ? 'badge-danger'
-                                        : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
-                                      {a.status}
-                                    </span>
-                                  </td>
-                                  <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
-                                  {/* A refusal the coach disagrees with is argued
-                                      here, by them. Once raised, this is where
-                                      they watch it rather than having to ask. */}
-                                  <td>
-                                    {appeal ? (
-                                      <span className={`badge ${APPEAL_UI[appeal.status]?.[1] || 'badge-info'}`}
-                                        title={appeal.rm_decision_notes || appeal.hr_decision_notes || appeal.reason}>
-                                        {APPEAL_UI[appeal.status]?.[0] || appeal.status}
-                                      </span>
-                                    ) : a.status === 'Rejected' ? (
-                                      <button className="btn btn-secondary btn-sm"
-                                        onClick={() => appealLeaveDecision(a)}>
-                                        <i className="bx bx-undo"></i> Appeal
-                                      </button>
-                                    ) : <small className="text-muted">—</small>}
-                                  </td>
-                                </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <h3>Incidents on Record</h3>
-                      {myVios.length === 0 ? (
-                        <p className="text-muted">Nothing recorded.</p>
-                      ) : (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead><tr><th>Date</th><th>Violation</th><th className="num-col">Occurrence</th><th>Consequence</th><th className="num-col">Charged</th></tr></thead>
-                            <tbody>
-                              {myVios.slice(0, 10).map(v => (
-                                <tr key={v.id}>
-                                  <td>{new Date(v.incident_date).toLocaleDateString('en-IN')}</td>
-                                  <td><strong>{v.type}</strong></td>
-                                  <td className="num-col">#{v.occurrence_no}</td>
-                                  <td><small className="text-muted">{v.consequence}</small></td>
-                                  <td className="num-col">
-                                    {isPenaltyChargeable(v)
-                                      ? rupees(v.penalty_amount)
-                                      : <span className="text-muted">waived</span>}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                      <p className="calc-notes">
-                        A decision you disagree with can be appealed. Speak to your Reporting
-                        Manager, who can raise it.
-                      </p>
-                    </div>
-
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>Payslips</h3>
+                        <h3>Payslips &amp; payroll settlement</h3>
                       </div>
                       <div className="table-container">
                         <table className="data-table">
-                          <thead><tr><th>Period</th><th>Status</th><th className="actions-col">Payslip</th></tr></thead>
+                          <thead>
+                            <tr>
+                              <th>Pay cycle</th>
+                              <th className="num-col">HB+ Score</th>
+                              <th>Band</th>
+                              <th className="num-col">Gross pay</th>
+                              <th className="actions-col">Payslip</th>
+                            </tr>
+                          </thead>
                           <tbody>
                             {[...historicMonths, ...currentMonth]
                               .filter(r => r.coach_id === me.id)
                               .sort((a, b) => new Date(b.period_start) - new Date(a.period_start))
-                              .map(r => (
-                                <tr key={r.period_month}>
-                                  <td><strong>{r.period_month}</strong></td>
-                                  <td>
-                                    <span className={`badge ${r.status === 'FINANCE_LOCKED' ? 'badge-success' : 'badge-warning'}`}>
-                                      {r.status === 'FINANCE_LOCKED' ? 'Settled' : 'Not settled'}
-                                    </span>
-                                  </td>
-                                  <td className="actions-col">
-                                    {r.status === 'FINANCE_LOCKED' && canSeePayslip ? (
-                                      <button className="btn btn-secondary btn-sm"
-                                        onClick={() => handleOpenPayslipModal(me.id, r.period_month)}>
-                                        <i className="bx bx-download"></i> View
-                                      </button>
-                                    ) : (
-                                      <span className="text-muted">available once settled</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
+                              .map(r => {
+                                const settled = r.status === 'FINANCE_LOCKED';
+                                const scoreVal = r.hb_score != null
+                                  ? Number(r.hb_score)
+                                  : computeHBPlusScore(me, r, vCfg).hbScore;
+                                const rVios = myVios.filter(v =>
+                                  new Date(v.incident_date) >= new Date(r.period_start) &&
+                                  new Date(v.incident_date) <= new Date(r.period_end));
+                                const rOrg = orgWork.filter(o => o.coach_id === me.id
+                                  && o.period_month === r.period_month && o.status === 'Approved');
+                                const rPay = computeMonthlyPay(
+                                  me, carryPay(r), { hbScore: scoreVal }, rVios, vCfg, rOrg);
+                                return (
+                                  // A settled cycle is marked on the row
+                                  // itself rather than in a column of its
+                                  // own: the thing worth seeing is which
+                                  // months are final, and that is one glance
+                                  // down the list, not a word on every line.
+                                  <tr key={r.period_month} className={settled ? 'slip-settled' : undefined}>
+                                    <td>
+                                      <strong>{r.period_month}</strong>
+                                      {settled && (
+                                        <i className="bx bx-lock-alt slip-lock"
+                                           title="Settled by Finance — these figures are final"></i>
+                                      )}
+                                    </td>
+                                    <td className="num-col">
+                                      {r.hb_score != null || scoreVal ? scoreVal.toFixed(2)
+                                        : <span className="text-muted">—</span>}
+                                    </td>
+                                    <td>{r.band || getPerformanceBand(scoreVal).label}</td>
+                                    <td className="num-col">
+                                      <strong>{rupees(rPay.grossPay)}</strong>
+                                    </td>
+                                    <td className="actions-col">
+                                      {settled ? (
+                                        <button className="btn btn-secondary btn-sm"
+                                          title={`Open your ${r.period_month} statement — every figure it was worked out from — and print or save it`}
+                                          onClick={() => handleOpenPayslipModal(me.id, r.period_month)}>
+                                          <i className="bx bx-download"></i> Payslip
+                                        </button>
+                                      ) : (
+                                        <span className="text-muted"
+                                              title={`Issued once Finance settles ${r.period_month}`}>—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                           </tbody>
                         </table>
                       </div>
+                      <p className="calc-notes">
+                        A cycle marked with a lock has been settled by Finance: those figures
+                        are final and the payslip opens in full — the sessions, rate, bonuses
+                        and anything charged, line by line — and prints or saves as a PDF.
+                        A cycle still open can still move.
+                      </p>
                     </div>
+
+                    {/* Leave lives on Attendance & Leave, where it is
+                        applied for and cancelled; incidents are raised and
+                        argued elsewhere. Neither is repeated here. */}
+
                   </>
                 );
               })()}
@@ -11228,7 +11754,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 const vConfig = findVariant(variants, currentSelectedCoach.variant_id);
                 const histList = historicMonths.filter(h => h.coach_id === currentSelectedCoach.id);
-                const curr = currentMonth.find(e => e.coach_id === currentSelectedCoach.id);
+                // The cycle picked at the top of the dashboard, so the dials
+                // and the row of figures above them never disagree.
+                const curr = [...historicMonths, ...currentMonth]
+                  .filter(e => e.coach_id === currentSelectedCoach.id)
+                  .find(e => e.period_month === coachCycle)
+                  || currentMonth.find(e => e.coach_id === currentSelectedCoach.id);
                 
                 let finalScore = 0, finalBand = "0-30 Non-Functional", isDraft = true, attendance = 0, sessions = 0;
                 if (curr) {
@@ -11242,136 +11773,281 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 const milestoneTarget = currentSelectedCoach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96;
                 const progressPct = Math.min(100, ((Number(sessions) || 0) / milestoneTarget) * 100);
-                const activeVio = violations.filter(v => v.coach_id === currentSelectedCoach.id && isPenaltyCounted(v));
+                // Incidents inside the cycle being read. It counted every
+                // incident the coach had ever had, so a clean month still
+                // showed a record that was not clean.
+                const activeVio = violations.filter(v => v.coach_id === currentSelectedCoach.id
+                  && isPenaltyCounted(v)
+                  && (!curr || (new Date(v.incident_date) >= new Date(curr.period_start)
+                    && new Date(v.incident_date) <= new Date(curr.period_end))));
 
                 const allRuns = [...histList, curr].filter(Boolean);
 
                 return (
                   <>
-                    <div className="stats-row">
-                      <div className="stat-card stat-teal">
-                        <div className="stat-icon"><i className="bx bxs-medal"></i></div>
-                        <div className="stat-info">
-                          <h3>My HB+ Score</h3>
-                          <h2>{isDraft ? "Drafting" : finalScore.toFixed(2)}</h2>
-                          <p>{isDraft ? "Evaluating..." : finalBand}</p>
-                        </div>
-                      </div>
-                      <div className="stat-card stat-violet">
-                        <div className="stat-icon"><i className="bx bx-calendar-event"></i></div>
-                        <div className="stat-info">
-                          <h3>Attendance Rate</h3>
-                          <h2>{attendance}%</h2>
-                          <p>Evidence+ Tracked</p>
-                        </div>
-                      </div>
-                      <div className="stat-card stat-amber">
-                        <div className="stat-icon"><i className="bx bxs-star"></i></div>
-                        <div className="stat-info">
-                          <h3>5-Star Streak</h3>
-                          <h2>{curr ? curr.five_star_streak : 0}</h2>
-                          <p>Consecutive reviews</p>
-                        </div>
-                      </div>
-                      <div className="stat-card stat-red">
-                        <div className="stat-icon"><i className="bx bxs-error"></i></div>
-                        <div className="stat-info">
-                          <h3>Active Violations</h3>
-                          <h2>{activeVio.length}</h2>
-                          <p>Annexure-1 incidents</p>
-                        </div>
-                      </div>
-                    </div>
+                    {/* The month as four things to move, not four numbers
+                        to read: how far up the score is, how much of the
+                        attendance is in, how close the next streak reward
+                        is, and whether the record is still clean. Each ring
+                        draws itself on arrival, so progress is watched
+                        rather than announced. */}
+                    {(() => {
+                      const RING = 119.38;             // 2πr, r = 19
+                      const off = (pct) => RING - (Math.max(0, Math.min(100, pct)) / 100) * RING;
+                      const ring = (pct, tone) => (
+                        <svg className={`gm-ring gm-ring-${tone}`} viewBox="0 0 44 44" aria-hidden="true">
+                          <circle className="gm-ring-bg" cx="22" cy="22" r="19" />
+                          <circle className="gm-ring-fg" cx="22" cy="22" r="19"
+                            style={{ '--off': off(pct), strokeDasharray: RING }} />
+                        </svg>
+                      );
 
-                    <div className="dashboard-grid" style={{ marginTop: '1.5rem' }}>
-                      <div className="card grid-span-6">
-                        <div className="card-header-row">
-                          <h3>Sessions Milestone Progress</h3>
-                          <span className="badge badge-info">{sessions} / {milestoneTarget} Sessions</span>
-                        </div>
-                        <p className="text-secondary" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
-                          Milestone bonuses trigger once volume thresholds are reached. Target base: <strong>{milestoneTarget} sessions</strong>.
-                        </p>
-                        <div className="custom-progress-bar-container">
-                          <div className="custom-progress-bar-fill" style={{ width: `${progressPct}%`, backgroundColor: 'var(--accent-teal)' }}></div>
-                        </div>
-                        <p className="text-muted" style={{ fontSize: '0.75rem', marginTop: '8px' }}>{Math.round(progressPct)}% of target met</p>
-                      </div>
+                      const scorePct = (Number(finalScore) || 0) / 90 * 100;
+                      const attPct = Number(attendance) || 0;
 
-                      <div className="card grid-span-6">
-                        <div className="streak-box-dashboard">
-                          <div>
-                            <h3>5-Star Reward Streak</h3>
-                            <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                              Earn <strong>₹{vConfig.id === 'V3' ? '500' : '200'}</strong> for every {vConfig.id === 'V3' ? '15' : '10'} consecutive 5-stars.
-                            </p>
-                            <h2 className="text-amber" style={{ fontSize: '2rem', marginTop: '8px' }}>
-                              {curr ? curr.five_star_streak : 0} <span style={{ fontSize: '1rem', color: 'var(--text-secondary)' }}>consec.</span>
-                            </h2>
+                      const streakEvery = vConfig.id === 'V3' ? 15 : 10;
+                      const streakPays = vConfig.id === 'V3' ? 500 : 200;
+                      const streakHave = Number(curr?.five_star_streak) || 0;
+                      const streakInto = streakHave % streakEvery;
+                      const streakToGo = streakEvery - streakInto;
+                      const streakWon = Math.floor(streakHave / streakEvery);
+
+                      const clean = activeVio.length === 0;
+
+                      return (
+                        <div className="gm-row">
+                          <div className="gm-card gm-olive">
+                            <span className="gm-kicker">HB+ score</span>
+                            <div className="gm-dial">
+                              {ring(isDraft ? 0 : scorePct, 'olive')}
+                              <strong>{isDraft ? '—' : finalScore.toFixed(1)}</strong>
+                            </div>
+                            <b>{isDraft ? 'Being scored' : finalBand.replace(/^[\d–\-\s]+/, '')}</b>
+                            <small>{isDraft ? `${currentPeriodMonth} is not scored yet` : 'out of 90'}</small>
                           </div>
-                          <i className="bx bxs-hot streak-flame-icon"></i>
-                        </div>
-                      </div>
 
-                      <div className="card grid-span-12" style={{ marginTop: '1rem' }}>
-                        <div className="card-header-row">
-                          <h3>My Payroll Statements &amp; Payslips</h3>
-                          <i className="bx bx-lock-alt text-secondary"></i>
+                          <div className="gm-card gm-navy">
+                            <span className="gm-kicker">Elevate+ attendance</span>
+                            <div className="gm-dial">
+                              {ring(attPct, 'navy')}
+                              <strong>{Math.round(attPct)}<i>%</i></strong>
+                            </div>
+                            <b>{attPct >= 95 ? 'On track' : attPct >= 75 ? 'Keep it up' : 'Needs attention'}</b>
+                            <small>{attPct >= 95
+                              ? 'at or above the 95% the consistency bonus asks for'
+                              : `${Math.max(0, 95 - Math.round(attPct))}% short of the bonus threshold`}</small>
+                          </div>
+
+                          <div className="gm-card gm-amber">
+                            <span className="gm-kicker">5-star streak</span>
+                            <div className="gm-dial">
+                              {ring(streakInto / streakEvery * 100, 'amber')}
+                              <strong>{streakHave}</strong>
+                              <i className="bx bxs-hot gm-flame" aria-hidden="true"></i>
+                            </div>
+                            <b>{streakToGo === streakEvery && streakHave === 0
+                              ? `${streakEvery} in a row pays ₹${streakPays}`
+                              : `${streakToGo} more to ₹${streakPays}`}</b>
+                            <small>
+                              {streakWon > 0
+                                ? `${streakWon} reward${streakWon === 1 ? '' : 's'} earned so far`
+                                : 'consecutive 5-star reviews'}
+                            </small>
+                          </div>
+
+                          <div className={`gm-card ${clean ? 'gm-clean' : 'gm-rust'}`}>
+                            <span className="gm-kicker">Record</span>
+                            <div className="gm-dial">
+                              <i className={`bx ${clean ? 'bxs-shield-plus' : 'bxs-error'} gm-badge`} aria-hidden="true"></i>
+                              <strong>{clean ? '0' : activeVio.length}</strong>
+                            </div>
+                            <b>{clean ? 'Clean record' : `${activeVio.length} incident${activeVio.length === 1 ? '' : 's'} standing`}</b>
+                            <small>{clean
+                              ? 'nothing on record — the consistency bonus stays in reach'
+                              : 'an incident you disagree with can be appealed'}</small>
+                          </div>
                         </div>
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>Performance Month</th>
-                                <th>HB+ Score</th>
-                                <th>Band</th>
-                                <th>Gross Monthly Pay</th>
-                                <th>Lock Status</th>
-                                <th className="actions-col">Payslip</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {allRuns.map(run => {
-                                const scoreVal = run.hb_score != null
-                                  ? run.hb_score
-                                  : computeHBPlusScore(currentSelectedCoach, run, vConfig).hbScore;
-                                const bandVal = run.band || getPerformanceBand(scoreVal).label;
-                                const monthVios = violations.filter(v => v.coach_id === currentSelectedCoach.id && new Date(v.incident_date) >= new Date(run.period_start) && new Date(v.incident_date) <= new Date(run.period_end) && isPenaltyCounted(v));
-                                const coachOrgWork = orgWork.filter(o => o.coach_id === currentSelectedCoach.id && o.period_month === run.period_month && o.status === 'Approved');
-                                const pay = computeMonthlyPay(currentSelectedCoach, carryPay(run), { hbScore: scoreVal }, monthVios, vConfig, coachOrgWork);
-                                const isLocked = run.status === 'FINANCE_LOCKED';
-                                
-                                return (
-                                  <tr key={run.period_month}>
-                                    <td><strong>{run.period_month}</strong></td>
-                                    <td>{scoreVal.toFixed(2)}</td>
-                                    <td>{bandVal}</td>
-                                    <td>{isLocked ? `₹${pay.grossPay.toLocaleString('en-IN')}` : <span className="text-secondary">Draft Calculator</span>}</td>
-                                    <td>
-                                      <span className={`badge ${isLocked ? 'badge-success' : 'badge-warning'}`}>
-                                        {isLocked ? 'LOCKED / VERIFIED' : 'DRAFT'}
-                                      </span>
-                                    </td>
-                                    <td className="actions-col">
-                                      {canSeePayslip ? (
-                                        <button className="btn btn-secondary" onClick={() => handleOpenPayslipModal(currentSelectedCoach.id, run.period_month)} disabled={!isLocked && currentRole !== 'Super Admin'}>
-                                          <i className="bx bx-file-pdf"></i> Preview
-                                        </button>
-                                      ) : <span className="text-muted">—</span>}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
                   </>
                 );
               })()}
             </section>
           )}
+
+          {/* A coach's own record. Off the dashboard and on its own page:
+              it is read when something on it is wrong, not every day. */}
+          {activeView === 'my-profile' && currentRole === 'Coach' && (() => {
+            const me = coaches.find(c => c.id === selfCoachId);
+            return (
+              <section id="view-my-profile" className="content-view active-view">
+                <div className="page-header-row">
+                  <div>
+                    <h2>Your profile</h2>
+                    <p>What the system holds about you, and what it uses each of these for.</p>
+                  </div>
+                </div>
+
+                {!me ? (
+                  <div className="card">
+                    <h3>Your account is not linked to a coach profile yet</h3>
+                    <p className="text-muted">
+                      Ask Human Resources to link {profile?.email || 'this account'} to your
+                      Coach Master record. Until then there is nothing to show.
+                    </p>
+                  </div>
+                ) : (() => {
+                  // The same record Human Resources reads, read-only: a coach
+                  // checking whether their own details are right should not be
+                  // seeing a shorter version of them than the person who will
+                  // correct them. No edit controls, and nothing that removes
+                  // anybody.
+                  const vCfg = findVariant(variants, me.variant_id);
+                  // Local: the coach-detail page has its own copy of this
+                  // inside its IIFE, and reaching for that one from here is
+                  // what blanked this page with "formatDate is not defined".
+                  const asDate = (d) => (d ? new Date(d).toLocaleDateString('en-IN') : '—');
+                  const row = (label, value) => (
+                    <div className="detail-item" key={label}>
+                      <label>{label}</label>
+                      <span>{value || value === 0 ? value : '—'}</span>
+                    </div>
+                  );
+                  return (
+                    <>
+                      <div className="card">
+                        <div className="card-header-row">
+                          <h3>{me.name} · {me.id}</h3>
+                        </div>
+                        <div className="detail-grid">
+                          {row("Coach UHID", me.id)}
+                          {row("Gender", me.gender)}
+                          {row("Type of Coach", me.coach_type || (vCfg ? vCfg.discipline : null))}
+                          {row("Category", me.coach_category)}
+                          {row("Policy Variant", vCfg && !vCfg.placeholder ? vCfg.name : 'No policy variant')}
+                          {row("Brand", brandOf(me, vCfg))}
+                          {row("Designation", me.internal_designation)}
+                          {row("Reporting Manager", me.reporting_manager_id)}
+                          {row("Assigned Property", me.assigned_property)}
+                          {row("App Coach ID", me.app_coach_id)}
+                          {row("Date of Joining", asDate(me.date_of_joining))}
+                          {row("First Certification", asDate(me.date_of_first_relevant_certification))}
+                          {row("Phone", me.phone)}
+                          {row("Email", me.email)}
+                          {row("Org Work",
+                            !isOrgWorkEligible(me.coach_category)
+                              ? 'Not applicable — Flexi & Flexi-Fixed only'
+                              : (me.org_work_types || []).length
+                                ? `${me.org_work_types.join(', ')} · ₹${orgWorkRate(me.org_work_types).toLocaleString('en-IN')}`
+                                : 'None selected')}
+                          {row("Status", me.status)}
+                          {row("Weekly Off", me.weekly_off_day == null
+                            ? 'Not set'
+                            : WEEKDAYS[me.weekly_off_day])}
+                          {row("Leave Year", `${leaveYearFor(new Date()).start} to ${leaveYearFor(new Date()).end}`)}
+                        </div>
+                        <p className="calc-notes">
+                          Anything wrong here is changed by Human Resources, not by you.
+                        </p>
+                      </div>
+
+                      {/* Their own account, so they can check where their pay
+                          is going before it goes there. */}
+                      <div className="card" style={{ marginTop: '1.25rem' }}>
+                        <div className="card-header-row"><h3>Bank Details</h3></div>
+                        <div className="detail-grid">
+                          {row("Account Holder Name", me.bank_holder_name)}
+                          {row("Bank Name", me.bank_name)}
+                          {row("Account Number", me.bank_account)}
+                          {row("IFSC Code", me.bank_ifsc)}
+                          {row("Branch", me.bank_branch)}
+                          {row("Account Type", me.bank_account_type)}
+                          {row("UPI ID", me.bank_upi)}
+                          {row("PAN Number", me.pan_number)}
+                        </div>
+                      </div>
+
+                      <div className="card" style={{ marginTop: '1.25rem' }}>
+                        <div className="card-header-row"><h3>Experience &amp; Education</h3></div>
+                        <div className="detail-grid">
+                          {row("Coaching Exp (Documented)", `${me.freelance_past_exp_with_document ?? 0} yrs`)}
+                          {row("Coaching Exp (Undocumented)", `${me.freelance_past_exp_without_document ?? 0} yrs`)}
+                          {row("Non-Coaching Exp", `${me.non_coaching_exp_years ?? 0} yrs`)}
+                          {row("Highest Education", me.education_qualification)}
+                          {row("Education Format",
+                            educationFormats.find(f => f.value === me.education_type)?.label || me.education_type)}
+                        </div>
+                      </div>
+
+                      <div className="card" style={{ marginTop: '1.25rem' }}>
+                        <div className="card-header-row"><h3>Education Certificates</h3></div>
+                        {me.education && me.education.length > 0 ? (
+                          <ul className="detail-cert-list">
+                            {[...me.education]
+                              .sort((a, b) => {
+                                const rank = (l) => EDUCATION_TIERS.find(t => t.value === l)?.rank ?? 0;
+                                return rank(a.level) - rank(b.level);
+                              })
+                              .map((e, i) => {
+                                const highest = getHighestEducationEntry(me);
+                                const isHighest = highest && (highest.id ? highest.id === e.id : highest === e);
+                                const tier = EDUCATION_TIERS.find(t => t.value === e.level);
+                                return (
+                                  <li key={e.id || i}>
+                                    <span>
+                                      {tier && <span className="badge badge-muted edu-tier-badge">{tier.label}</span>}
+                                      <strong>{e.qualification}</strong>
+                                      {e.institution ? ` — ${e.institution}` : ''}
+                                      {e.format ? ` · ${educationFormats.find(f => f.value === e.format)?.label || e.format}` : ''}
+                                      {e.pdfData && (
+                                        <a href={e.pdfData} download={e.pdfName || 'certificate'}
+                                           target="_blank" rel="noreferrer"
+                                           title={`Open ${e.pdfName || 'certificate'}`}
+                                           style={{ marginLeft: '8px' }}>
+                                          <i className={getFileIcon(e.pdfName)}></i>
+                                        </a>
+                                      )}
+                                      {isHighest && <span className="edu-highest-tag">highest</span>}
+                                    </span>
+                                    <span className="badge badge-info">{Number(e.score || 0).toFixed(1)} pts</span>
+                                  </li>
+                                );
+                              })}
+                          </ul>
+                        ) : (
+                          <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+                            Nothing recorded. Education is entered by Human Resources, and it scores.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="card" style={{ marginTop: '1.25rem' }}>
+                        <div className="card-header-row"><h3>Technical Certifications</h3></div>
+                        {me.certifications && me.certifications.length > 0 ? (
+                          <ul className="detail-cert-list">
+                            {me.certifications.map(cert => (
+                              <li key={cert.id}>
+                                <span>
+                                  <strong>{cert.authority}</strong> — {cert.course_name}
+                                  {cert.format && ` · ${educationFormats.find(f => f.value === cert.format)?.label || cert.format}`}
+                                </span>
+                                <span className="badge badge-info">{cert.score} pts</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-muted" style={{ fontSize: '0.85rem' }}>
+                            Nothing recorded. A certification is added by Human Resources once the
+                            certificate is seen, and it scores.
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </section>
+            );
+          })()}
 
           {/* Coach Detail Page (drill-down from the Coach Master directory) */}
           {activeView === 'coaches' && coachDetailId && (() => {
@@ -12004,7 +12680,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       only one of them is usually being read. */}
                   <div className="grid-span-12">
                     <ScorecardTabs
-                      groups={COACH_DETAIL_TABS.filter(t => !(t.pay && HIDES_PAY(currentRole)))}
+                      groups={COACH_DETAIL_TABS.filter(t => !(t.pay && HIDES_PAY_TAB(currentRole)))}
                       active={coachDetailTab}
                       onChange={switchCoachDetailTab}
                       weights={{}}
@@ -12253,10 +12929,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             )}
                           </section>
 
-                          <section className="card hb-ov-card" aria-label="Details">
+                          <section className="card hb-ov-card" aria-label="Profile">
                             <div className="hb-ov-head">
-                              <div><h3>Details</h3></div>
-                              <button className="hb-btn" onClick={() => switchCoachDetailTab('details')}>Open details</button>
+                              <div><h3>Profile</h3></div>
+                              <button className="hb-btn" onClick={() => switchCoachDetailTab('details')}>Open profile</button>
                             </div>
                             <dl className="hb-dl">
                               <div><dt>Joined</dt><dd>{formatDate(coach.date_of_joining)}</dd></div>
@@ -12268,7 +12944,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               <div><dt>Gender</dt><dd>{coach.gender || <span className="hb-missing">Not set</span>}</dd></div>
                               <div><dt>Incidents on record</dt><dd>{activeVio.length}</dd></div>
                             </dl>
-                            <p className="hb-foot">Bank details and education are on the Details tab — visible to HR and Finance only.</p>
+                            <p className="hb-foot">Bank details and education are on the Profile tab — visible to HR and Finance only.</p>
                           </section>
                         </div>
                       </div>
@@ -12314,7 +12990,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                               {!coach.app_coach_id && (
                                 <p className="hb-reviews-note">
-                                  No App Coach ID on this coach — set it under Details.
+                                  No App Coach ID on this coach — set it on the Profile tab.
                                 </p>
                               )}
                               {q?.error && <p className="hb-reviews-error">{q.error}</p>}
@@ -13306,7 +13982,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   )}
 
                   {/* Pay lives in these two cards, so they are the gate. */}
-                  {coachDetailTab === 'pay' && !HIDES_PAY(currentRole) && (
+                  {coachDetailTab === 'pay' && !HIDES_PAY_TAB(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row">
                       <h3>Payroll Calculator</h3>
@@ -13389,7 +14065,19 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               beyondRate: coach.beyond_availability_rate_override ?? "",
                               nightSessions: Number(selected.night_sessions) || 0,
                               streak: Number(selected.five_star_streak) || 0,
-                              consistency: (Number(selected.attendance_pct) >= 95 && periodVios.length === 0) ? "YES" : "NO",
+                              // Was judged on attendance and violations alone,
+                              // which handed the bonus to a month with a
+                              // no-show or unplanned Loss of Pay in it.
+                              consistencyFacts: {
+                                attendancePct: Number(selected.attendance_pct) || 0,
+                                violations: periodVios.filter(isPenaltyCounted).length,
+                                noShows: periodVios.filter(isPenaltyCounted)
+                                  .filter(v => v.type === LEGACY_NO_SHOW || v.type === SESSION_NO_SHOW).length,
+                                unplannedLop: Number(selected.unplanned_lop_days) || 0
+                              },
+                              consistency: (Number(selected.attendance_pct) >= 95
+                                && periodVios.filter(isPenaltyCounted).length === 0
+                                && Number(selected.unplanned_lop_days || 0) === 0) ? "YES" : "NO",
                               orgWorkPay: periodOrgWork.reduce((sum, o) => sum + (Number(o.amount) || 0), 0),
                               penalties: periodVios
                                 .filter(isPenaltyChargeable)
@@ -13414,7 +14102,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                   )}
 
-                  {coachDetailTab === 'pay' && !HIDES_PAY(currentRole) && (
+                  {coachDetailTab === 'pay' && !HIDES_PAY_TAB(currentRole) && (
                   <div className="card grid-span-12">
                     <div className="card-header-row"><h3>Payroll History</h3></div>
                     <div className="table-container">
@@ -13512,81 +14200,25 @@ export default function App({ session = null, profile = null, onSignOut = null }
           })()}
 
           {/* Coach Master View */}
-          {activeView === 'coaches' && !coachDetailId && (
-            <section id="view-coaches" className="content-view active-view">
-              <div className="page-header-row">
-                <h2>Coach Master Directory</h2>
-                {(currentRole === "Super Admin" || currentRole === "HR Manager") && (
-                  <button className="btn btn-primary" onClick={() => {
-                    resetAddCoachForm();
-                    setActiveModal("add-coach");
-                  }}><i className="bx bx-plus"></i> Add New Coach</button>
-                )}
-              </div>
+          {activeView === 'coaches' && !coachDetailId && (() => {
+            // The directory is who is coaching now. Search, type and category
+            // narrow both lists; status is what separates them — a suspended
+            // or exited coach keeps their history, their last payslip and any
+            // open incident, and is kept in a section of their own rather
+            // than mixed in with the squad that is working.
+            const matchesFilters = (c) => {
+              const q = coachesSearch.toLowerCase();
+              return (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q))
+                && matchesCoachType(c, coachesVariantFilter)
+                && (coachesCategoryFilter === "All" || c.coach_category === coachesCategoryFilter);
+            };
+            const activeCoaches = coaches.filter(c => c.status === 'Active' && matchesFilters(c));
+            const notActive = coaches.filter(c => c.status !== 'Active' && matchesFilters(c));
+            const inactiveCoaches = notActive.filter(
+              c => coachesStatusFilter === "All" || c.status === coachesStatusFilter);
 
-              {/* Filters */}
-              <div className="filter-card">
-                <div className="filter-grid">
-                  <div className="filter-item">
-                    <label>Search Coach</label>
-                    <input type="text" placeholder="Search by name, ID..." value={coachesSearch} onChange={(e) => setCoachesSearch(e.target.value)} />
-                  </div>
-                  <div className="filter-item">
-                    <label>Filter Type</label>
-                    <select value={coachesVariantFilter} onChange={(e) => setCoachesVariantFilter(e.target.value)}>
-                      <option value="All">All Types</option>
-                      <option value="Strength">Strength</option>
-                      <option value="Yoga">Yoga</option>
-                      <option value="Pilates">Pilates</option>
-                      <option value="Physio">Physio</option>
-                    </select>
-                  </div>
-                  <div className="filter-item">
-                    <label>Filter Category</label>
-                    <select value={coachesCategoryFilter} onChange={(e) => setCoachesCategoryFilter(e.target.value)}>
-                      <option value="All">All Categories</option>
-                      <option value="Fixed">Fixed</option>
-                      <option value="Flexi-Fixed">Flexi-Fixed</option>
-                      <option value="Flexi">Flexi</option>
-                    </select>
-                  </div>
-                  <div className="filter-item">
-                    <label>Filter Status</label>
-                    <select value={coachesStatusFilter} onChange={(e) => setCoachesStatusFilter(e.target.value)}>
-                      <option value="All">All Statuses</option>
-                      <option value="Active">Active</option>
-                      <option value="Suspended">Suspended</option>
-                      <option value="Exited">Exited</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Coaches Table */}
-              <div className="table-container card">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Coach ID</th>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Category</th>
-                      <th>Designation</th>
-                      <th>Band</th>
-                      <th>DOJ</th>
-                      <th>RM</th>
-                      <th>Status</th>
-                      <th className="actions-col">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {coaches.filter(c => {
-                      const matchesSearch = c.name.toLowerCase().includes(coachesSearch.toLowerCase()) || c.id.toLowerCase().includes(coachesSearch.toLowerCase());
-                      const matchesVariant = matchesCoachType(c, coachesVariantFilter);
-                      const matchesCategory = coachesCategoryFilter === "All" || c.coach_category === coachesCategoryFilter;
-                      const matchesStatus = coachesStatusFilter === "All" || c.status === coachesStatusFilter;
-                      return matchesSearch && matchesVariant && matchesCategory && matchesStatus;
-                    }).map(c => {
+            // One row, drawn the same whether the coach is working or not.
+            const coachRow = (c) => {
                       const vConfig = findVariant(variants, c.variant_id);
                       // The band the coach is on in the open cycle, and whether
                       // it moved. Pay no longer follows the band, so a move is
@@ -13664,12 +14296,273 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </td>
                         </tr>
                       );
-                    })}
+                    };
+
+            return (
+            <section id="view-coaches" className="content-view active-view">
+              <div className="page-header-row">
+                <h2>Coach Master Directory</h2>
+                {(currentRole === "Super Admin" || currentRole === "HR Manager") && (
+                  <button className="btn btn-primary" onClick={() => {
+                    resetAddCoachForm();
+                    setActiveModal("add-coach");
+                  }}><i className="bx bx-plus"></i> Add New Coach</button>
+                )}
+              </div>
+
+              {/* Filters */}
+              <div className="filter-card">
+                <div className="filter-grid">
+                  <div className="filter-item">
+                    <label>Search Coach</label>
+                    <input type="text" placeholder="Search by name, ID..." value={coachesSearch} onChange={(e) => setCoachesSearch(e.target.value)} />
+                  </div>
+                  <div className="filter-item">
+                    <label>Filter Type</label>
+                    <select value={coachesVariantFilter} onChange={(e) => setCoachesVariantFilter(e.target.value)}>
+                      <option value="All">All Types</option>
+                      <option value="Strength">Strength</option>
+                      <option value="Yoga">Yoga</option>
+                      <option value="Pilates">Pilates</option>
+                      <option value="Physio">Physio</option>
+                    </select>
+                  </div>
+                  <div className="filter-item">
+                    <label>Filter Category</label>
+                    <select value={coachesCategoryFilter} onChange={(e) => setCoachesCategoryFilter(e.target.value)}>
+                      <option value="All">All Categories</option>
+                      <option value="Fixed">Fixed</option>
+                      <option value="Flexi-Fixed">Flexi-Fixed</option>
+                      <option value="Flexi">Flexi</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Reading the roster's month from the app, between the
+                  filters and the list it fills. Nothing is written until the
+                  reading has been looked at. */}
+              {SCORE_EDIT_ROLES.includes(currentRole) && (() => {
+                const months = [...new Set([...historicMonths, ...currentMonth]
+                  .map(r => r.period_month))];
+                const due = autoScanDueCycle();
+                const next = nextAutoScanAt();
+                const pick = months.includes(trackedFetchMonth)
+                  ? trackedFetchMonth
+                  : (months.includes(currentPeriodMonth) ? currentPeriodMonth : months[months.length - 1]);
+                return (
+                  <div className="hb-fetch-bar">
+                    <div>
+                      <strong>Tracked data from the HB+ app</strong>
+                      <span>
+                        Sessions worked, sessions missed and the five-star streak, read for
+                        every active coach in one cycle. Runs itself at 4 a.m. on the 16th —
+                        {trackedAutoRun === due.month
+                          ? ` ${due.month} has been read, next on ${new Date(next).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}.`
+                          : ` ${due.month} is due.`}
+                      </span>
+                    </div>
+                    <label className="hb-fetch-pick">
+                      <span>Pay cycle</span>
+                      <select className="header-select" value={pick}
+                              onChange={(e) => setTrackedFetchMonth(e.target.value)}>
+                        {months.map(m => (
+                          <option key={m} value={m}>
+                            {m}{m === currentPeriodMonth ? ' · running now' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="btn btn-primary"
+                      disabled={Boolean(trackedScan?.busy)}
+                      onClick={() => scanTrackedData(pick)}>
+                      <i className="bx bx-cloud-download"></i>
+                      {trackedScan?.busy ? ' Reading…' : ' Fetch'}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* What came back, before it is written. */}
+              {trackedScan && !trackedScan.busy && (
+                <div className="hb-detail-backdrop" role="dialog" aria-modal="true"
+                     aria-label="What the app returned"
+                     onClick={(e) => { if (e.target === e.currentTarget) setTrackedScan(null); }}>
+                  <div className="lv-detail hb-fetch-modal">
+                    <div className="lv-detail-head">
+                      <h3>{trackedScan.period} · what the app returned</h3>
+                      <button type="button" className="hb-drawer-x" aria-label="Close"
+                              onClick={() => setTrackedScan(null)}>
+                        <i className="bx bx-x"></i>
+                      </button>
+                    </div>
+                    <div className="hb-fetch-sum">
+                      <span><strong>{trackedScan.rows.length}</strong> coaches read</span>
+                      <span><strong>{trackedScan.changed}</strong> with a figure that differs</span>
+                      {trackedScan.locked > 0 && (
+                        <span><strong>{trackedScan.locked}</strong> on a locked cycle — left alone</span>
+                      )}
+                      {trackedScan.problems > 0 && (
+                        <span className="is-bad"><strong>{trackedScan.problems}</strong> could not be read</span>
+                      )}
+                    </div>
+                    <div className="lv-detail-main">
+                      <div className="table-container">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Coach</th>
+                              <th className="num-col">Sessions</th>
+                              <th className="num-col">Missed</th>
+                              <th className="num-col">5-star streak</th>
+                              <th>Note</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {trackedScan.rows.map(r => {
+                              const cell = (k) => {
+                                const now = r.found?.[k];
+                                if (now == null) return <span className="text-muted">—</span>;
+                                if (now === r.was[k]) return <span className="text-muted">{now}</span>;
+                                return <><span className="text-muted">{r.was[k]}</span> → <strong>{now}</strong></>;
+                              };
+                              return (
+                                <tr key={r.coachId} className={r.changed?.length ? 'hb-fetch-hit' : undefined}>
+                                  <td><strong>{r.name}</strong><div className="hb-sub">{r.coachId}</div></td>
+                                  <td className="num-col">{cell('sessions')}</td>
+                                  <td className="num-col">{cell('missed')}</td>
+                                  <td className="num-col">{cell('streak')}</td>
+                                  <td>
+                                    {r.problem
+                                      ? <span className="text-red">{r.problem}</span>
+                                      : r.locked
+                                        ? <span className="text-muted">{trackedScan.period} is locked</span>
+                                        : r.changed?.length
+                                          ? <span className="text-green">will be written</span>
+                                          : <span className="text-muted">already matches</span>}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="calc-notes">
+                        Only sessions, missed sessions and the streak come from this read —
+                        night sessions are counted one night at a time, so they stay a
+                        per-coach action on the score card. Nothing has been written yet.
+                      </p>
+                    </div>
+                    <div className="hb-drawer-foot">
+                      <span>
+                        {trackedScan.changed === 0
+                          ? 'Nothing differs from what is held.'
+                          : `${trackedScan.changed} score card${trackedScan.changed === 1 ? '' : 's'} will be filled.`}
+                      </span>
+                      <button className="btn btn-secondary" onClick={() => setTrackedScan(null)}>Cancel</button>
+                      <button className="btn btn-primary"
+                        disabled={trackedScan.changed === 0}
+                        onClick={() => { commitTrackedData(trackedScan); setTrackedScan(null); }}>
+                        Continue
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Coaches Table */}
+              <div className="table-container card">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Coach ID</th>
+                      <th>Name</th>
+                      <th>Type</th>
+                      <th>Category</th>
+                      <th>Designation</th>
+                      <th>Band</th>
+                      <th>DOJ</th>
+                      <th>RM</th>
+                      <th>Status</th>
+                      <th className="actions-col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeCoaches.length === 0 && (
+                      <tr><td colSpan={10} className="text-muted">No active coach matches these filters.</td></tr>
+                    )}
+                    {activeCoaches.map(coachRow)}
                   </tbody>
                 </table>
               </div>
+
+              {/* Everybody who has left or been suspended, kept out of the
+                  directory above but not out of the system: their records,
+                  payslips and incidents all stand. Shut until asked for. */}
+              <section className="card hb-inactive" aria-label="Coaches who are not active">
+                <div className="hb-inactive-head">
+                  <div>
+                    <h3>Not active · {notActive.length}</h3>
+                    <span>
+                      {notActive.length === 0
+                        ? 'Every coach matching these filters is active.'
+                        : 'Suspended and exited coaches. Their history, payslips and incidents stand — they are simply not part of the working directory.'}
+                    </span>
+                  </div>
+                  {notActive.length > 0 && (
+                    <button type="button" className="hb-btn"
+                      aria-expanded={coachesShowInactive}
+                      onClick={() => setCoachesShowInactive(v => !v)}>
+                      {coachesShowInactive ? 'Hide' : `Show ${notActive.length}`}
+                    </button>
+                  )}
+                </div>
+
+                {coachesShowInactive && notActive.length > 0 && (
+                  <>
+                    <div className="hb-inactive-filter">
+                      {['All', 'Suspended', 'Exited'].map(f => (
+                        <button key={f} type="button"
+                          aria-pressed={coachesStatusFilter === f}
+                          className={`hb-btn ${coachesStatusFilter === f ? 'hb-btn-dark' : ''}`}
+                          onClick={() => setCoachesStatusFilter(f)}>
+                          {f === 'All' ? 'Both' : f}
+                          {' '}({f === 'All'
+                            ? notActive.length
+                            : notActive.filter(c => c.status === f).length})
+                        </button>
+                      ))}
+                    </div>
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Coach ID</th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Category</th>
+                            <th>Designation</th>
+                            <th>Band</th>
+                            <th>DOJ</th>
+                            <th>RM</th>
+                            <th>Status</th>
+                            <th className="actions-col">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {inactiveCoaches.length === 0 && (
+                            <tr><td colSpan={10} className="text-muted">None with that status.</td></tr>
+                          )}
+                          {inactiveCoaches.map(coachRow)}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </section>
             </section>
-          )}
+            );
+          })()}
 
           {/* Monthly Score Records — the IT x HR score tracker sheet, rendered live */}
           {isViewEnabled('score-tracker') && activeView === 'score-tracker' && (() => {
@@ -13698,6 +14591,236 @@ export default function App({ session = null, profile = null, onSignOut = null }
               const totals = new Set(rows.map(r => keys.reduce((sum, k) => sum + (r.weights[k] || 0), 0)));
               return totals.size === 1 ? `${[...totals][0]}%` : 'varies';
             };
+
+            // One table, drawn for whichever set of columns it is given.
+            // The score side and the money side are the same rows read two
+            // ways, so they share this and differ only in their tabs.
+            const trackerCard = (cfg) => (
+                <div className="card score-tracker-card">
+                  {/* One column group at a time, as the score card does, so the
+                      table reads without running off the side. The bulk controls
+                      sit with it: they act on this table, not the page. */}
+                  <div className="tracker-tabs-row">
+                    <ScorecardTabs
+                      groups={cfg.tabs}
+                      active={cfg.active?.key}
+                      onChange={cfg.onTab}
+                      weights={{}}
+                    />
+                    <div className="tracker-bulk-controls">
+                      {/* Both act on the tab you are on: its manual fields only.
+                          The month is chosen in the dialog each opens. */}
+                      {(() => {
+                        const hasFields = Boolean(BULK_TABS[cfg.active?.key]);
+                        const why = hasFields ? '' : `${cfg.active?.label} is calculated — nothing to enter`;
+                        return (
+                          <>
+                            <button className="btn btn-secondary" disabled={!hasFields}
+                                    title={why || `Download the ${cfg.active?.label} template`}
+                                    onClick={() => openBulkDialog('template', cfg.active?.key)}>
+                              <i className="bx bx-download"></i> Template · {cfg.active?.label}
+                            </button>
+                            <button className="btn btn-primary" disabled={!hasFields}
+                                    title={why || `Upload ${cfg.active?.label} values`}
+                                    onClick={() => openBulkDialog('upload', cfg.active?.key)}>
+                              <i className="bx bx-upload"></i> Bulk Upload
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                  <div className="table-container score-tracker-container">
+                    <table className="data-table score-tracker-table">
+                      <thead>
+                        <tr className="group-header-row">
+                          {cfg.groups.map(group => {
+                            const weight = weightLabel(group.weightKeys);
+                            return (
+                              <th key={group.key} colSpan={group.columns.length} className={`group-head group-${group.tone}`}>
+                                {group.label}{weight && <span className="group-weight">(Weight: {weight})</span>}
+                              </th>
+                            );
+                          })}
+                          <th className="group-head tracker-actions" aria-hidden="true"></th>
+                        </tr>
+                        <tr className="column-header-row">
+                          {cfg.groups.flatMap(group => group.columns.map(col => {
+                            const weight = weightLabel(col.weightOf ? [col.weightOf] : null);
+                            const isSorted = scoreSort.key === col.key;
+                            return (
+                              <th
+                                key={col.key}
+                                onClick={col.sortable ? () => toggleScoreSort(col.key) : undefined}
+                                className={[
+                                  `group-tint-${group.tone}`,
+                                  col.sticky ? `sticky-col sticky-${col.key}` : '',
+                                  col.decimals !== undefined || col.money ? 'num-col' : '',
+                                  col.emphasis ? 'emphasis-col' : '',
+                                  col.sortable ? 'sortable-col' : ''
+                                ].join(' ')}
+                              >
+                                <span className="col-label">
+                                  {col.label}
+                                  {col.sortable && (
+                                    <i className={`bx ${isSorted ? (scoreSort.dir === 'asc' ? 'bx-chevron-up' : 'bx-chevron-down') : 'bx-chevron-down'} sort-icon ${isSorted ? 'sort-active' : ''}`}></i>
+                                  )}
+                                </span>
+                                {/* Weight, or the ceiling the figure is out of —
+                                    the same line the score card carries. */}
+                                {(() => {
+                                  const meta = trackerColumnMeta(col);
+                                  const scale = weight
+                                    || meta?.scale
+                                    || (meta?.max && meta.max <= 20 ? `Max ${meta.max}` : null);
+                                  return scale ? <span className="col-weight">{scale}</span> : null;
+                                })()}
+                                {(() => {
+                                  const meta = trackerColumnMeta(col);
+                                  if (!meta?.entry) return null;
+                                  return (
+                                    <span className={`entry-tag entry-${meta.entry}`}>
+                                      {meta.entry === 'derived' ? 'Dynamic' : 'Manual'}
+                                      {meta.source ? ` · ${meta.source}` : ''}
+                                      {meta.note ? ` · ${meta.note}` : ''}
+                                    </span>
+                                  );
+                                })()}
+                              </th>
+                            );
+                          }))}
+                          <th className="tracker-actions" aria-label="Edit"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pageRows.length === 0 && (
+                          <tr>
+                            <td colSpan={cfg.columns.length + 1} className="text-muted">
+                              No score records match the current filters.
+                            </td>
+                          </tr>
+                        )}
+                        {pageRows.map(row => {
+                          // A row is editable in place, through the same draft
+                          // and the same save as Record mode. Only the columns
+                          // the bulk tabs call manual become inputs; a locked
+                          // month stays read-only.
+                          const rKey = draftKey(row.coach_id, row.month);
+                          const editing = editingRef.current === rKey;
+                          const rCoach = coaches.find(c => c.id === row.coach_id);
+                          const rRun = [...currentMonth, ...historicMonths]
+                            .find(r => r.coach_id === row.coach_id && r.period_month === row.month);
+                          const rLocked = row.status === 'FINANCE_LOCKED';
+                          const rMayEdit = SCORE_EDIT_ROLES.includes(currentRole) && !rLocked
+                            && rCoach && rRun && !findVariant(variants, rCoach.variant_id).placeholder;
+                          const hasTypable = cfg.groups.some(g =>
+                            g.columns.some(c => TRACKER_MANUAL_FIELDS[c.key]));
+                          return (
+                            <tr key={row.id} className={editing ? 'row-editing' : undefined}>
+                              {cfg.groups.flatMap(group => group.columns.map(col => {
+                                const man = TRACKER_MANUAL_FIELDS[col.key];
+                                // Loss of Pay follows the score card's rule:
+                                // only the roles that own pay may correct it.
+                                const typableHere = man && rMayEdit
+                                  && (col.key !== 'lop_days' || PROFILE_PAY_ROLES.includes(currentRole));
+                                const move = col.key === 'band' && bandMoveFor(row.coach_id, row.month);
+                                return (
+                                  <td
+                                    key={col.key}
+                                    className={[
+                                      col.sticky ? `sticky-col sticky-${col.key}` : '',
+                                      col.decimals !== undefined || col.money ? 'num-col' : '',
+                                      col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
+                                      editing && typableHere ? 'cell-editing' : '',
+                                      move ? `band-moved band-moved-${move.up ? 'up' : 'down'}` : ''
+                                    ].join(' ')}
+                                    title={move
+                                      ? `Moved ${move.up ? 'up' : 'down'} from ${move.from} (${move.fromMonth})`
+                                      : undefined}
+                                  >
+                                    {editing && typableHere ? (
+                                      <input
+                                        className="cell-input"
+                                        type="number" min="0"
+                                        max={man.max ?? undefined}
+                                        step={col.decimals ? '0.1' : '1'}
+                                        aria-label={`${col.label} for ${row.coach_name}, ${row.month}`}
+                                        value={scoreDraft[man.draft] ?? ''}
+                                        onChange={(e) => setScoreDraft(prev => ({
+                                          ...prev, [man.draft]: e.target.value
+                                        }))}
+                                      />
+                                    ) : col.key === 'coach_name' ? (
+                                      <button
+                                        type="button" className="linklike"
+                                        title="Open coach page"
+                                        onClick={() => { setCoachDetailId(row.coach_id); setActiveView('coaches'); }}
+                                      >{row.coach_name}</button>
+                                    ) : (
+                                      formatScoreCell(col, row)
+                                    )}
+                                    {move && !editing && (
+                                      <i className={`bx ${move.up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
+                                    )}
+                                  </td>
+                                );
+                              }))}
+                              <td className="actions-col tracker-actions">
+                                {editing ? (
+                                  <div className="table-btn-group">
+                                    <button className="btn-row-icon icon-save" title="Save this row"
+                                      onClick={() => saveScoreRowEdit(rCoach, rRun)}>
+                                      <i className="bx bx-check"></i>
+                                    </button>
+                                    <button className="btn-row-icon icon-cancel" title="Discard these changes"
+                                      onClick={cancelScoreRowEdit}>
+                                      <i className="bx bx-x"></i>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    className="btn-row-icon icon-edit"
+                                    disabled={!rMayEdit || !hasTypable}
+                                    title={!rMayEdit
+                                      ? (rLocked ? `${row.month} is locked` : 'You cannot edit this row')
+                                      : !hasTypable
+                                        ? `${cfg.active?.label} is worked out — nothing to type here`
+                                        : `Edit ${row.coach_name}, ${row.month}`}
+                                    onClick={() => beginScoreRowEdit(rCoach, rRun, 'tracker')}
+                                  >
+                                    <i className="bx bx-edit"></i>
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="tracker-footer">
+                    <span className="text-secondary">
+                      {rows.length === 0
+                        ? 'Showing 0 records'
+                        : `Showing ${firstIndex + 1} - ${Math.min(firstIndex + scoreRowsPerPage, rows.length)} of ${rows.length} records across ${coachCount} coaches`}
+                    </span>
+                    <div className="tracker-pagination">
+                      <label>Rows per page:</label>
+                      <select value={scoreRowsPerPage} onChange={(e) => { setScoreRowsPerPage(Number(e.target.value)); setScorePage(1); }}>
+                        {SCORE_TRACKER_PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                      <button className="btn-table-icon" disabled={page <= 1} onClick={() => setScorePage(page - 1)}>
+                        <i className="bx bx-chevron-left"></i>
+                      </button>
+                      <span className="page-indicator">{page}</span>
+                      <button className="btn-table-icon" disabled={page >= totalPages} onClick={() => setScorePage(page + 1)}>
+                        <i className="bx bx-chevron-right"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+            );
 
             return (
               <section id="view-score-tracker" className="content-view active-view">
@@ -14180,7 +15303,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                   {!picked.app_coach_id && (
                                     <p className="hb-reviews-note">
                                       No App Coach ID on this coach. The feed is keyed by it —
-                                      set it on their profile, under Details.
+                                      set it on their Profile tab.
                                     </p>
                                   )}
 
@@ -14432,235 +15555,39 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                 </div>
 
-                <div className="card score-tracker-card">
-                  {/* One column group at a time, as the score card does, so the
-                      table reads without running off the side. The bulk controls
-                      sit with it: they act on this table, not the page. */}
-                  <div className="tracker-tabs-row">
-                    <ScorecardTabs
-                      groups={trackerTabs}
-                      active={trackerActive?.key}
-                      onChange={setTrackerTab}
-                      weights={{}}
-                    />
-                    <div className="tracker-bulk-controls">
-                      {/* Both act on the tab you are on: its manual fields only.
-                          The month is chosen in the dialog each opens. */}
-                      {(() => {
-                        const hasFields = Boolean(BULK_TABS[trackerActive?.key]);
-                        const why = hasFields ? '' : `${trackerActive?.label} is calculated — nothing to enter`;
-                        return (
-                          <>
-                            <button className="btn btn-secondary" disabled={!hasFields}
-                                    title={why || `Download the ${trackerActive?.label} template`}
-                                    onClick={() => openBulkDialog('template', trackerActive?.key)}>
-                              <i className="bx bx-download"></i> Template · {trackerActive?.label}
-                            </button>
-                            <button className="btn btn-primary" disabled={!hasFields}
-                                    title={why || `Upload ${trackerActive?.label} values`}
-                                    onClick={() => openBulkDialog('upload', trackerActive?.key)}>
-                              <i className="bx bx-upload"></i> Bulk Upload
-                            </button>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  <div className="table-container score-tracker-container">
-                    <table className="data-table score-tracker-table">
-                      <thead>
-                        <tr className="group-header-row">
-                          {trackerGroups.map(group => {
-                            const weight = weightLabel(group.weightKeys);
-                            return (
-                              <th key={group.key} colSpan={group.columns.length} className={`group-head group-${group.tone}`}>
-                                {group.label}{weight && <span className="group-weight">(Weight: {weight})</span>}
-                              </th>
-                            );
-                          })}
-                          <th className="group-head tracker-actions" aria-hidden="true"></th>
-                        </tr>
-                        <tr className="column-header-row">
-                          {trackerGroups.flatMap(group => group.columns.map(col => {
-                            const weight = weightLabel(col.weightOf ? [col.weightOf] : null);
-                            const isSorted = scoreSort.key === col.key;
-                            return (
-                              <th
-                                key={col.key}
-                                onClick={col.sortable ? () => toggleScoreSort(col.key) : undefined}
-                                className={[
-                                  `group-tint-${group.tone}`,
-                                  col.sticky ? `sticky-col sticky-${col.key}` : '',
-                                  col.decimals !== undefined || col.money ? 'num-col' : '',
-                                  col.emphasis ? 'emphasis-col' : '',
-                                  col.sortable ? 'sortable-col' : ''
-                                ].join(' ')}
-                              >
-                                <span className="col-label">
-                                  {col.label}
-                                  {col.sortable && (
-                                    <i className={`bx ${isSorted ? (scoreSort.dir === 'asc' ? 'bx-chevron-up' : 'bx-chevron-down') : 'bx-chevron-down'} sort-icon ${isSorted ? 'sort-active' : ''}`}></i>
-                                  )}
-                                </span>
-                                {/* Weight, or the ceiling the figure is out of —
-                                    the same line the score card carries. */}
-                                {(() => {
-                                  const meta = trackerColumnMeta(col);
-                                  const scale = weight
-                                    || meta?.scale
-                                    || (meta?.max && meta.max <= 20 ? `Max ${meta.max}` : null);
-                                  return scale ? <span className="col-weight">{scale}</span> : null;
-                                })()}
-                                {(() => {
-                                  const meta = trackerColumnMeta(col);
-                                  if (!meta?.entry) return null;
-                                  return (
-                                    <span className={`entry-tag entry-${meta.entry}`}>
-                                      {meta.entry === 'derived' ? 'Dynamic' : 'Manual'}
-                                      {meta.source ? ` · ${meta.source}` : ''}
-                                      {meta.note ? ` · ${meta.note}` : ''}
-                                    </span>
-                                  );
-                                })()}
-                              </th>
-                            );
-                          }))}
-                          <th className="tracker-actions" aria-label="Edit"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pageRows.length === 0 && (
-                          <tr>
-                            <td colSpan={trackerColumns.length + 1} className="text-muted">
-                              No score records match the current filters.
-                            </td>
-                          </tr>
-                        )}
-                        {pageRows.map(row => {
-                          // A row is editable in place, through the same draft
-                          // and the same save as Record mode. Only the columns
-                          // the bulk tabs call manual become inputs; a locked
-                          // month stays read-only.
-                          const rKey = draftKey(row.coach_id, row.month);
-                          const editing = editingRef.current === rKey;
-                          const rCoach = coaches.find(c => c.id === row.coach_id);
-                          const rRun = [...currentMonth, ...historicMonths]
-                            .find(r => r.coach_id === row.coach_id && r.period_month === row.month);
-                          const rLocked = row.status === 'FINANCE_LOCKED';
-                          const rMayEdit = SCORE_EDIT_ROLES.includes(currentRole) && !rLocked
-                            && rCoach && rRun && !findVariant(variants, rCoach.variant_id).placeholder;
-                          const hasTypable = trackerGroups.some(g =>
-                            g.columns.some(c => TRACKER_MANUAL_FIELDS[c.key]));
-                          return (
-                            <tr key={row.id} className={editing ? 'row-editing' : undefined}>
-                              {trackerGroups.flatMap(group => group.columns.map(col => {
-                                const man = TRACKER_MANUAL_FIELDS[col.key];
-                                // Loss of Pay follows the score card's rule:
-                                // only the roles that own pay may correct it.
-                                const typableHere = man && rMayEdit
-                                  && (col.key !== 'lop_days' || PROFILE_PAY_ROLES.includes(currentRole));
-                                const move = col.key === 'band' && bandMoveFor(row.coach_id, row.month);
-                                return (
-                                  <td
-                                    key={col.key}
-                                    className={[
-                                      col.sticky ? `sticky-col sticky-${col.key}` : '',
-                                      col.decimals !== undefined || col.money ? 'num-col' : '',
-                                      col.emphasis ? `emphasis-col emphasis-${group.tone}` : '',
-                                      editing && typableHere ? 'cell-editing' : '',
-                                      move ? `band-moved band-moved-${move.up ? 'up' : 'down'}` : ''
-                                    ].join(' ')}
-                                    title={move
-                                      ? `Moved ${move.up ? 'up' : 'down'} from ${move.from} (${move.fromMonth})`
-                                      : undefined}
-                                  >
-                                    {editing && typableHere ? (
-                                      <input
-                                        className="cell-input"
-                                        type="number" min="0"
-                                        max={man.max ?? undefined}
-                                        step={col.decimals ? '0.1' : '1'}
-                                        aria-label={`${col.label} for ${row.coach_name}, ${row.month}`}
-                                        value={scoreDraft[man.draft] ?? ''}
-                                        onChange={(e) => setScoreDraft(prev => ({
-                                          ...prev, [man.draft]: e.target.value
-                                        }))}
-                                      />
-                                    ) : col.key === 'coach_name' ? (
-                                      <button
-                                        type="button" className="linklike"
-                                        title="Open coach page"
-                                        onClick={() => { setCoachDetailId(row.coach_id); setActiveView('coaches'); }}
-                                      >{row.coach_name}</button>
-                                    ) : (
-                                      formatScoreCell(col, row)
-                                    )}
-                                    {move && !editing && (
-                                      <i className={`bx ${move.up ? 'bx-up-arrow-alt' : 'bx-down-arrow-alt'} band-move-arrow`}></i>
-                                    )}
-                                  </td>
-                                );
-                              }))}
-                              <td className="actions-col tracker-actions">
-                                {editing ? (
-                                  <div className="table-btn-group">
-                                    <button className="btn-row-icon icon-save" title="Save this row"
-                                      onClick={() => saveScoreRowEdit(rCoach, rRun)}>
-                                      <i className="bx bx-check"></i>
-                                    </button>
-                                    <button className="btn-row-icon icon-cancel" title="Discard these changes"
-                                      onClick={cancelScoreRowEdit}>
-                                      <i className="bx bx-x"></i>
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    className="btn-row-icon icon-edit"
-                                    disabled={!rMayEdit || !hasTypable}
-                                    title={!rMayEdit
-                                      ? (rLocked ? `${row.month} is locked` : 'You cannot edit this row')
-                                      : !hasTypable
-                                        ? `${trackerActive?.label} is worked out — nothing to type here`
-                                        : `Edit ${row.coach_name}, ${row.month}`}
-                                    onClick={() => beginScoreRowEdit(rCoach, rRun, 'tracker')}
-                                  >
-                                    <i className="bx bx-edit"></i>
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="tracker-footer">
-                    <span className="text-secondary">
-                      {rows.length === 0
-                        ? 'Showing 0 records'
-                        : `Showing ${firstIndex + 1} - ${Math.min(firstIndex + scoreRowsPerPage, rows.length)} of ${rows.length} records across ${coachCount} coaches`}
-                    </span>
-                    <div className="tracker-pagination">
-                      <label>Rows per page:</label>
-                      <select value={scoreRowsPerPage} onChange={(e) => { setScoreRowsPerPage(Number(e.target.value)); setScorePage(1); }}>
-                        {SCORE_TRACKER_PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
-                      </select>
-                      <button className="btn-table-icon" disabled={page <= 1} onClick={() => setScorePage(page - 1)}>
-                        <i className="bx bx-chevron-left"></i>
-                      </button>
-                      <span className="page-indicator">{page}</span>
-                      <button className="btn-table-icon" disabled={page >= totalPages} onClick={() => setScorePage(page + 1)}>
-                        <i className="bx bx-chevron-right"></i>
-                      </button>
-                    </div>
-                  </div>
+                <div className="tracker-split-note">
+                  <h3>What the coach scored</h3>
+                  <p>
+                    Experience, technical knowledge, performance and the band they come to.
+                    Every figure here feeds the HB+ score.
+                  </p>
                 </div>
+
+                {trackerCard({
+                  tabs: trackerScoreTabs, active: trackerActive,
+                  onTab: setTrackerTab, groups: trackerGroups, columns: trackerColumns
+                })}
+
+                {trackerMoneyTabs.length > 0 && (
+                  <div className="tracker-split-note">
+                    <h3>Incentives, violations and bonuses</h3>
+                    <p>
+                      The same records, read as money rather than as score. Nothing below
+                      feeds the HB+ score — it is what the month paid, and what it cost.
+                    </p>
+                  </div>
+                )}
+
+                {trackerMoneyTabs.length > 0 && trackerCard({
+                  tabs: trackerMoneyTabs, active: trackerMoneyActive,
+                  onTab: setTrackerMoneyTab, groups: trackerMoneyGroups,
+                  columns: trackerMoneyColumns
+                })}
                 </>)}
 
                 <p className="text-muted score-tracker-footnote">
                   Threshold is 156 sessions for Fixed S&amp;C coaches, 117 for Fixed Yoga, and 96 for Flexi / Flexi-Fixed.
-                  Consistency Bonus pays ₹500 when attendance is 95%+ with no violations or no-shows in the period.
+                  Consistency Bonus pays ₹500 when attendance is 95%+ with no incidents, no missed sessions and no unplanned Loss of Pay in the period.
                   Undocumented freelance experience counts at 50%, and non-coaching experience is halved before its 10-year cap.
                 </p>
               </section>
@@ -14677,22 +15604,8 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const run = payrollCategoryFilter === "All"
               ? fullRun
               : fullRun.filter(r => r.coach.coach_category === payrollCategoryFilter);
-            const sum = (fn) => run.reduce((acc, r) => acc + fn(r), 0);
-            const totals = {
-              base: sum(r => r.pay.basePay),
-              extraSessions: sum(r => r.pay.extraSessions),
-              beyondAvailabilitySessions: sum(r => r.pay.beyondAvailabilitySessions),
-              beyondAvailabilityPay: sum(r => r.pay.beyondAvailabilityPay),
-              sessionPay: sum(r => r.pay.sessionPay),
-              night: sum(r => r.pay.nightSessionPay),
-              milestone: sum(r => r.pay.milestoneIncentive),
-              consistency: sum(r => r.pay.consistencyBonus),
-              streakOrg: sum(r => r.pay.streakBonusPay + r.pay.orgWorkPay),
-              deductions: sum(r => r.pay.penaltyDeductions),
-              gross: sum(r => r.pay.grossPay)
-            };
-            totals.sessions = totals.beyondAvailabilityPay + totals.sessionPay;
-            totals.incentives = totals.milestone + totals.consistency + totals.streakOrg + totals.night;
+            // The eleven cycle totals went with the tiles that showed
+            // them. Nothing on this page reads the org's total any more.
 
             const selected = run.find(r => r.coach.id === payCalcCoachId);
 
@@ -14700,7 +15613,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
               <section id="view-pay-calculator" className="content-view active-view">
                 {(() => {
                   // Closing a month, told as the state it is actually in. The
-                  // lock itself is the same single handleLockCycle toggle it
+                  // lock itself is one toggle on whichever month is chosen —
                   // has always been — this only says what it will do, and what
                   // is still outstanding when it is pressed.
                   const active = coaches.filter(c => c.status === 'Active');
@@ -14740,24 +15653,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   const monthLocked = run.length > 0 && run.every(r => r.record.status === 'FINANCE_LOCKED');
                   const partLocked = !monthLocked && run.some(r => r.record.status === 'FINANCE_LOCKED');
 
-                  // Every month, with the state its own records are in.
-                  const ladder = periods.map(m => {
-                    const recs = [...historicMonths, ...currentMonth].filter(r => r.period_month === m);
-                    const all = recs.length > 0 && recs.every(r => r.status === 'FINANCE_LOCKED');
-                    const some = !all && recs.some(r => r.status === 'FINANCE_LOCKED');
-                    const gross = buildPayrollRun(m).reduce((a, r) => a + r.pay.grossPay, 0);
-                    return { m, recs, all, some, gross, current: m === currentPeriodMonth };
-                  }).reverse();
-
-                  const tds = totals.gross * TDS_194J_RATE;
-                  const lop = sum(r => r.pay.lossOfPay);
 
                   return (
                     <>
                       <div className="hb-pay-head">
                         <div>
-                          <h2>Close &amp; pay — {period}</h2>
-                          <p>Every line is worked out from the coach's recorded score card. Nothing here is typed in by hand.</p>
+                          <h2>{maySeePayDetail ? 'Close & pay' : 'Coach pay'} — {period}</h2>
+                          <p>{maySeePayDetail
+                            ? "Every line is worked out from the coach's recorded score card. Nothing here is typed in by hand."
+                            : "What each coach is paid this cycle. The working behind it sits with HR and Finance."}</p>
                         </div>
                         <div className="tracker-toolbar-controls">
                           <select className="header-select" value={period} onChange={(e) => setPayrollRunPeriod(e.target.value)}>
@@ -14771,19 +15675,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             <option value="All">All Categories</option>
                             {COACH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
-                          <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
-                            <i className="bx bx-download"></i> Export CSV
-                          </button>
-                          {/* The same money, itemised. The pay export carries one
-                              penalty figure per coach, which is what you pay
-                              from; this is what you answer a coach with. */}
-                          <button
-                            className="btn btn-secondary"
-                            title={`Every incident charged on ${period}, one row each, for all coaches`}
-                            onClick={() => handleExportPenalties(period)}
-                          >
-                            <i className="bx bx-download"></i> Penalties CSV
-                          </button>
+                          {/* Both exports carry the whole working — rates,
+                              incentives, every incident — so they belong to the
+                              roles that are shown it. */}
+                          {maySeePayDetail && (
+                            <>
+                              <button className="btn btn-secondary" onClick={() => handleExportPayrollRun(period)}>
+                                <i className="bx bx-download"></i> Export CSV
+                              </button>
+                              {/* The same money, itemised. The pay export carries one
+                                  penalty figure per coach, which is what you pay
+                                  from; this is what you answer a coach with. */}
+                              <button
+                                className="btn btn-secondary"
+                                title={`Every incident charged on ${period}, one row each, for all coaches`}
+                                onClick={() => handleExportPenalties(period)}
+                              >
+                                <i className="bx bx-download"></i> Penalties CSV
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
 
@@ -14815,22 +15726,130 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         <div className="hb-ready-act">
                           <button
                             className={`hb-btn ${monthLocked ? '' : 'hb-btn-primary'}`}
-                            disabled={!LOCK_ROLES.includes(currentRole) || !isCurrent}
-                            title={!LOCK_ROLES.includes(currentRole)
-                              ? 'Your role cannot lock a cycle'
-                              : !isCurrent ? 'Only the current cycle can be locked from here' : ''}
-                            onClick={handleLockCycle}
+                            disabled={!LOCK_ROLES.includes(currentRole)}
+                            title={LOCK_ROLES.includes(currentRole)
+                              ? (monthLocked
+                                ? `Withdraw ${period}'s payslips and let its score cards be edited again`
+                                : `Freeze ${period} and issue its payslips`)
+                              : 'Your role cannot lock a cycle'}
+                            onClick={() => setCycleLock(period, !monthLocked)}
                           >
-                            {monthLocked ? `Reopen ${period}` : `Lock ${period} & issue payslips`}
+                            {monthLocked ? `Unlock ${period}` : `Lock ${period} & issue payslips`}
                           </button>
                           <span>
-                            {isCurrent
-                              ? 'You can lock before these are done — it just freezes them as they are.'
-                              : 'Only the current cycle is locked from here.'}
+                            {monthLocked
+                              ? 'Unlocking withdraws its payslips until it is locked again.'
+                              : isCurrent
+                                ? 'You can lock before these are done — it just freezes them as they are.'
+                                : 'A past cycle locks and unlocks from here too — pick the month above.'}
                           </span>
                         </div>
                       </section>
 
+                      {/* The calculator first. It is the thing this page
+                          is opened to use; closing the cycle is done once a
+                          month, and the rate cards are reference. */}
+                      {maySeePayDetail && (<>
+                      <div className="page-header-row" style={{ marginTop: '0.5rem' }}>
+                        <div>
+                          <h2>Monthly Pay Calculator</h2>
+                          <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
+                            Choose a coach to load {period}'s recorded figures, or pick manual entry to
+                            model a case from scratch.
+                          </p>
+                        </div>
+                        <div className="view-purpose-side">
+                          <span className="writes-badge writes-model">Works it out</span>
+                          <small>
+                            Changing an input shows what the month would come to; it does not record it.
+                            Per-Session Rate and Base / Fixed Pay are the exception, each with its own Save.
+                          </small>
+                        </div>
+                        {PROFILE_PAY_ROLES.includes(currentRole) && (
+                          <button
+                            className="btn btn-secondary"
+                            title={`Write ${period}'s fixed pay and per-session rate onto every coach's ${period} record, so later months carry them`}
+                            onClick={() => pinMonthPayForAll(period)}
+                          >
+                            <i className="bx bx-lock-alt"></i> Fix {period} pay for all coaches
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="card">
+                        <PayCalculator
+                          variants={variants}
+                          onSavePayOverrides={savePayOverrides}
+                          onCommitModel={PROFILE_PAY_ROLES.includes(currentRole) ? commitCalculatorModel : null}
+                          coachOptions={run.map(r => r.coach)}
+                          selectedCoachId={payCalcCoachId}
+                          onCoachChange={setPayCalcCoachId}
+                          // Without these the Performance Period row is read-only
+                          // text, so the only way to check another month was the
+                          // select at the top of the page — a long way from the
+                          // figures being read.
+                          periodOptions={periods}
+                          onPeriodChange={setPayrollRunPeriod}
+                          canOverridePay={PROFILE_PAY_ROLES.includes(currentRole)}
+                          seed={selected ? {
+                            key: `${selected.coach.id}-${period}`,
+                            periodMonth: period,
+                            periodRange: selected.record.period_start
+                              ? `${new Date(selected.record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
+                              : undefined,
+                            coreRecorded: hasCorePerformance(selected.record),
+                            coachId: selected.coach.id,
+                            coachName: selected.coach.name,
+                            variantId: selected.coach.variant_id,
+                            category: selected.coach.coach_category,
+                            score: selected.score,
+                            sessions: Number(selected.record.sessions_completed) || 0,
+                            thresholdOverride: selected.record.threshold_override ?? "",
+                            beyondSessions: Number(selected.record.beyond_availability_sessions) || 0,
+                            beyondRate: selected.coach.beyond_availability_rate_override ?? "",
+                            nightSessions: Number(selected.record.night_sessions) || 0,
+                            streak: Number(selected.record.five_star_streak) || 0,
+                            consistency: selected.pay.consistencyEligible ? "YES" : "NO",
+                            // The bonus is worked out, not chosen. These are the
+                            // four facts the rule reads, so the calculator can say
+                            // which of them is in the way rather than offering a
+                            // yes/no that looks like the decision.
+                            consistencyFacts: {
+                              attendancePct: Number(selected.record.attendance_pct) || 0,
+                              violations: (selected.periodVios || []).filter(isPenaltyCounted).length,
+                              noShows: (selected.periodVios || []).filter(isPenaltyCounted)
+                                .filter(v => v.type === LEGACY_NO_SHOW || v.type === SESSION_NO_SHOW).length,
+                              unplannedLop: Number(selected.record.unplanned_lop_days) || 0
+                            },
+                            orgWorkPay: selected.pay.orgWorkPay,
+                            // Incidents only. penaltyDeductions is violations plus
+                            // the missed-session charge, and the breakdown already
+                            // shows that charge on its own row — seeding it here
+                            // counted it twice, and put a figure against a month
+                            // with no incidents at all.
+                            penalties: selected.pay.violationPenalties,
+                            missedSessions: Number(selected.record.missed_sessions) || 0,
+                            penaltyWaiver: Number(selected.record.penalty_waiver) || 0,
+                            lopDays: Number(selected.record.lop_days) || 0,
+                            penaltyItems: selected.periodVios || [],
+                            penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
+                            payFrom: resolvePay(selected.record),
+                            baseOverride: carryPay(selected.record).fixed_pay_override
+                              ?? (selected.coach.coach_category === 'Flexi-Fixed'
+                                ? (selected.coach.flexi_fixed_base_salary ?? "")
+                                : (selected.coach.fixed_salary_override ?? "")),
+                            rateOverride: carryPay(selected.record).per_session_override
+                              ?? (selected.coach.per_session_override ?? "")
+                          } : { key: `manual-${period}` }}
+                        />
+                      </div>
+                      </>)}
+
+                      {/* Closing a cycle, and the arithmetic of the whole run.
+                          A squad manager is shown neither — they read figures
+                          here, they do not settle them. */}
+                      {maySeePayDetail && (
+                      <>
                       <div className="hb-lock-explain">
                         <div className="card">
                           <strong>What locking does</strong>
@@ -14848,104 +15867,90 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </div>
                       </div>
 
-                      {LOCK_ROLES.includes(currentRole) && (
-                        <section className="card hb-ladder" aria-label="Months and their locks">
-                          <div className="hb-ov-head">
-                            <div><h3>Months and their locks</h3></div>
-                            <span>Only Super Admin, HR, Finance and Reporting Managers see this.</span>
-                          </div>
-                          {ladder.map(l => (
-                            <div className="hb-ladder-row" key={l.m}>
-                              <span className={`hb-lock-chip ${l.all ? 'is-shut' : l.some ? 'is-part' : 'is-open'}`}>
-                                <i className={`bx ${l.all ? 'bx-lock-alt' : 'bx-lock-open-alt'}`}></i>
-                                {l.all ? 'Locked' : l.some ? 'Part locked' : 'Open'}
-                              </span>
-                              <div>
-                                <strong>{l.m}</strong>
-                                <span>
-                                  {l.current ? 'The current cycle. ' : ''}
-                                  {l.recs.length} record{l.recs.length === 1 ? '' : 's'}
-                                  {l.all ? ' · payslips issued' : l.some ? ' · mixed statuses' : ' · still editable'}
-                                </span>
-                              </div>
-                              <span className="hb-ladder-sum">{rupees(l.gross)}</span>
-                              <button
-                                className="hb-btn"
-                                onClick={() => setPayrollRunPeriod(l.m)}
-                                disabled={l.m === period}
-                              >
-                                {l.m === period ? 'Showing' : 'Open'}
-                              </button>
-                            </div>
-                          ))}
-                          <p className="hb-foot">
-                            A month other than the current cycle is reopened by changing its records' status
-                            on the coach's Score card, which is where that decision is recorded.
-                          </p>
-                        </section>
+                      {/* The months-and-locks ladder was here. Every month is
+                          reachable from the picker in the header, and the lock
+                          card at the top acts on whichever one is chosen — so
+                          the list was a second way to do the same thing, with
+                          a column of org-wide totals attached. */}
+
+                      {/* The four money tiles were here — the cycle's fixed
+                          and session pay, its incentives, its deductions and
+                          what reaches the coaches. The figures are in the two
+                          CSV exports, and the page is for working out one
+                          coach's pay rather than reading the org's total. */}
+                      </>
                       )}
 
-                      <div className="hb-tiles">
-                        <div className="card">
-                          <span>Fixed &amp; session pay</span>
-                          <strong>{rupees(totals.base + totals.sessions)}</strong>
-                        </div>
-                        <div className="card">
-                          <span>Incentives &amp; bonuses</span>
-                          <strong>{rupees(totals.incentives)}</strong>
-                        </div>
-                        <div className="card">
-                          <span>Loss of Pay &amp; penalties</span>
-                          <strong className="hb-neg">−{rupees(lop + totals.deductions)}</strong>
-                        </div>
-                        <div className="card hb-tile-dark">
-                          <span>Reaches the coaches · {monthLocked ? 'final' : 'draft'}</span>
-                          <strong>{rupees(totals.gross - tds)}</strong>
-                          <small>after {rupees(tds)} TDS</small>
-                        </div>
-                      </div>
+                      {/* The per-coach table is gone for the roles that
+                          settle the cycle: the figures they work from are the
+                          tiles above, the CSV exports and the calculator, and
+                          the run was three screens of rows under them. What
+                          is left here is the squad manager's one-figure
+                          table, which is the only sight of pay they have. */}
+                      {!maySeePayDetail && (() => {
+                        // Whether this person can open anybody's slip in this
+                        // run at all, and whether the cycle is in a state to
+                        // issue one. A role that may not issue one gets no
+                        // column rather than a column of refusals.
+                        const anySlip = maySeePayslipFor();
+                        const slipIssuable = monthLocked || currentRole === 'Super Admin';
 
-                      <div className="hb-pay-filters">
-                        <span>Show</span>
-                        {['Everyone', 'Needs a look', 'Ready'].map(f => (
-                          <button
-                            key={f} type="button" aria-pressed={payFilter === f}
-                            className={`hb-btn ${payFilter === f ? 'hb-btn-dark' : ''}`}
-                            onClick={() => setPayFilter(f)}
-                          >{f}</button>
-                        ))}
-                        <div className="hb-seg" role="group" aria-label="How much detail">
-                          <button type="button" aria-pressed={payMode === 'summary'}
-                                  className={payMode === 'summary' ? 'is-on' : ''}
-                                  onClick={() => setPayMode('summary')}>Summary</button>
-                          <button type="button" aria-pressed={payMode === 'full'}
-                                  className={payMode === 'full' ? 'is-on' : ''}
-                                  onClick={() => setPayMode('full')}>Full breakdown</button>
-                        </div>
-                      </div>
-
-                      {payMode === 'summary' && (() => {
                         const flagFor = (r) => {
                           if (r.vConfig.placeholder) return ['No pay policy — paid ₹0', 'bad'];
                           if (!r.recorded) return ['No score card — fixed points only', 'warn'];
                           if (r.pay.grossPay <= 0) return ['Nothing reaches them — check', 'bad'];
                           return null;
                         };
-                        const shown = run.filter(r => {
-                          if (payFilter === 'Everyone') return true;
-                          const f = flagFor(r);
-                          return payFilter === 'Needs a look' ? Boolean(f) : !f;
-                        });
+                        // Only the figures-only roles reach this table now,
+                        // and nothing filters it: they are shown their squad's
+                        // pay in full or not at all.
+                        const shown = run;
                         return (
                           <div className="card score-tracker-card">
+                            {/* Which cycle these figures belong to, said in
+                                full — the month alone is ambiguous when a
+                                cycle runs from the 16th — with the picker on
+                                the table rather than in the page toolbar. */}
+                            {!maySeePayDetail && (() => {
+                              const rec = run[0]?.record;
+                              const fmt = (d) => new Date(d).toLocaleDateString('en-IN',
+                                { day: 'numeric', month: 'short', year: 'numeric' });
+                              return (
+                                <div className="hb-cycle-bar">
+                                  <div>
+                                    <strong>Pay cycle · {period}</strong>
+                                    <span>
+                                      {rec?.period_start
+                                        ? `${fmt(rec.period_start)} – ${fmt(rec.period_end)}`
+                                        : 'No records carry dates for this cycle yet'}
+                                      {period === currentPeriodMonth ? ' · running now' : ''}
+                                    </span>
+                                  </div>
+                                  <label className="hb-cycle-pick">
+                                    <span>Show cycle</span>
+                                    <select className="header-select" value={period}
+                                            onChange={(e) => setPayrollRunPeriod(e.target.value)}>
+                                      {periods.map(m => <option key={m} value={m}>{m}</option>)}
+                                    </select>
+                                  </label>
+                                </div>
+                              );
+                            })()}
                             <div className="hb-pay-count">
                               {shown.length} of {run.length} coach{run.length === 1 ? '' : 'es'}
                             </div>
                             <div className="table-container score-tracker-container">
-                              <table className="data-table score-tracker-table hb-pay-table">
+                              {/* score-tracker-table carries min-width: 2600px
+                                  for the eighteen-column run. With three
+                                  columns that stretched the name across the
+                                  card and pushed the figure and the slip off
+                                  the right edge, so the figures-only table
+                                  opts out of that width. */}
+                              <table className={`data-table score-tracker-table hb-pay-table${maySeePayDetail ? '' : ' hb-pay-slim'}`}>
                                 <thead>
                                   <tr className="column-header-row">
                                     <th className="sticky-col sticky-month">Coach</th>
+                                    {maySeePayDetail && <>
                                     <th className="num-col">Score</th>
                                     <th>Band</th>
                                     <th className="num-col">Fixed pay</th>
@@ -14953,13 +15958,26 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                     <th className="num-col">LOP &amp; penalties</th>
                                     <th className="num-col">Gross</th>
                                     <th className="num-col">TDS 10%</th>
+                                    </>}
                                     <th className="num-col">Reaches them</th>
-                                    <th>Check</th>
+                                    {maySeePayDetail && <th>Check</th>}
+                                    {/* Every coach's slip, on their own row.
+                                        It used to be reachable only by
+                                        choosing that coach in the picker at
+                                        the top of the page and scrolling to
+                                        a button far below — so issuing a
+                                        cycle's slips meant thirty round
+                                        trips through a filter. Absent
+                                        entirely for a role that may not
+                                        issue one. */}
+                                    {anySlip && <th>{maySeePayDetail
+                                      ? <span className="hb-sr">Payslip</span>
+                                      : 'Payslip'}</th>}
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {shown.length === 0 && (
-                                    <tr><td colSpan={10} className="text-muted">Nothing matches that filter.</td></tr>
+                                    <tr><td colSpan={(maySeePayDetail ? 10 : 1) + (anySlip ? 1 : 0)} className="text-muted">Nothing matches that filter.</td></tr>
                                   )}
                                   {shown.map(r => {
                                     const flag = flagFor(r);
@@ -14972,8 +15990,15 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                           onClick={() => { setCoachDetailId(r.coach.id); setActiveView('coaches'); }}>
                                         <td className="sticky-col sticky-month">
                                           <strong>{r.coach.name}</strong>
-                                          <div className="hb-sub">{r.coach.id} · {r.vConfig.placeholder ? 'No policy' : r.vConfig.name}</div>
+                                          {/* The policy variant is part of the
+                                              working, so figures-only sees the
+                                              coach ID alone. */}
+                                          <div className="hb-sub">
+                                            {r.coach.id}
+                                            {maySeePayDetail && ` · ${r.vConfig.placeholder ? 'No policy' : r.vConfig.name}`}
+                                          </div>
                                         </td>
+                                        {maySeePayDetail && <>
                                         <td className="num-col">{Number(r.score).toFixed(2)}</td>
                                         <td>{r.recorded
                                           ? <span className="badge badge-warning">{r.band}</span>
@@ -14983,10 +16008,29 @@ export default function App({ session = null, profile = null, onSignOut = null }
                                         <td className="num-col hb-neg">{ded ? `−${rupees(ded)}` : rupees(0)}</td>
                                         <td className="num-col">{rupees(r.pay.grossPay)}</td>
                                         <td className="num-col text-secondary">−{rupees(t)}</td>
+                                        </>}
                                         <td className="num-col"><strong>{rupees(r.pay.grossPay - t)}</strong></td>
-                                        <td>{flag && (
-                                          <span className={`badge ${flag[1] === 'bad' ? 'badge-danger' : 'badge-warning'}`}>{flag[0]}</span>
-                                        )}</td>
+                                        {maySeePayDetail && (
+                                          <td>{flag && (
+                                            <span className={`badge ${flag[1] === 'bad' ? 'badge-danger' : 'badge-warning'}`}>{flag[0]}</span>
+                                          )}</td>
+                                        )}
+                                        {anySlip && (
+                                          // stopPropagation: the row itself
+                                          // opens the coach's profile, and a
+                                          // click meant for the slip must not
+                                          // navigate away from the run.
+                                          <td onClick={(ev) => ev.stopPropagation()}>
+                                            <button type="button" className="hb-more"
+                                              disabled={!slipIssuable}
+                                              title={slipIssuable
+                                                ? `Open ${r.coach.name}'s ${period} payslip`
+                                                : `${period} is not finance-locked yet, so no slip can be issued`}
+                                              onClick={() => handleOpenPayslipModal(r.coach.id, period)}>
+                                              Payslip
+                                            </button>
+                                          </td>
+                                        )}
                                       </tr>
                                     );
                                   })}
@@ -14994,8 +16038,12 @@ export default function App({ session = null, profile = null, onSignOut = null }
                               </table>
                             </div>
                             <p className="hb-foot">
-                              A coach with no recorded score card is paid on their fixed points alone — their
-                              band reads as it stood the last month someone scored them.
+                              {maySeePayDetail
+                                ? `A coach with no recorded score card is paid on their fixed points alone — their
+                                   band reads as it stood the last month someone scored them.`
+                                : `What each coach is paid for ${period}, after tax. ${monthLocked
+                                    ? 'The cycle is locked, so these are final.'
+                                    : 'The cycle is still open, so these can still move.'}`}
                             </p>
                           </div>
                         );
@@ -15004,239 +16052,38 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
-                {payMode === 'full' && (
-                <div className="card score-tracker-card">
-                  {/* The export also sits in the page toolbar, but the table is
-                      where Finance actually works, so it is offered here too. */}
-                  <div className="card-header-row payroll-run-head">
-                    <h3>{period} Payroll Run <span className="text-muted">· {run.length} coach{run.length === 1 ? '' : 'es'}</span></h3>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => handleExportPayrollRun(period)}
-                      disabled={run.length === 0}
-                      title={run.length === 0 ? 'Nothing to export for this period' : `Download the ${period} payroll run as CSV`}
-                    >
-                      <i className="bx bx-download"></i> Download CSV
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => handleExportPenalties(period)}
-                      disabled={run.length === 0}
-                      title={run.length === 0
-                        ? 'Nothing to export for this period'
-                        : `Download every incident charged on ${period}, one row each`}
-                    >
-                      <i className="bx bx-download"></i> Penalties CSV
-                    </button>
-                  </div>
-
-                  {/* The run still pays out on an unrecorded month, but Finance
-                      needs to see that those lines rest on the fixed points
-                      alone — the manual half has not been entered yet. */}
-                  {run.some(r => !r.recorded) && (
-                    <div className="payroll-incomplete-note">
-                      <i className="bx bx-error"></i>
-                      <div>
-                        <strong>
-                          {run.filter(r => !r.recorded).length} score card
-                          {run.filter(r => !r.recorded).length > 1 ? 's have' : ' has'} not been recorded for {period}.
-                        </strong>
-                        <span>
-                          {' '}Those lines are computed from the fixed points only — experience,
-                          technical and tenure — with nothing for core performance or attendance,
-                          so they band low and pay low. They are marked in the table below and in
-                          the CSV export.
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="table-container score-tracker-container payroll-run-container">
-                    <table className="data-table score-tracker-table">
-                      <thead>
-                        <tr className="group-header-row">
-                          <th colSpan={4} className="group-head group-slate">Coach</th>
-                          <th colSpan={2} className="group-head group-teal">Score</th>
-                          <th colSpan={5} className="group-head group-blue">Session &amp; Base Pay</th>
-                          <th colSpan={4} className="group-head group-green">Incentives</th>
-                          <th colSpan={2} className="group-head group-red">Penalty &amp; Total</th>
-                        </tr>
-                        <tr className="column-header-row">
-                          <th className="group-tint-slate sticky-col sticky-month">Coach</th>
-                          <th className="group-tint-slate">Coach ID</th>
-                          <th className="group-tint-slate">Category</th>
-                          <th className="group-tint-slate">Variant</th>
-                          <th className="group-tint-teal num-col emphasis-col">HB+ Score</th>
-                          <th className="group-tint-teal">Band</th>
-                          <th className="group-tint-blue num-col">Per-Session Rate</th>
-                          <th className="group-tint-blue num-col">Base / Fixed Pay</th>
-                          <th className="group-tint-blue num-col">Extra Sessions</th>
-                          <th className="group-tint-blue num-col">Beyond Availability</th>
-                          <th className="group-tint-blue num-col">Beyond-Availability Pay</th>
-                          <th className="group-tint-blue num-col">Per-Session Pay</th>
-                          <th className="group-tint-green num-col">Night Premium</th>
-                          <th className="group-tint-green num-col">Milestone</th>
-                          <th className="group-tint-green num-col">Consistency</th>
-                          <th className="group-tint-green num-col">Streak + Org Work</th>
-                          <th className="group-tint-red num-col">Penalty</th>
-                          <th className="group-tint-red num-col emphasis-col">Gross Pay</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {run.length === 0 && (
-                          <tr><td colSpan={18} className="text-muted">No score records for {period}.</td></tr>
-                        )}
-                        {run.map(r => (
-                          <tr
-                            key={r.coach.id}
-                            className={`row-clickable${r.recorded ? '' : ' row-unrecorded'}`}
-                            title={r.recorded
-                              ? "Open coach page"
-                              : "Score card not recorded for this period — pay is computed on the fixed points alone"}
-                            onClick={() => { setCoachDetailId(r.coach.id); setActiveView('coaches'); }}
-                          >
-                            <td className="sticky-col sticky-month"><strong>{r.coach.name}</strong></td>
-                            <td>{r.coach.id}</td>
-                            <td>{r.coach.coach_category}</td>
-                            <td>{r.vConfig.name}</td>
-                            <td className="num-col emphasis-col emphasis-teal">{Number(r.score).toFixed(2)}</td>
-                            <td>{r.recorded ? r.band : <span className="badge badge-warning">Awaiting entry</span>}</td>
-                            <td className="num-col">{rupees(r.pay.perSessionRate)}</td>
-                            <td className="num-col">{rupees(r.pay.basePay)}</td>
-                            <td className="num-col">{r.pay.extraSessions}</td>
-                            <td className="num-col">{r.pay.beyondAvailabilitySessions}</td>
-                            <td className="num-col">{rupees(r.pay.beyondAvailabilityPay)}</td>
-                            <td className="num-col">{rupees(r.pay.sessionPay)}</td>
-                            <td className="num-col">{rupees(r.pay.nightSessionPay)}</td>
-                            <td className="num-col">{rupees(r.pay.milestoneIncentive)}</td>
-                            <td className="num-col">{rupees(r.pay.consistencyBonus)}</td>
-                            <td className="num-col">{rupees(r.pay.streakBonusPay + r.pay.orgWorkPay)}</td>
-                            <td className="num-col">{r.pay.penaltyDeductions ? `− ${rupees(r.pay.penaltyDeductions)}` : rupees(0)}</td>
-                            <td className="num-col emphasis-col emphasis-teal">{rupees(r.pay.grossPay)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      {run.length > 0 && (
-                        <tfoot>
-                          <tr className="payroll-total-row">
-                            <td className="sticky-col sticky-month"><strong>Total</strong></td>
-                            <td colSpan={6}>{run.length} coaches</td>
-                            <td className="num-col">{rupees(totals.base)}</td>
-                            <td className="num-col">{totals.extraSessions}</td>
-                            <td className="num-col">{totals.beyondAvailabilitySessions}</td>
-                            <td className="num-col">{rupees(totals.beyondAvailabilityPay)}</td>
-                            <td className="num-col">{rupees(totals.sessionPay)}</td>
-                            <td className="num-col">{rupees(totals.night)}</td>
-                            <td className="num-col">{rupees(totals.milestone)}</td>
-                            <td className="num-col">{rupees(totals.consistency)}</td>
-                            <td className="num-col">{rupees(totals.streakOrg)}</td>
-                            <td className="num-col">− {rupees(totals.deductions)}</td>
-                            <td className="num-col emphasis-col">{rupees(totals.gross)}</td>
-                          </tr>
-                        </tfoot>
-                      )}
-                    </table>
-                  </div>
-                </div>
-                )}
-
-                <div className="page-header-row" style={{ marginTop: '0.5rem' }}>
-                  <div>
-                    <h2>Monthly Pay Calculator</h2>
-                    <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                      Choose a coach to load {period}'s recorded figures, or pick manual entry to
-                      model a case from scratch.
-                    </p>
-                  </div>
-                  <div className="view-purpose-side">
-                    <span className="writes-badge writes-model">Works it out</span>
-                    <small>
-                      Changing an input shows what the month would come to; it does not record it.
-                      Per-Session Rate and Base / Fixed Pay are the exception, each with its own Save.
-                    </small>
-                  </div>
-                  {PROFILE_PAY_ROLES.includes(currentRole) && (
-                    <button
-                      className="btn btn-secondary"
-                      title={`Write ${period}'s fixed pay and per-session rate onto every coach's ${period} record, so later months carry them`}
-                      onClick={() => pinMonthPayForAll(period)}
-                    >
-                      <i className="bx bx-lock-alt"></i> Fix {period} pay for all coaches
-                    </button>
-                  )}
-                </div>
-
-                <div className="card">
-                  <PayCalculator
-                    variants={variants}
-                    onSavePayOverrides={savePayOverrides}
-                    onCommitModel={PROFILE_PAY_ROLES.includes(currentRole) ? commitCalculatorModel : null}
-                    coachOptions={run.map(r => r.coach)}
-                    selectedCoachId={payCalcCoachId}
-                    onCoachChange={setPayCalcCoachId}
-                    // Without these the Performance Period row is read-only
-                    // text, so the only way to check another month was the
-                    // select at the top of the page — a long way from the
-                    // figures being read.
-                    periodOptions={periods}
-                    onPeriodChange={setPayrollRunPeriod}
-                    canOverridePay={PROFILE_PAY_ROLES.includes(currentRole)}
-                    seed={selected ? {
-                      key: `${selected.coach.id}-${period}`,
-                      periodMonth: period,
-                      periodRange: selected.record.period_start
-                        ? `${new Date(selected.record.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(selected.record.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`
-                        : undefined,
-                      coreRecorded: hasCorePerformance(selected.record),
-                      coachId: selected.coach.id,
-                      coachName: selected.coach.name,
-                      variantId: selected.coach.variant_id,
-                      category: selected.coach.coach_category,
-                      score: selected.score,
-                      sessions: Number(selected.record.sessions_completed) || 0,
-                      thresholdOverride: selected.record.threshold_override ?? "",
-                      beyondSessions: Number(selected.record.beyond_availability_sessions) || 0,
-                      beyondRate: selected.coach.beyond_availability_rate_override ?? "",
-                      nightSessions: Number(selected.record.night_sessions) || 0,
-                      streak: Number(selected.record.five_star_streak) || 0,
-                      consistency: selected.pay.consistencyEligible ? "YES" : "NO",
-                      orgWorkPay: selected.pay.orgWorkPay,
-                      // Incidents only. penaltyDeductions is violations plus
-                      // the missed-session charge, and the breakdown already
-                      // shows that charge on its own row — seeding it here
-                      // counted it twice, and put a figure against a month
-                      // with no incidents at all.
-                      penalties: selected.pay.violationPenalties,
-                      missedSessions: Number(selected.record.missed_sessions) || 0,
-                      penaltyWaiver: Number(selected.record.penalty_waiver) || 0,
-                      lopDays: Number(selected.record.lop_days) || 0,
-                      penaltyItems: selected.periodVios || [],
-                      penaltyOtherCount: (selected.coachVios?.length || 0) - (selected.periodVios?.length || 0),
-                      payFrom: resolvePay(selected.record),
-                      baseOverride: carryPay(selected.record).fixed_pay_override
-                        ?? (selected.coach.coach_category === 'Flexi-Fixed'
-                          ? (selected.coach.flexi_fixed_base_salary ?? "")
-                          : (selected.coach.fixed_salary_override ?? "")),
-                      rateOverride: carryPay(selected.record).per_session_override
-                        ?? (selected.coach.per_session_override ?? "")
-                    } : { key: `manual-${period}` }}
-                  />
-                </div>
-
-                <div className="page-header-row" style={{ marginTop: '0.5rem' }}>
+                {/* The calculator and the rate cards are the pay policy itself
+                    — every band, rate and bonus, for any coach. Figures-only
+                    roles stop at the table above. */}
+                {maySeePayDetail && (<>
+                <div className="page-header-row hb-ref-head" style={{ marginTop: '0.5rem' }}>
                   <div>
                     <h2>Compensation Reference Tables</h2>
                     <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
-                      Rates for {variants.find(v => v.id === payCalcVariant)?.name || ''} ({payCalcVariant}) — switch the policy variant to compare.
+                      {refTablesOpen
+                        ? `Rates for ${variants.find(v => v.id === payCalcVariant)?.name || ''} (${payCalcVariant}) — switch the policy variant to compare.`
+                        : 'Every band, rate and penalty for a policy. Reference only — nothing here is this cycle.'}
                     </p>
                   </div>
-                  <select className="header-select" value={payCalcVariant} onChange={(e) => setPayCalcVariant(e.target.value)}>
-                    {offeredVariants(variants, payCalcVariant).map(v => (
-                      <option key={v.id} value={v.id}>Reference: {variantLabel(v)}</option>
-                    ))}
-                  </select>
+                  {refTablesOpen && (
+                    <select className="header-select" value={payCalcVariant} onChange={(e) => setPayCalcVariant(e.target.value)}>
+                      {offeredVariants(variants, payCalcVariant).map(v => (
+                        <option key={v.id} value={v.id}>Reference: {variantLabel(v)}</option>
+                      ))}
+                    </select>
+                  )}
+                  <button type="button" className="hb-btn"
+                    aria-expanded={refTablesOpen}
+                    onClick={() => setRefTablesOpen(o => !o)}>
+                    <i className={`bx ${refTablesOpen ? 'bx-chevron-up' : 'bx-chevron-down'}`}></i>
+                    {refTablesOpen ? 'Hide' : 'Show the tables'}
+                  </button>
                 </div>
 
-                <PayReferenceTables vConfig={variants.find(v => v.id === payCalcVariant)} penaltyMatrix={PENALTY_MATRIX} />
+                {refTablesOpen && (
+                  <PayReferenceTables vConfig={variants.find(v => v.id === payCalcVariant)} penaltyMatrix={PENALTY_MATRIX} />
+                )}
+                </>)}
               </section>
             );
           })()}
@@ -15248,7 +16095,11 @@ export default function App({ session = null, profile = null, onSignOut = null }
             const canApprove = LEAVE_APPROVER_ROLES.includes(currentRole);
             // A Showrunner may see days worked and days off, but never what a
             // day of Loss of Pay costs — that is pay.
-            const seesMoney = !HIDES_PAY(currentRole);
+            // Rupee figures on this screen belong to the people settling the
+            // cycle. A coach is told what a day costs them — a day of Paid
+            // Leave, an incident on the record — and reads the money on their
+            // payslip, where it is final rather than a forecast.
+            const seesMoney = !HIDES_PAY(currentRole) && currentRole !== 'Coach';
             const open = coach ? openLogFor(coach.id) : null;
             const todays = coach ? logsFor(coach.id, todayWorkingDay) : [];
             // The five working days the coach tab can look back over, and which
@@ -15430,6 +16281,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     ...(REGULARIZATION_APPROVER_ROLES.includes(currentRole)
                       ? [{ key: 'regularization', label: 'Regularizations', icon: 'bx-time', count: regWaiting }] : []),
                     { key: 'floor', label: 'On the floor now', icon: 'bx-time-five', count: onFloor },
+                    // Loss of Pay is what settling attendance produces, so the
+                    // register for it belongs beside the days it came from
+                    // rather than in with the incidents.
+                    ...(LEAVE_APPROVER_ROLES.includes(currentRole) || PROFILE_PAY_ROLES.includes(currentRole)
+                      ? [{ key: 'lop', label: 'Loss of Pay', icon: 'bx-rupee',
+                           count: attendanceDays.filter(d => inAttendanceScope(d.coach_id)
+                             && Number(d.lop_days) > 0).length }] : []),
                     { key: 'coach', label: coach ? coach.name : 'A coach', icon: 'bx-user' },
                     ...(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager'
                       ? [{ key: 'admin', label: 'Setup & reports', icon: 'bx-cog' }] : [])
@@ -15450,6 +16308,1298 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
+                {!onTab('coach') ? null : !coach ? (
+                  <div className="card">
+                    <p className="text-muted">
+                      No coach open. Pick one from the list at the top right, or click a name
+                      in the Leave tab — their attendance, balances and leave history appear here.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <TaskTabs
+                      tabs={[
+                        { key: 'attendance', label: 'Attendance', icon: 'bx-time-five' },
+                        { key: 'leave', label: 'Leave', icon: 'bx-calendar-check' }
+                      ]}
+                      active={coachSubTab}
+                      onChange={setCoachSubTab}
+                    />
+
+                    {coachSubTab === 'attendance' && (<>
+                    {/* Logging in and out, and raising a regularisation,
+                        sit above the month: they are what a coach comes here
+                        to do, and the calendar below is what they come here
+                        to read. */}
+                    <div className="card att-daybar">
+                      <div className="card-header-row" id="attendance-coach-card">
+                        <h3>
+                          {(() => {
+                            const p = presenceOf(coach);
+                            return p ? (
+                              <span className={`presence presence-${p.state.toLowerCase()}`} title={p.detail}>
+                                {p.state}
+                              </span>
+                            ) : null;
+                          })()}
+                          {!isOwn && (
+                            <button className="linklike" title="Back to everyone"
+                              onClick={() => setAttendanceCoachId('')}
+                              style={{ marginRight: '0.5rem' }}>
+                              <i className="bx bx-arrow-back"></i>
+                            </button>
+                          )}
+                          {coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        </h3>
+                        <div className="table-btn-group">
+                          {isOwn ? (
+                            <>
+                              <button className="btn btn-primary" disabled={!!open}
+                                onClick={() => handleAttendanceLogin(coach)}>
+                                <i className="bx bx-log-in"></i> Log in
+                              </button>
+                              <button className="btn btn-secondary" disabled={!open}
+                                onClick={() => handleAttendanceLogout(coach)}>
+                                <i className="bx bx-log-out"></i> Log out
+                              </button>
+                              <button className="btn btn-secondary"
+                                onClick={() => openRaiseRegularization(coach, todayWorkingDay)}
+                                title="Raise regularization if you missed logging in or logging out">
+                                <i className="bx bx-time-five"></i> Raise Regularization
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {(() => {
+                                const coachRegs = attendanceRegularizations.filter(r => r.coach_id === coach.id);
+                                const coachPending = coachRegs.filter(r => r.status === 'Pending');
+                                return (
+                                  <button
+                                    className={`btn ${coachPending.length > 0 ? 'btn-primary' : 'btn-secondary'}`}
+                                    title={coachPending.length > 0
+                                      ? `${coachPending.length} waiting — open the Regularizations tab`
+                                      : `Open the Regularizations tab`}
+                                    onClick={() => setAttendanceTab('regularization')}
+                                  >
+                                    <i className="bx bx-time-five"></i> Regularization
+                                    {coachPending.length > 0 && (
+                                      <span style={{
+                                        marginLeft: '6px',
+                                        background: '#dc2626',
+                                        color: '#fff',
+                                        borderRadius: '10px',
+                                        padding: '1px 7px',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 700
+                                      }}>
+                                        {coachPending.length} Pending
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })()}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* The month first. It is what this screen is opened
+                        for — which days went wrong, and what they cost — so
+                        it is read before the working of any one day. */}
+                    <div className="card" style={{ marginTop: '1.25rem' }}>
+
+                      {/* The last five working days, so a question about
+                          Friday does not need a different screen. Today's
+                          figures above are unaffected by which chip is on. */}
+                      {(() => {
+                        const shown = shownLogDay;
+                        const logs = shownLogs;
+                        // The month the calendar is showing — the selected day's
+                        // own month, so stepping days never leaves the grid.
+                        const [cy, cm] = (attCalMonth || shown.slice(0, 7)).split('-').map(Number);
+                        const monthDays = Array.from({ length: new Date(cy, cm, 0).getDate() },
+                          (_, i) => `${cy}-${String(cm).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
+                        const pad = new Date(cy, cm - 1, 1).getDay();
+                        const monthLabel = new Date(cy, cm - 1, 1)
+                          .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+                        const stepMonth = (by) => {
+                          const d = new Date(cy, cm - 1 + by, 1);
+                          setAttCalMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                        };
+
+                        return (
+                          <div className="att-days">
+                            {/* The off day belongs with the month it marks
+                                out: it is read against the grid below, not
+                                against the clock on today's card. */}
+                            <div className="attendance-pattern">
+                              <label>Weekly off</label>
+                              <select
+                                value={coach.weekly_off_day ?? ''}
+                                disabled={coach.coach_category === 'Flexi'
+                                  || !(LEAVE_APPROVER_ROLES.includes(currentRole) || currentRole === 'Showrunner')}
+                                onChange={(e) => setWeeklyOff(coach, e.target.value)}
+                              >
+                                <option value="">None set</option>
+                                {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                              </select>
+                              <span>
+                                {coach.coach_category === 'Flexi'
+                                  ? 'Flexi coaches have no fixed off day — a day with no availability is off.'
+                                  : coach.weekly_off_day == null
+                                    ? 'Until this is set, that day counts as one they failed to work.'
+                                    : `${WEEKDAYS[coach.weekly_off_day]}s are not counted against them.`}
+                              </span>
+                            </div>
+
+                            {/* The month at a glance: what each day was, and
+                                which of them cost something. Click one to open
+                                it underneath. */}
+                            <div className="att-cal-head">
+                              <button type="button" className="btn btn-secondary btn-sm"
+                                aria-label="Previous month" onClick={() => stepMonth(-1)}>←</button>
+                              <strong>{monthLabel}</strong>
+                              <button type="button" className="btn btn-secondary btn-sm"
+                                aria-label="Next month" onClick={() => stepMonth(1)}>→</button>
+                              <button type="button" className="btn btn-secondary btn-sm att-cal-today"
+                                onClick={() => { setAttCalMonth(todayWorkingDay.slice(0, 7)); setAttLogDay(todayWorkingDay); }}>
+                                Today
+                              </button>
+                            </div>
+                            <div className="att-cal" role="grid" aria-label={`Attendance in ${monthLabel}`}>
+                              {WEEKDAYS.map(w => (
+                                <div className="att-cal-dow" key={w} role="columnheader">{w.slice(0, 3)}</div>
+                              ))}
+                              {Array.from({ length: pad }, (_, i) => (
+                                <div className="att-cal-pad" key={`p-${i}`} aria-hidden="true" />
+                              ))}
+                              {monthDays.map(d => {
+                                const st = coachDayState(coach, d);
+                                return (
+                                  <button
+                                    type="button" key={d}
+                                    aria-pressed={shown === d}
+                                    className={[
+                                      'att-cal-day',
+                                      st ? `is-${st.tone}` : 'is-blank',
+                                      shown === d ? 'is-on' : '',
+                                      d === todayWorkingDay ? 'is-today' : ''
+                                    ].join(' ')}
+                                    onClick={() => {
+                                      setAttLogDay(d);
+                                      // A day in penalty is clicked to argue
+                                      // with it, so the request opens with
+                                      // the day rather than appearing as a
+                                      // card further down the page.
+                                      const pnlty = st && (st.key === 'absent' || st.key === 'lop');
+                                      if (pnlty && currentRole === 'Coach' && coach.id === selfCoachId
+                                        && regularisableDay(coach, d).ok && !regularisationFor(coach.id, d)) {
+                                        openRaiseRegularization(coach, d);
+                                      }
+                                    }}
+                                    title={st ? `${d} — ${st.label}${st.note ? ` · ${st.note}` : ''}` : d}
+                                  >
+                                    <span className="att-cal-n">{Number(d.slice(8))}</span>
+                                    {st && <span className="att-cal-tag">{st.label}</span>}
+                                    {st?.hours && <span className="att-cal-h">{st.hours}</span>}
+                                    {st?.note && <span className="att-cal-note">{st.note}</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {shown !== todayWorkingDay && (
+                              <p className="calc-notes">
+                                Showing {new Date(`${shown}T12:00:00`).toLocaleDateString('en-IN',
+                                  { weekday: 'long', day: 'numeric', month: 'long' })}.
+                                The clock and the buttons above are still today's.
+                              </p>
+                            )}
+                            {/* What the day actually cost, once it is settled.
+                                The figure and the incident behind it, rather
+                                than a bare "settled" the coach has to chase. */}
+                            {(() => {
+                              const row = attendanceDays.find(d =>
+                                d.coach_id === coach.id && d.working_day === shown);
+
+                              // Before anyone settles it, say what the day is
+                              // going to cost. Waiting for an approver to run
+                              // the sweep meant a coach saw nothing at all on a
+                              // day they had already lost — and the admin saw
+                              // nothing either until they happened to settle.
+                              if (!row) {
+                                if (shown >= todayWorkingDay) return null;
+                                if (logs.length > 0) return null;
+                                if (isWeeklyOffFor(coach, shown) || holidayOn(coach, shown)) return null;
+                                const covered = leaveApplications.some(x => x.coach_id === coach.id
+                                  && x.status === 'Approved' && x.from_date <= shown && x.to_date >= shown);
+                                if (covered) return null;
+                                const waiting = leaveApplications.some(x => x.coach_id === coach.id
+                                  && x.status === 'Pending' && x.from_date <= shown && x.to_date >= shown)
+                                  || regularisationFor(coach.id, shown)?.status === 'Pending';
+                                if (waiting) {
+                                  return (
+                                    <div className="hb-day-cost is-waiting">
+                                      <strong>Nothing is charged while this waits</strong>
+                                      <p className="hb-day-cost-total">
+                                        There is a request on this day with no decision yet. It cannot be
+                                        settled, and nothing comes off pay, until somebody answers it.
+                                      </p>
+                                    </div>
+                                  );
+                                }
+
+                                const willCover = coverAbsenceWith(coach);
+                                const occurrence = getViolationOccurrenceNumber(
+                                  coach.id, NO_SHOW_VIOLATION, shown, violations) + 1;
+                                const consequence = getPenaltyConsequence(
+                                  coach.variant_id, NO_SHOW_VIOLATION, occurrence, PENALTY_MATRIX);
+                                const lopCost = seesMoney ? lopPerDay(coach.coach_category,
+                                  computeMonthlyPay(coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
+                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []).basePay) : 0;
+                                // Clicking what the day will cost is how the
+                                // request is made: the figure and the way to
+                                // argue with it are the same thing, rather
+                                // than a panel and a button under it.
+                                // The coach is shown this in the panel the
+                                // day itself opens; repeating it down here was
+                                // the same forecast twice on one screen.
+                                if (currentRole === 'Coach') return null;
+                                const canAsk = false;
+                                return (
+                                  <div className={`hb-day-cost is-forecast${canAsk ? ' is-askable' : ''}`}
+                                    role={canAsk ? 'button' : undefined}
+                                    tabIndex={canAsk ? 0 : undefined}
+                                    title={canAsk ? 'Raise a regularisation for this day' : undefined}
+                                    onClick={canAsk ? () => openRaiseRegularization(coach, shown) : undefined}
+                                    onKeyDown={canAsk ? (e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        openRaiseRegularization(coach, shown);
+                                      }
+                                    } : undefined}>
+                                    <strong>No login — what this day will cost</strong>
+                                    <ul>
+                                      <li>
+                                        <span>
+                                          {willCover
+                                            ? `1 day of ${leaveType(willCover)?.label || willCover} — there is balance left to cover it`
+                                            : 'No Holiday or Paid balance left, so 1 day of Loss of Pay'}
+                                        </span>
+                                        {!willCover && seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
+                                      </li>
+                                      <li>
+                                        <span>
+                                          {NO_SHOW_VIOLATION} · would be occurrence #{occurrence}
+                                          {/* "₹350 Fine" is the consequence's own wording, so
+                                              withholding the amount means withholding this too. */}
+                                          {seesMoney || !/₹/.test(consequence.consequence)
+                                            ? ` — ${consequence.consequence}`
+                                            : ''}
+                                        </span>
+                                        {seesMoney && consequence.amount > 0 && <em>−{rupees(consequence.amount)}</em>}
+                                      </li>
+                                    </ul>
+                                    <p className="hb-day-cost-total">
+                                      Not charged yet — it is applied when the day is settled.
+                                      {canAsk && <span className="hb-day-cost-cta">Click to raise a regularisation →</span>}
+                                    </p>
+                                  </div>
+                                );
+                              }
+                              const dayVios = violations.filter(v =>
+                                v.coach_id === coach.id && v.incident_date === shown
+                                && isSystemAttendance(v));
+                              const charged = dayVios.filter(isPenaltyChargeable)
+                                .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                              const lopCost = Number(row.lop_days) > 0 && seesMoney
+                                ? lopPerDay(coach.coach_category, computeMonthlyPay(
+                                    coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
+                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []
+                                  ).basePay) * Number(row.lop_days)
+                                : 0;
+                              if (Number(row.lop_days) === 0 && dayVios.length === 0) return null;
+                              return (
+                                <div className="hb-day-cost">
+                                  <strong>What this day cost</strong>
+                                  <ul>
+                                    {Number(row.lop_days) > 0 && (
+                                      <li>
+                                        <span>{row.lop_days} day of Loss of Pay</span>
+                                        {seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
+                                      </li>
+                                    )}
+                                    {dayVios.map(v => (
+                                      <li key={v.id}>
+                                        <span>
+                                          {v.type} · occurrence #{v.occurrence_no}
+                                          {seesMoney || !/₹/.test(String(v.consequence || ''))
+                                            ? ` — ${v.consequence}`
+                                            : ''}
+                                        </span>
+                                        {seesMoney && isPenaltyChargeable(v) && Number(v.penalty_amount) > 0 && (
+                                          <em>−{rupees(v.penalty_amount)}</em>
+                                        )}
+                                        {!isPenaltyChargeable(v) && <em className="hb-waived">not charged</em>}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {seesMoney && (charged > 0 || lopCost > 0) && (
+                                    <p className="hb-day-cost-total">
+                                      Comes off this cycle's pay: <strong>−{rupees(charged + lopCost)}</strong>
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* A day with no login costs a day's pay once it is
+                                settled. This is the coach's chance to say what
+                                actually happened, before anyone settles it. */}
+                            {logs.length === 0 && (() => {
+                              const can = regularisableDay(coach, shown);
+                              const existing = regularisationFor(coach.id, shown);
+                              if (existing) {
+                                return (
+                                  <div className={`hb-reg-note hb-reg-${existing.status.toLowerCase()}`}>
+                                    <strong>
+                                      {existing.status === 'Pending'
+                                        ? 'Raised — waiting on your approver'
+                                        : existing.status === 'Approved'
+                                          ? 'Approved — the day counts as worked, and what it took was given back'
+                                          : 'Refused — the day stands as it was'}
+                                    </strong>
+                                    <span>
+                                      “{existing.reason}”
+                                      {existing.decision_note ? ` · ${existing.decision_note}` : ''}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                              if (currentRole !== 'Coach') {
+                                return (
+                                  <p className="calc-notes">
+                                    Only {coach.name.split(' ')[0]} can raise a regularisation for this day.
+                                  </p>
+                                );
+                              }
+                              if (!can.ok) return <p className="calc-notes">{can.why}</p>;
+                              // Nothing more to say here: what the day will
+                              // cost is stated above and clicking it opens the
+                              // request. This block repeated both.
+                              return null;
+                            })()}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* What still needs saying about today: a regularisation
+                        waiting on a decision, or a holiday nobody owes hours
+                        on. The day's own figures were taken out — the month
+                        above answers them — so on an ordinary day this card
+                        has nothing to say and is not drawn. */}
+                    {(attendanceRegularizations.some(r => r.coach_id === coach.id && r.status === 'Pending')
+                      || todayHoliday) && (
+                    <div className="card">
+                      {/* Pending Regularization notice & review banner */}
+                      {(() => {
+                        const coachPending = attendanceRegularizations.filter(r => r.coach_id === coach.id && r.status === 'Pending');
+                        if (coachPending.length === 0) return null;
+                        return coachPending.map(reg => (
+                          <div key={reg.id} style={{
+                            margin: '0.75rem 0 1rem 0',
+                            padding: '0.85rem 1.15rem',
+                            background: '#fffbeb',
+                            border: '1px solid #fde68a',
+                            borderRadius: '8px',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '1rem',
+                            flexWrap: 'wrap'
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <i className="bx bx-time-five" style={{ fontSize: '1.6rem', color: '#d97706' }}></i>
+                              <div>
+                                <strong style={{ color: '#92400e', fontSize: '0.95rem' }}>
+                                  Regularization Request Pending ({reg.working_day})
+                                </strong>
+                                <div style={{ fontSize: '0.85rem', color: '#78350f', marginTop: '2px' }}>
+                                  <strong>Why raised:</strong> <span style={{ fontWeight: 600 }}>{reg.reason}</span>
+                                  {reg.detailed_reason ? ` — "${reg.detailed_reason}"` : ''}
+                                  <span style={{ marginLeft: '8px', opacity: 0.9 }}>
+                                    (Requested shift: {reg.check_in_time} – {reg.check_out_time}, <strong>{reg.hours}h</strong>)
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              {REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? (
+                                <button className="btn btn-primary btn-sm" onClick={() => openReviewRegularization(reg)}>
+                                  <i className="bx bx-check-shield"></i> Review &amp; Decide
+                                </button>
+                              ) : (
+                                <span className="badge" style={{ background: '#fef3c7', color: '#92400e', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem' }}>
+                                  Pending Review
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+
+                      {todayHoliday && (
+                        <p className="calc-notes">
+                          Today is <strong>{todayHoliday.name}</strong>
+                          {todayHoliday.centre_name ? ` at ${todayHoliday.centre_name}` : ''} — nothing is owed.
+                        </p>
+                      )}
+                    </div>
+                    )}
+
+                    {shownLogs.length > 0 && (
+                      <div className="card" style={{ marginTop: '1.25rem' }}>
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th><th>Where</th><th>Photo</th></tr></thead>
+                            <tbody>
+                              {shownLogs.map(l => {
+                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick)) - new Date(l.logged_in_at)) / 60000;
+                                return (
+                                  <tr key={l.id}>
+                                    <td>{new Date(l.logged_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
+                                    <td>{l.logged_out_at
+                                      ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+                                      : <span className="badge badge-success">Open</span>}</td>
+                                    <td className="num-col">
+                                      {l.logged_out_at
+                                        ? Math.round(mins)
+                                        : <span className="att-ticking">{asClock(mins / 60)}</span>}
+                                    </td>
+                                    <td>{mins < MIN_LOGIN_MINUTES
+                                      ? <span className="text-muted">
+                                          under {MIN_LOGIN_MINUTES} min
+                                          {l.logged_out_at ? ' — not counted' : ' yet'}
+                                        </span>
+                                      : <span className="text-green">counted</span>}</td>
+                                    {/* Recorded on every login and logout, and until now
+                                        shown nowhere — so a centre coach logging in from
+                                        the wrong place was invisible. */}
+                                    <td>
+                                      {l.login_lat != null ? (
+                                        <a
+                                          href={`https://www.google.com/maps?q=${l.login_lat},${l.login_lng}`}
+                                          target="_blank" rel="noreferrer"
+                                          title={`In: ${l.login_lat}, ${l.login_lng}`}
+                                        >
+                                          in: {Number(l.login_lat).toFixed(4)}, {Number(l.login_lng).toFixed(4)}
+                                        </a>
+                                      ) : <small className="text-red">in: no location</small>}
+                                      <br />
+                                      {l.logout_lat != null ? (
+                                        <a
+                                          href={`https://www.google.com/maps?q=${l.logout_lat},${l.logout_lng}`}
+                                          target="_blank" rel="noreferrer"
+                                          title={`Out: ${l.logout_lat}, ${l.logout_lng}`}
+                                        >
+                                          out: {Number(l.logout_lat).toFixed(4)}, {Number(l.logout_lng).toFixed(4)}
+                                        </a>
+                                      ) : l.logged_out_at
+                                        ? <small className="text-red">out: no location</small>
+                                        : <small className="text-muted">out: still in</small>}
+                                      {l.within_centre === false && (
+                                        <><br /><small className="text-red">outside the centre</small></>
+                                      )}
+                                      {l.within_centre === null && coach.work_mode === 'Centre' && (
+                                        <><br /><small className="text-amber">not verified</small></>
+                                      )}
+                                    </td>
+                                    <td>
+                                      {l.photo_path
+                                        ? <button className="linklike" onClick={() => openPhoto(l)}
+                                            title="Open the photograph taken at this login">
+                                            view
+                                          </button>
+                                        : <span className="text-amber">none</span>}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    </>)}
+
+                    {coachSubTab === 'leave' && (<>
+                    {/* Balances */}
+                    <div className="card" style={{ marginTop: '1.25rem' }}>
+                      <div className="card-header-row">
+                        <h3>Leave</h3>
+                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                          Leave year {leaveYearFor(new Date()).start} to {leaveYearFor(new Date()).end}
+                        </span>
+                      </div>
+                      {/* One card a type: what is left, against what the
+                          year allows. The ring is the share still unspent —
+                          the question a coach actually opens this for — with
+                          the arithmetic behind it underneath. */}
+                      {/* Where the year's leave actually went. The cards
+                          below answer "how much is left of each"; this
+                          answers "what have I been taking", which is the
+                          question a coach asks when a balance surprises
+                          them. Loss of Pay is in it, in rust, because it is
+                          the slice worth noticing. */}
+                      {(() => {
+                        const TONES = ['#6f7d46', '#a9674d', '#414e6d', '#5c7a68',
+                                       '#c2a36b', '#53372b', '#7d6b8f'];
+                        const slices = leaveTypesFor(coach)
+                          .map(t => ({ t, n: leaveBalanceFor(coach, t.id).used }))
+                          .filter(x => x.n > 0)
+                          .sort((a, b) => b.n - a.n)
+                          .map((x, i) => ({
+                            ...x,
+                            tone: x.t.id === 'LOP' ? 'var(--brand-rust)' : TONES[i % TONES.length]
+                          }));
+                        const total = slices.reduce((n, x) => n + x.n, 0);
+                        if (total === 0) {
+                          return (
+                            <p className="calc-notes lv-none">
+                              Nothing taken yet this leave year.
+                            </p>
+                          );
+                        }
+                        const RING = 119.38;
+                        let at = 0;
+                        return (
+                          <div className="lv-split">
+                            <div className="lv-donut">
+                              <svg viewBox="0 0 44 44" aria-hidden="true">
+                                {slices.map(x => {
+                                  const len = (x.n / total) * RING;
+                                  const off = -at;
+                                  at += len;
+                                  return (
+                                    <circle key={x.t.id} cx="22" cy="22" r="19"
+                                      stroke={x.tone}
+                                      strokeDasharray={`${len} ${RING - len}`}
+                                      strokeDashoffset={off} />
+                                  );
+                                })}
+                              </svg>
+                              <span>
+                                <strong>{Math.round(total * 10) / 10}</strong>
+                                <small>{total === 1 ? 'day' : 'days'} taken</small>
+                              </span>
+                            </div>
+                            <ul className="lv-legend">
+                              {slices.map(x => (
+                                <li key={x.t.id}>
+                                  <i style={{ background: x.tone }} aria-hidden="true" />
+                                  <span>{x.t.label}</span>
+                                  <small>{x.n} {x.n === 1 ? 'day' : 'days'}</small>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      })()}
+
+                      <div className="lv-cards">
+                        {/* Loss of Pay is on this list too. It has no balance
+                            to run down, but it is leave the coach has taken
+                            and it is the one kind that costs them, so leaving
+                            it out hid the figure that matters most. */}
+                        {leaveTypesFor(coach).map(t => {
+                          const b = leaveBalanceFor(coach, t.id);
+                          const quota = t.annualDays
+                            ?? (t.accrual ? Math.round(t.accrual * 12 * 10) / 10 : null);
+                          // Against the year's quota where there is one; against
+                          // what has accrued so far where there is not, so the
+                          // ring is never a share of nothing.
+                          const against = quota || b.accrued || 0;
+                          const pct = against > 0
+                            ? Math.max(0, Math.min(100, (b.available / against) * 100)) : 0;
+                          const RING = 119.38;
+                          return (
+                            <div className="lv-card" key={t.id}>
+                              <div className="lv-card-head">
+                                <strong>{t.label}</strong>
+                                <button type="button" className="linklike lv-more"
+                                  title={`Every movement on ${t.label} this leave year, and the policy behind it`}
+                                  onClick={() => { setLeaveDetailType(t.id); setLeaveDetailTab('history'); }}>
+                                  View details
+                                </button>
+                                {PROFILE_PAY_ROLES.includes(currentRole) && (
+                                  <button className="btn-row-icon icon-edit"
+                                    title="Adjust this balance by hand — a reason is required"
+                                    onClick={() => adjustLeaveBalance(coach, t.id)}>
+                                    <i className="bx bx-slider-alt"></i>
+                                  </button>
+                                )}
+                              </div>
+                              <div className={`lv-dial${t.unlimited ? ' is-cost' : ''}`}>
+                                <svg viewBox="0 0 44 44" aria-hidden="true">
+                                  <circle className="lv-ring-bg" cx="22" cy="22" r="19" />
+                                  <circle className="lv-ring-fg" cx="22" cy="22" r="19"
+                                    style={{
+                                      '--off': t.unlimited ? 0 : RING - (pct / 100) * RING,
+                                      strokeDasharray: RING
+                                    }} />
+                                </svg>
+                                <span>
+                                  {/* An unlimited type has no balance to show.
+                                      What it has is a cost, so the figure is
+                                      what has been taken, not what is left. */}
+                                  <strong>{t.unlimited ? b.used : b.available}</strong>
+                                  <small>
+                                    {t.unlimited
+                                      ? `${b.used === 1 ? 'day' : 'days'} taken`
+                                      : `${b.available === 1 ? 'day' : 'days'} available`}
+                                  </small>
+                                </span>
+                              </div>
+                              <dl className="lv-figs">
+                                <div><dt>Consumed</dt><dd>{b.used}</dd></div>
+                                <div><dt>Accrued so far</dt><dd>{b.accrued}</dd></div>
+                                {b.opening > 0 && <div><dt>Carried over</dt><dd>{b.opening}</dd></div>}
+                                {b.adjusted !== 0 && (
+                                  <div><dt>Adjusted</dt>
+                                    <dd className={b.adjusted > 0 ? 'text-green' : 'text-red'}>
+                                      {b.adjusted > 0 ? '+' : ''}{b.adjusted}
+                                    </dd></div>
+                                )}
+                                <div><dt>Annual quota</dt>
+                                  <dd>{quota ?? (t.unlimited ? 'unlimited' : '—')}</dd></div>
+                              </dl>
+                              <p className="lv-policy">{t.note}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Applying sits with the balance it spends:
+                          choosing a type and reading what is left of it are
+                          one decision, and they were two cards apart. */}
+                      {/* Applying is one action, not a form sitting open.
+                          The button is what the card offers; the fields open
+                          over it when they are wanted, so the balances stay
+                          the thing this card shows. */}
+                      <div className="lv-apply-row">
+                        <button className="btn btn-primary"
+                          onClick={() => setLeaveApplyOpen(true)}>
+                          <i className="bx bx-plus"></i> Apply for leave
+                        </button>
+                        <span>
+                          A reason is required, and a decision is due within 3 working days.
+                        </span>
+                      </div>
+
+                      {/* Leave details: every movement on one type, and
+                          the policy that governs it. A balance is four stored
+                          totals; this is the events behind them, which is what
+                          a coach is actually asking when a figure looks wrong. */}
+                      {leaveDetailType && (() => {
+                        const types = leaveTypesFor(coach);
+                        const t = types.find(x => x.id === leaveDetailType) || types[0];
+                        if (!t) return null;
+                        const b = leaveBalanceFor(coach, t.id);
+                        const ledger = leaveLedgerFor(coach, t.id);
+                        return (
+                          <div className="hb-detail-backdrop"
+                               role="dialog" aria-modal="true" aria-label={`${t.label} details`}
+                               onClick={(e) => { if (e.target === e.currentTarget) setLeaveDetailType(null); }}>
+                            <div className="lv-detail">
+                              <div className="lv-detail-head">
+                                <h3>Leave details</h3>
+                                <button type="button" className="hb-drawer-x" aria-label="Close"
+                                  onClick={() => setLeaveDetailType(null)}>
+                                  <i className="bx bx-x"></i>
+                                </button>
+                              </div>
+
+                              <div className="lv-detail-body">
+                                <nav className="lv-detail-nav" aria-label="Leave types">
+                                  {types.map(x => (
+                                    <button key={x.id} type="button"
+                                      className={x.id === t.id ? 'is-on' : ''}
+                                      aria-current={x.id === t.id}
+                                      onClick={() => setLeaveDetailType(x.id)}>
+                                      {x.label}
+                                    </button>
+                                  ))}
+                                </nav>
+
+                                <div className="lv-detail-main">
+                                  <div className="hb-seg" role="group" aria-label="What to show">
+                                    <button type="button" aria-pressed={leaveDetailTab === 'history'}
+                                      className={leaveDetailTab === 'history' ? 'is-on' : ''}
+                                      onClick={() => setLeaveDetailTab('history')}>Balance history</button>
+                                    <button type="button" aria-pressed={leaveDetailTab === 'policy'}
+                                      className={leaveDetailTab === 'policy' ? 'is-on' : ''}
+                                      onClick={() => setLeaveDetailTab('policy')}>Policy</button>
+                                  </div>
+
+                                  {leaveDetailTab === 'history' ? (
+                                    <>
+                                      <div className="table-container">
+                                        <table className="data-table lv-ledger">
+                                          <thead>
+                                            <tr>
+                                              <th>Date</th>
+                                              <th className="num-col">Change</th>
+                                              <th className="num-col">Balance</th>
+                                              <th>Why</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {ledger.length === 0 && (
+                                              <tr><td colSpan={4} className="text-muted">
+                                                Nothing has moved on {t.label} this leave year.
+                                              </td></tr>
+                                            )}
+                                            {ledger.map((r, i) => (
+                                              <tr key={`${r.on}-${i}`}>
+                                                <td>{new Date(`${r.on}T12:00:00`).toLocaleDateString('en-IN',
+                                                  { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                                                <td className="num-col">
+                                                  <span className={`lv-chg ${r.change > 0 ? 'is-up' : r.change < 0 ? 'is-down' : 'is-flat'}`}>
+                                                    {r.change > 0 ? '+' : r.change < 0 ? '−' : '±'} {Math.abs(r.change)}
+                                                  </span>
+                                                </td>
+                                                <td className="num-col">{r.balance}</td>
+                                                <td>
+                                                  {r.why}
+                                                  {r.status && r.status !== 'Approved' && (
+                                                    <span className={`badge ${
+                                                      r.status === 'Rejected' ? 'badge-danger'
+                                                        : r.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
+                                                      {r.status}
+                                                    </span>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                      <p className="calc-notes">
+                                        Reads newest first and adds up to the {b.available} day
+                                        {b.available === 1 ? '' : 's'} on the card. A refused or cancelled
+                                        application costs nothing — it is listed so the record is complete.
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <div className="policy-list">
+                                      <div>
+                                        <strong>{t.label}</strong>
+                                        <small>{t.note}</small>
+                                      </div>
+                                      <div>
+                                        <strong>How it is earned</strong>
+                                        <small>
+                                          {t.holidayOnly
+                                            ? 'The published holiday list is the entitlement — the days there are, on the dates they fall.'
+                                            : t.accrual
+                                              ? `${t.accrual} day${t.accrual === 1 ? '' : 's'} credited each pay cycle.`
+                                              : t.annualDays
+                                                ? `${t.annualDays} days a year, held in full and taken as needed.`
+                                                : t.unlimited
+                                                  ? 'Always available, and unpaid.'
+                                                  : 'Nothing accrues — days are credited when they are granted.'}
+                                        </small>
+                                      </div>
+                                      <div>
+                                        <strong>Notice</strong>
+                                        <small>
+                                          {t.noticeDays ? `${t.noticeDays} days' notice.` : 'No notice needed.'}
+                                          {t.sameDayAllowed
+                                            ? ` May be applied for on the day, or within ${t.backdateDays} days of returning.`
+                                            : ''}
+                                          {t.certificateAfterDays
+                                            ? ` A medical certificate past ${t.certificateAfterDays} days in a row.`
+                                            : ''}
+                                        </small>
+                                      </div>
+                                      <div>
+                                        <strong>Half days</strong>
+                                        <small>
+                                          {t.halfDayAllowed
+                                            ? (coach.coach_category === 'Flexi'
+                                                ? 'Half days do not apply to Flexi coaches.'
+                                                : `Allowed — ${halfDayHours(coach.coach_category)} hours.`)
+                                            : 'Full days only.'}
+                                        </small>
+                                      </div>
+                                      <div>
+                                        <strong>Year end</strong>
+                                        <small>
+                                          {t.carryForwardMax
+                                            ? `Up to ${t.carryForwardMax} days carry over${t.encashBeyondCarry ? '; the rest is encashed' : ''}.`
+                                            : 'Does not carry over — whatever is left lapses.'}
+                                        </small>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {leaveApplyOpen && (
+                        <div className="hb-drawer-back" role="dialog" aria-modal="true"
+                             aria-label="Apply for leave"
+                             onClick={(e) => { if (e.target === e.currentTarget) setLeaveApplyOpen(false); }}>
+                          <div className="hb-drawer">
+                            <div className="hb-drawer-head">
+                              <h3>Apply for leave</h3>
+                              <button type="button" className="hb-drawer-x"
+                                aria-label="Close" onClick={() => setLeaveApplyOpen(false)}>
+                                <i className="bx bx-x"></i>
+                              </button>
+                            </div>
+
+                            {/* The span, counted, before anything else: how
+                                many days this costs is the thing being
+                                decided, and it was previously a line of grey
+                                text under the button. */}
+                            <div className="hb-drawer-span">
+                              <label>
+                                <span>From</span>
+                                <input type="date" value={leaveForm.from}
+                                  onChange={(e) => setLeaveForm(f => ({ ...f, from: e.target.value, to: f.to || e.target.value }))} />
+                              </label>
+                              <div className="hb-drawer-days">
+                                {leaveForm.from && leaveForm.to
+                                  ? (() => {
+                                      const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to, leaveForm.type);
+                                      const n = leaveForm.halfDay ? 0.5 : c.days;
+                                      return <><strong>{n}</strong><small>{n === 1 ? 'day' : 'days'}</small></>;
+                                    })()
+                                  : <><strong>0</strong><small>days</small></>}
+                              </div>
+                              <label>
+                                <span>To</span>
+                                <input type="date" value={leaveForm.to}
+                                  onChange={(e) => setLeaveForm(f => ({ ...f, to: e.target.value }))} />
+                              </label>
+                            </div>
+
+                            <div className="hb-drawer-body">
+                              {/* What is left of each type, on the type being
+                                  chosen. A coach picking Sick Leave with none
+                                  left was finding out after applying. */}
+                              <div className="form-group">
+                                <label id="lv-type-label">Type of leave</label>
+                                {(() => {
+                                  const types = applicableLeaveTypes(coach);
+                                  const left = (t) => t.unlimited
+                                    ? { n: null, text: 'always available', out: false }
+                                    : (() => {
+                                        const n = leaveBalanceFor(coach, t.id).available;
+                                        return {
+                                          n,
+                                          text: n > 0 ? `${n} ${n === 1 ? 'day' : 'days'} available` : 'none left',
+                                          out: n <= 0
+                                        };
+                                      })();
+                                  const chosen = types.find(t => t.id === leaveForm.type) || types[0];
+                                  const chosenLeft = chosen ? left(chosen) : null;
+                                  return (
+                                    <div className="lv-pick">
+                                      <button type="button" className="lv-pick-btn"
+                                        aria-haspopup="listbox" aria-expanded={leaveTypeOpen}
+                                        aria-labelledby="lv-type-label"
+                                        onClick={() => setLeaveTypeOpen(o => !o)}>
+                                        <span>{chosen ? chosen.label : 'Select'}</span>
+                                        {chosenLeft && (
+                                          <small className={chosenLeft.out ? 'is-out' : ''}>{chosenLeft.text}</small>
+                                        )}
+                                        <i className={`bx ${leaveTypeOpen ? 'bx-chevron-up' : 'bx-chevron-down'}`}></i>
+                                      </button>
+                                      {leaveTypeOpen && (
+                                        <>
+                                          <div className="lv-pick-catch" onClick={() => setLeaveTypeOpen(false)} />
+                                          <ul className="lv-pick-list" role="listbox" aria-labelledby="lv-type-label">
+                                            {types.map(t => {
+                                              const l = left(t);
+                                              return (
+                                                <li key={t.id}>
+                                                  <button type="button" role="option"
+                                                    aria-selected={t.id === leaveForm.type}
+                                                    className={`lv-pick-row${t.id === leaveForm.type ? ' is-on' : ''}${l.out ? ' is-out' : ''}`}
+                                                    disabled={l.out}
+                                                    title={l.out ? `No ${t.label} left this leave year` : t.note}
+                                                    onClick={() => {
+                                                      setLeaveForm(f => ({ ...f, type: t.id }));
+                                                      setLeaveTypeOpen(false);
+                                                    }}>
+                                                    <span>{t.label}</span>
+                                                    <small>{l.out ? 'Not available' : l.text}</small>
+                                                  </button>
+                                                </li>
+                                              );
+                                            })}
+                                          </ul>
+                                        </>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                                <span className="field-hint">{leaveType(leaveForm.type)?.note}</span>
+                              </div>
+
+                              <div className="form-group">
+                                <label>Half day</label>
+                                <select
+                                  value={leaveForm.halfDay ? 'yes' : 'no'}
+                                  disabled={!leaveType(leaveForm.type)?.halfDayAllowed || coach.coach_category === 'Flexi'}
+                                  onChange={(e) => setLeaveForm(f => ({ ...f, halfDay: e.target.value === 'yes' }))}
+                                >
+                                  <option value="no">No</option>
+                                  <option value="yes">Yes</option>
+                                </select>
+                                <span className="field-hint">
+                                  {coach.coach_category === 'Flexi'
+                                    ? 'Flexi coaches have no half day.'
+                                    : `Half a day is ${halfDayHours(coach.coach_category)} hours.`}
+                                </span>
+                              </div>
+
+                              <div className="form-group">
+                                <label>Reason <span className="required-star">*</span></label>
+                                <textarea rows="3" value={leaveForm.reason}
+                                  onChange={(e) => setLeaveForm(f => ({ ...f, reason: e.target.value }))}
+                                  placeholder="Required — the approver decides on this, and you see it back on the decision." />
+                              </div>
+
+                              {/* Days inside the span that are not charged as
+                                  leave, named rather than silently dropped. */}
+                              {leaveForm.from && leaveForm.to && (() => {
+                                const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to, leaveForm.type);
+                                if (c.skipped.length === 0) return null;
+                                return (
+                                  <p className="calc-notes">
+                                    {daysBetween(leaveForm.from, leaveForm.to)} day span ·
+                                    {' '}{c.skipped.length} not counted ({c.skipped.join(', ')}).
+                                  </p>
+                                );
+                              })()}
+                            </div>
+
+                            <div className="hb-drawer-foot">
+                              <button className="btn btn-secondary"
+                                onClick={() => setLeaveApplyOpen(false)}>Cancel</button>
+                              <button className="btn btn-primary"
+                                disabled={!leaveForm.from || !leaveForm.to || !leaveForm.reason.trim()}
+                                onClick={() => { handleLeaveApply(coach); setLeaveApplyOpen(false); }}>
+                                Apply
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {!coach.gender && (
+                        <p className="calc-notes">
+                          No gender on this profile, so Period, Maternity and Paternity leave
+                          cannot be offered. It is set on the coach profile.
+                        </p>
+                      )}
+
+                      {(() => {
+                        const { year } = leaveYearFor(new Date());
+                        const mine = holidays
+                          .filter(h => h.leave_year === year
+                            && (!h.centre_name || h.centre_name === coach.centre_name))
+                          .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
+                        const today = new Date().toISOString().slice(0, 10);
+                        const taken = new Set(leaveApplications
+                          .filter(a => a.coach_id === coach.id && a.type_id === 'HOLIDAY'
+                            && a.status !== 'Rejected' && a.status !== 'Cancelled')
+                          .flatMap(a => [a.from_date]));
+                        return (
+                          <details className="demographics" open={mine.length > 0}>
+                            <summary>
+                              Holidays you can claim — {mine.length} published for {year}
+                            </summary>
+                            {mine.length === 0 ? (
+                              <p className="calc-notes">
+                                Human Resources has not published the {year} list yet. Holiday
+                                Leave can only be taken on a day that is on it.
+                              </p>
+                            ) : (
+                              <div className="table-container">
+                                <table className="data-table">
+                                  <thead><tr><th>Date</th><th>Day</th><th>Holiday</th><th>Status</th></tr></thead>
+                                  <tbody>
+                                    {mine.map(h => (
+                                      <tr key={h.id} className={h.holiday_date < today ? 'text-muted' : ''}>
+                                        <td><strong>{h.holiday_date}</strong></td>
+                                        <td>{WEEKDAYS[new Date(`${h.holiday_date}T12:00:00`).getDay()]}</td>
+                                        <td>
+                                          {h.name}
+                                          {h.centre_name && <small className="text-muted"> · {h.centre_name} only</small>}
+                                        </td>
+                                        <td>
+                                          {taken.has(h.holiday_date)
+                                            ? <span className="text-green">claimed</span>
+                                            : h.holiday_date < today
+                                              ? <span className="text-muted">passed</span>
+                                              : <span className="text-amber">not claimed</span>}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            <p className="calc-notes">
+                              A published holiday is already not counted against you. Claiming it
+                              as Holiday Leave is the formal record of the day off, and half days
+                              are allowed.
+                            </p>
+                          </details>
+                        );
+                      })()}
+
+                      {/* The rules themselves, beside the balances they govern —
+                          a coach refused for notice should be able to see the
+                          notice rule without asking anyone. */}
+                      <details className="demographics">
+                        <summary>What the policy allows</summary>
+                        <div className="policy-list">
+                          {leaveTypesFor(coach).map(t => (
+                            <div key={t.id}>
+                              <strong>{t.label}</strong>
+                              <small>
+                                {[
+                                  t.accrual ? `${t.accrual} day${t.accrual === 1 ? '' : 's'} credited each pay cycle` : null,
+                                  t.annualDays ? `${t.annualDays} days a year` : null,
+                                  t.holidayOnly ? 'only on a published holiday' : null,
+                                  t.unlimited ? 'always available, and unpaid' : null,
+                                  t.noticeDays ? `${t.noticeDays} days' notice` : 'no notice needed',
+                                  t.sameDayAllowed ? `may be applied for on the day, or within ${t.backdateDays} days of returning` : null,
+                                  t.certificateAfterDays ? `a medical certificate past ${t.certificateAfterDays} days in a row` : null,
+                                  t.halfDayAllowed
+                                    ? (coach.coach_category === 'Flexi'
+                                        ? 'half days do not apply to Flexi'
+                                        : `half days allowed — ${halfDayHours(coach.coach_category)} hours`)
+                                    : 'full days only',
+                                  t.carryForwardMax
+                                    ? `up to ${t.carryForwardMax} days carry over${t.encashBeyondCarry ? ', the rest is encashed' : ''}`
+                                    : 'does not carry over',
+                                  t.splittable ? 'may be split' : null
+                                ].filter(Boolean).join(' · ')}
+                              </small>
+                            </div>
+                          ))}
+                          <div>
+                            <strong>Everyone</strong>
+                            <small>
+                              A reason is required on every application · a decision is due within
+                              3 working days · nothing is marked Loss of Pay while an application
+                              waits · a weekly off or published holiday inside a span is not
+                              charged as leave · the balance is debited when applied for and
+                              returned if refused
+                            </small>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+                    {/* History */}
+                    <div className="card" style={{ marginTop: '1.25rem' }}>
+                      <h3>Leave Applications</h3>
+                      {mine.length === 0 ? (
+                        <p className="text-muted">Nothing applied for yet.</p>
+                      ) : (
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead>
+                              <tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th className="actions-col">{canApprove ? 'Decide' : ''}</th></tr>
+                            </thead>
+                            <tbody>
+                              {mine.map(a => (
+                                <tr key={a.id}>
+                                  <td>{leaveType(a.type_id)?.label}</td>
+                                  <td>{a.from_date} → {a.to_date}</td>
+                                  <td className="num-col">{a.days}</td>
+                                  <td>
+                                    <span className={`badge ${
+                                      a.status === 'Approved' ? 'badge-success'
+                                        : a.status === 'Rejected' ? 'badge-danger'
+                                        : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
+                                      {a.status}
+                                    </span>
+                                  </td>
+                                  <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
+                                  {/* Deciding also belongs here. An approver reading a
+                                      row marked PENDING expects to act on it where they
+                                      are looking, not on a different card further up. */}
+                                  <td className="actions-col">
+                                    <div className="table-btn-group">
+                                      {canApprove && a.status === 'Pending' && (
+                                        <>
+                                          <button className="btn-row-icon icon-save" title="Approve this leave"
+                                            onClick={() => handleLeaveDecision(a, 'Approved')}>
+                                            <i className="bx bx-check"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
+                                            onClick={() => handlePartialApproval(a)}>
+                                            <i className="bx bx-slider-alt"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
+                                            onClick={() => handleLeaveTypeChange(a)}>
+                                            <i className="bx bx-transfer-alt"></i>
+                                          </button>
+                                          <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
+                                            onClick={() => handleLeaveDecision(a, 'Rejected')}>
+                                            <i className="bx bx-x"></i>
+                                          </button>
+                                        </>
+                                      )}
+                                      {a.status === 'Rejected' && (
+                                        appealForLeave(a) ? (
+                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
+                                            Appealed
+                                          </span>
+                                        ) : currentRole === 'Coach' && a.coach_id === selfCoachId ? (
+                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
+                                            onClick={() => appealLeaveDecision(a)}>
+                                            <i className="bx bx-undo"></i>
+                                          </button>
+                                        ) : null
+                                      )}
+                                      {(a.status === 'Pending' || a.status === 'Approved') && (
+                                        <button className="btn-row-icon icon-reset" title="Cancel this leave"
+                                          onClick={() => handleLeaveCancel(a)}>
+                                          <i className="bx bx-trash"></i>
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    </>)}
+                  </>
+                )}
+
+                {onTab('lop') && (LEAVE_APPROVER_ROLES.includes(currentRole)
+                  || PROFILE_PAY_ROLES.includes(currentRole)) && (() => {
+                  // Every day settled with pay lost, read off the attendance
+                  // record itself rather than off the incidents raised about
+                  // it: the day is the fact, the incident is a note on it.
+                  const periods = [...new Set([...historicMonths, ...currentMonth]
+                    .map(r => r.period_month))];
+                  const period = periods.includes(lopRegCycle) ? lopRegCycle
+                    : (periods.includes(currentPeriodMonth) ? currentPeriodMonth : periods[periods.length - 1]);
+                  const bounds = [...currentMonth, ...historicMonths].find(r => r.period_month === period);
+                  const inCycle = (d) => bounds
+                    && d >= bounds.period_start && d <= bounds.period_end;
+
+                  const rows = attendanceDays
+                    .filter(d => inAttendanceScope(d.coach_id) && inCycle(d.working_day)
+                      && (Number(d.lop_days) > 0 || d.cover_type_id))
+                    .sort((x, y) => String(y.working_day).localeCompare(String(x.working_day)));
+                  const lost = rows.reduce((n, d) => n + (Number(d.lop_days) || 0), 0);
+                  const covered = rows.filter(d => d.cover_type_id).length;
+
+                  return (
+                    <div style={{ marginBottom: '1.5rem' }}>
+                      <div className="hb-fetch-bar">
+                        <div>
+                          <strong>Days settled with no login · {period}</strong>
+                          <span>
+                            {rows.length === 0
+                              ? 'Nothing lost or covered in this cycle.'
+                              : `${lost} day(s) of pay lost${covered ? `, ${covered} covered by leave instead` : ''}. ` +
+                                'A day here is settled attendance — the incident raised about it is on the Incidents register.'}
+                          </span>
+                        </div>
+                        <label className="hb-fetch-pick">
+                          <span>Pay cycle</span>
+                          <select className="header-select" value={period}
+                                  onChange={(e) => setLopRegCycle(e.target.value)}>
+                            {periods.map(m => (
+                              <option key={m} value={m}>
+                                {m}{m === currentPeriodMonth ? ' · running now' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      <div className="card">
+                        <div className="table-container">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Day</th>
+                                <th>Coach</th>
+                                <th className="num-col">Days lost</th>
+                                <th>Covered by</th>
+                                <th>Settled</th>
+                                <th>Regularisation</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.length === 0 && (
+                                <tr><td colSpan={6} className="text-muted">
+                                  No day in {period} was settled with pay lost.
+                                </td></tr>
+                              )}
+                              {rows.map(d => {
+                                const c = coaches.find(x => x.id === d.coach_id);
+                                const reg = regularisationFor(d.coach_id, d.working_day);
+                                return (
+                                  <tr key={`${d.coach_id}-${d.working_day}`}>
+                                    <td><strong>{d.working_day}</strong></td>
+                                    <td>
+                                      <button type="button" className="linklike"
+                                        onClick={() => { setAttendanceCoachId(d.coach_id); setAttendanceTab('coach'); }}>
+                                        {c?.name || d.coach_id}
+                                      </button>
+                                      <div className="hb-sub">{d.coach_id}</div>
+                                    </td>
+                                    <td className="num-col">{Number(d.lop_days) || 0}</td>
+                                    <td>{d.cover_type_id
+                                      ? <span className="badge badge-info">{leaveType(d.cover_type_id)?.label || d.cover_type_id}</span>
+                                      : <span className="text-muted">—</span>}</td>
+                                    <td><small className="text-muted">{d.settled_by || '—'}</small></td>
+                                    <td>
+                                      {reg
+                                        ? <span className={`badge ${reg.status === 'Approved' ? 'badge-success'
+                                            : reg.status === 'Rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                                            {reg.status}
+                                          </span>
+                                        : <span className="text-muted">none raised</span>}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="calc-notes">
+                          The switch above decides whether these days cost pay at all. A day the
+                          coach regularised and had approved is given back — it leaves this list
+                          when that happens.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Appeals against a leave decision. They are listed on the
                     Incidents view with the penalty appeals, but a refused leave
@@ -16022,6 +18172,44 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                   return (
                     <div style={{ marginBottom: '1.5rem' }}>
+                      {/* Where the regularisations stand, at the top because
+                          it is the first thing asked of this screen, and as
+                          four cards that also do something: each one filters
+                          the register below to what it counts.
+
+                          Not for a coach: these count every claim an approver
+                          can see and offer to filter a queue they do not work.
+                          A coach raises a day from the bar above and watches
+                          it in the register below. */}
+                      {currentRole !== 'Coach' && (
+                      <div className="reg-tiles">
+                        {[
+                          { k: 'Pending', tone: 'amber', n: counts.pending, label: 'Pending approval',
+                            line: counts.pending === 0 ? 'nothing waiting on a decision' : 'waiting on a decision' },
+                          { k: 'Approved', tone: 'green', n: counts.approved, label: 'Approved',
+                            line: 'the day was accepted as claimed' },
+                          { k: 'Rejected', tone: 'rust', n: counts.rejected, label: 'Rejected',
+                            line: 'the day stands as it was recorded' },
+                          { k: 'All', tone: 'slate', n: counts.all, label: 'Total raised',
+                            line: 'every claim in scope, all statuses' }
+                        ].map(t => (
+                          <button
+                            key={t.k} type="button"
+                            className={`reg-tile reg-${t.tone}${regTabFilter === t.k ? ' is-on' : ''}`}
+                            aria-pressed={regTabFilter === t.k}
+                            title={t.k === 'All'
+                              ? 'Show every claim below'
+                              : `Show only ${t.k.toLowerCase()} claims below`}
+                            onClick={() => setRegTabFilter(t.k)}
+                          >
+                            <span className="reg-tile-label">{t.label}</span>
+                            <strong>{t.n}</strong>
+                            <small>{t.line}</small>
+                          </button>
+                        ))}
+                      </div>
+                      )}
+
                       {/* Settling moved here off the coach card. It is the only
                           control that writes a day down — a short day becomes a
                           violation, a very short one becomes Loss of Pay — and it
@@ -16083,28 +18271,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           </div>
                         );
                       })()}
-
-                      {/* Metric summary banner */}
-                      <div className="attendance-today" style={{ marginBottom: '1.25rem' }}>
-                        <div>
-                          <span>Pending Approval</span>
-                          <strong style={{ color: counts.pending > 0 ? '#d97706' : 'inherit' }}>
-                            {counts.pending}
-                          </strong>
-                        </div>
-                        <div>
-                          <span>Approved</span>
-                          <strong style={{ color: '#16a34a' }}>{counts.approved}</strong>
-                        </div>
-                        <div>
-                          <span>Rejected</span>
-                          <strong style={{ color: '#dc2626' }}>{counts.rejected}</strong>
-                        </div>
-                        <div>
-                          <span>Total Raised</span>
-                          <strong>{counts.all}</strong>
-                        </div>
-                      </div>
 
                       {/* The two limits, said before anyone runs into them. Read
                           against today's cycle, and against the open coach when
@@ -16808,6 +18974,31 @@ export default function App({ session = null, profile = null, onSignOut = null }
                       </label>
                     </div>
 
+                    {/* Year end. Nothing rolls over by itself: the year is
+                        closed deliberately, each type settled by its own
+                        policy, and the new one opened for Human Resources to
+                        upload over if anything needs to differ. */}
+                    {['Super Admin', 'HR Manager'].includes(currentRole) && (() => {
+                      const pv = leaveYearClosePreview();
+                      return (
+                        <div className={`hb-yearend${pv.already ? ' is-done' : ''}`}>
+                          <div>
+                            <strong>Year end · close {pv.year}, open {pv.next}</strong>
+                            <span>
+                              {pv.already
+                                ? `${pv.next} balances already exist, so the year has been closed. Corrections go through the upload above.`
+                                : `${pv.coaches} active coach${pv.coaches === 1 ? '' : 'es'} · ${pv.carried} day(s) would carry over, ${pv.encashed} to encash, ${pv.lapsed} would lapse. ${pv.year} stays on the record as it is.`}
+                            </span>
+                          </div>
+                          <button className="btn btn-secondary btn-sm"
+                            disabled={pv.already || pv.rows.length === 0}
+                            onClick={closeLeaveYear}>
+                            <i className="bx bx-reset"></i> Close the leave year
+                          </button>
+                        </div>
+                      );
+                    })()}
+
                     {balancePreview && (() => {
                       const bad = balancePreview.rows.filter(r => r.problem).length;
                       const same = balancePreview.rows.filter(r => !r.problem && r.unchanged).length;
@@ -17036,970 +19227,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
-                {!onTab('coach') ? null : !coach ? (
-                  <div className="card">
-                    <p className="text-muted">
-                      No coach open. Pick one from the list at the top right, or click a name
-                      in the Leave tab — their attendance, balances and leave history appear here.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Today */}
-                    <div className="card">
-                      <div className="card-header-row" id="attendance-coach-card">
-                        <h3>
-                          {(() => {
-                            const p = presenceOf(coach);
-                            return p ? (
-                              <span className={`presence presence-${p.state.toLowerCase()}`} title={p.detail}>
-                                {p.state}
-                              </span>
-                            ) : null;
-                          })()}
-                          {!isOwn && (
-                            <button className="linklike" title="Back to everyone"
-                              onClick={() => setAttendanceCoachId('')}
-                              style={{ marginRight: '0.5rem' }}>
-                              <i className="bx bx-arrow-back"></i>
-                            </button>
-                          )}
-                          {coach.name} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
-                        </h3>
-                        <div className="table-btn-group">
-                          {isOwn ? (
-                            <>
-                              <button className="btn btn-primary" disabled={!!open}
-                                onClick={() => handleAttendanceLogin(coach)}>
-                                <i className="bx bx-log-in"></i> Log in
-                              </button>
-                              <button className="btn btn-secondary" disabled={!open}
-                                onClick={() => handleAttendanceLogout(coach)}>
-                                <i className="bx bx-log-out"></i> Log out
-                              </button>
-                              <button className="btn btn-secondary"
-                                onClick={() => openRaiseRegularization(coach, todayWorkingDay)}
-                                title="Raise regularization if you missed logging in or logging out">
-                                <i className="bx bx-time-five"></i> Raise Regularization
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              {(() => {
-                                const coachRegs = attendanceRegularizations.filter(r => r.coach_id === coach.id);
-                                const coachPending = coachRegs.filter(r => r.status === 'Pending');
-                                return (
-                                  <button
-                                    className={`btn ${coachPending.length > 0 ? 'btn-primary' : 'btn-secondary'}`}
-                                    title={coachPending.length > 0
-                                      ? `${coachPending.length} waiting — open the Regularizations tab`
-                                      : `Open the Regularizations tab`}
-                                    onClick={() => setAttendanceTab('regularization')}
-                                  >
-                                    <i className="bx bx-time-five"></i> Regularization
-                                    {coachPending.length > 0 && (
-                                      <span style={{
-                                        marginLeft: '6px',
-                                        background: '#dc2626',
-                                        color: '#fff',
-                                        borderRadius: '10px',
-                                        padding: '1px 7px',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 700
-                                      }}>
-                                        {coachPending.length} Pending
-                                      </span>
-                                    )}
-                                  </button>
-                                );
-                              })()}
-                            </>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Pending Regularization notice & review banner */}
-                      {(() => {
-                        const coachPending = attendanceRegularizations.filter(r => r.coach_id === coach.id && r.status === 'Pending');
-                        if (coachPending.length === 0) return null;
-                        return coachPending.map(reg => (
-                          <div key={reg.id} style={{
-                            margin: '0.75rem 0 1rem 0',
-                            padding: '0.85rem 1.15rem',
-                            background: '#fffbeb',
-                            border: '1px solid #fde68a',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            gap: '1rem',
-                            flexWrap: 'wrap'
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                              <i className="bx bx-time-five" style={{ fontSize: '1.6rem', color: '#d97706' }}></i>
-                              <div>
-                                <strong style={{ color: '#92400e', fontSize: '0.95rem' }}>
-                                  Regularization Request Pending ({reg.working_day})
-                                </strong>
-                                <div style={{ fontSize: '0.85rem', color: '#78350f', marginTop: '2px' }}>
-                                  <strong>Why raised:</strong> <span style={{ fontWeight: 600 }}>{reg.reason}</span>
-                                  {reg.detailed_reason ? ` — "${reg.detailed_reason}"` : ''}
-                                  <span style={{ marginLeft: '8px', opacity: 0.9 }}>
-                                    (Requested shift: {reg.check_in_time} – {reg.check_out_time}, <strong>{reg.hours}h</strong>)
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                            <div>
-                              {REGULARIZATION_APPROVER_ROLES.includes(currentRole) ? (
-                                <button className="btn btn-primary btn-sm" onClick={() => openReviewRegularization(reg)}>
-                                  <i className="bx bx-check-shield"></i> Review &amp; Decide
-                                </button>
-                              ) : (
-                                <span className="badge" style={{ background: '#fef3c7', color: '#92400e', padding: '4px 8px', borderRadius: '4px', fontSize: '0.8rem' }}>
-                                  Pending Review
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        ));
-                      })()}
-
-                      <div className="attendance-today">
-                        <div>
-                          <span>Logged today</span>
-                          <strong className={open ? 'att-ticking' : ''}>{asClock(hours)}</strong>
-                        </div>
-                        <div><span>Expected</span><strong>{asClock(avail.hours)}</strong></div>
-                        {/* What is left of the day. Counted down rather than up,
-                            because the question being asked is how much longer. */}
-                        <div>
-                          <span>{hours >= avail.hours ? 'Beyond expected' : 'Still to log'}</span>
-                          <strong className={hours >= avail.hours ? 'att-ok' : (open ? 'att-ticking' : '')}>
-                            {hours >= avail.hours
-                              ? `+${asClock(hours - avail.hours)}`
-                              : asClock(avail.hours - hours)}
-                          </strong>
-                        </div>
-                        <div><span>Status</span><strong className={`att-outcome att-${day.outcome}`}>
-                          {{ ok: 'On time', violation: 'Short — violation', lop: 'Short — Loss of Pay',
-                             review: 'Flagged for review', leave: 'On leave',
-                             'weekly-off': 'Weekly off', holiday: 'Holiday' }[day.outcome]}
-                        </strong></div>
-                        {seesMoney && day.lopDays > 0 && (
-                          <div><span>Would cost</span><strong className="text-red">
-                            {rupees(lopPerDay(coach.coach_category, computeMonthlyPay(
-                              coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
-                              { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []
-                            ).basePay))}
-                          </strong></div>
-                        )}
-                      </div>
-
-                      <div className="demographics is-open">
-                        <div className="demographics-grid">
-                          {demographicsFor(coach).map(d => (
-                            <div key={d.label}>
-                              <span>{d.label}</span>
-                              <strong className={d.flag ? 'text-red' : ''}>{d.value}</strong>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="attendance-pattern">
-                        <label>Weekly off</label>
-                        <select
-                          value={coach.weekly_off_day ?? ''}
-                          disabled={coach.coach_category === 'Flexi'
-                            || !(LEAVE_APPROVER_ROLES.includes(currentRole) || currentRole === 'Showrunner')}
-                          onChange={(e) => setWeeklyOff(coach, e.target.value)}
-                        >
-                          <option value="">None set</option>
-                          {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
-                        </select>
-                        <span>
-                          {coach.coach_category === 'Flexi'
-                            ? 'Flexi coaches have no fixed off day — a day with no availability is off.'
-                            : coach.weekly_off_day == null
-                              ? 'Until this is set, that day counts as one they failed to work.'
-                              : `${WEEKDAYS[coach.weekly_off_day]}s are not counted against them.`}
-                        </span>
-                      </div>
-
-                      {todayHoliday && (
-                        <p className="calc-notes">
-                          Today is <strong>{todayHoliday.name}</strong>
-                          {todayHoliday.centre_name ? ` at ${todayHoliday.centre_name}` : ''} — nothing is owed.
-                        </p>
-                      )}
-
-                      {/* The bar is the same figure again, read at a glance. */}
-                      <div className="att-progress" title={`${Math.round((hours / (avail.hours || 1)) * 100)}% of the day`}>
-                        <div
-                          className={`att-progress-fill ${hours >= avail.hours ? 'att-progress-done' : ''}`}
-                          style={{ width: `${Math.min(100, (hours / (avail.hours || 1)) * 100)}%` }}
-                        />
-                      </div>
-
-                      {avail.missing && (
-                        <p className="calc-notes">
-                          Availability has not come from the scheduling system, so the standard
-                          {' '}{standardDailyHours(coach.coach_category)} hours stand in. A part-worked day is
-                          flagged for review and nothing is charged for it — judging a shortfall against a
-                          stand-in figure would be unfair. A day with no login at all is still Loss of Pay:
-                          whatever the roster said, none of it was worked.
-                        </p>
-                      )}
-
-                      {/* The last five working days, so a question about
-                          Friday does not need a different screen. Today's
-                          figures above are unaffected by which chip is on. */}
-                      {(() => {
-                        const shown = shownLogDay;
-                        const logs = shownLogs;
-                        // The month the calendar is showing — the selected day's
-                        // own month, so stepping days never leaves the grid.
-                        const [cy, cm] = (attCalMonth || shown.slice(0, 7)).split('-').map(Number);
-                        const monthDays = Array.from({ length: new Date(cy, cm, 0).getDate() },
-                          (_, i) => `${cy}-${String(cm).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
-                        const pad = new Date(cy, cm - 1, 1).getDay();
-                        const monthLabel = new Date(cy, cm - 1, 1)
-                          .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-                        const stepMonth = (by) => {
-                          const d = new Date(cy, cm - 1 + by, 1);
-                          setAttCalMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-                        };
-                        const monthTotal = monthDays.reduce((n, d) =>
-                          n + loggedHoursForDay(logsFor(coach.id, d), nowTick), 0);
-                        const h = loggedHoursForDay(logs, nowTick);
-                        const a = availabilityHoursFor(coach, shown);
-                        const diff = h - a.hours;
-
-                        return (
-                          <div className="att-days">
-                            {/* The month at a glance: what each day was, and
-                                which of them cost something. Click one to open
-                                it underneath. */}
-                            <div className="att-cal-head">
-                              <button type="button" className="btn btn-secondary btn-sm"
-                                aria-label="Previous month" onClick={() => stepMonth(-1)}>←</button>
-                              <strong>{monthLabel}</strong>
-                              <button type="button" className="btn btn-secondary btn-sm"
-                                aria-label="Next month" onClick={() => stepMonth(1)}>→</button>
-                              <button type="button" className="btn btn-secondary btn-sm att-cal-today"
-                                onClick={() => { setAttCalMonth(todayWorkingDay.slice(0, 7)); setAttLogDay(todayWorkingDay); }}>
-                                Today
-                              </button>
-                            </div>
-                            <div className="att-cal" role="grid" aria-label={`Attendance in ${monthLabel}`}>
-                              {WEEKDAYS.map(w => (
-                                <div className="att-cal-dow" key={w} role="columnheader">{w.slice(0, 3)}</div>
-                              ))}
-                              {Array.from({ length: pad }, (_, i) => (
-                                <div className="att-cal-pad" key={`p-${i}`} aria-hidden="true" />
-                              ))}
-                              {monthDays.map(d => {
-                                const st = coachDayState(coach, d);
-                                return (
-                                  <button
-                                    type="button" key={d}
-                                    aria-pressed={shown === d}
-                                    className={[
-                                      'att-cal-day',
-                                      st ? `is-${st.tone}` : 'is-blank',
-                                      shown === d ? 'is-on' : '',
-                                      d === todayWorkingDay ? 'is-today' : ''
-                                    ].join(' ')}
-                                    onClick={() => setAttLogDay(d)}
-                                    title={st ? `${d} — ${st.label}${st.note ? ` · ${st.note}` : ''}` : d}
-                                  >
-                                    <span className="att-cal-n">{Number(d.slice(8))}</span>
-                                    {st && <span className="att-cal-tag">{st.label}</span>}
-                                    {st?.hours && <span className="att-cal-h">{st.hours}</span>}
-                                    {st?.note && <span className="att-cal-note">{st.note}</span>}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {/* What the month has cost so far, and where it came
-                                from. The calendar says which days went wrong;
-                                this says what they added up to. */}
-                            {(() => {
-                              const inMonth = (d) => d.slice(0, 7) === `${cy}-${String(cm).padStart(2, '0')}`;
-                              const states = monthDays.map(d => ({ d, st: coachDayState(coach, d) }));
-                              const loggedDays = states.filter(x => x.st?.key === 'logged').length;
-                              const pnlty = states.filter(x => x.st?.key === 'absent'
-                                || x.st?.key === 'lop' || x.st?.key === 'covered');
-                              const settledRows = attendanceDays.filter(r =>
-                                r.coach_id === coach.id && inMonth(r.working_day));
-                              const coveredBy = new Map();
-                              for (const r of settledRows) {
-                                if (!r.cover_type_id) continue;
-                                coveredBy.set(r.cover_type_id, (coveredBy.get(r.cover_type_id) || 0) + 1);
-                              }
-                              const lopDays = settledRows.reduce((n, r) => n + (Number(r.lop_days) || 0), 0);
-                              const monthVios = violations.filter(v => v.coach_id === coach.id
-                                && inMonth(v.incident_date) && isSystemAttendance(v));
-                              const vioCharged = monthVios.filter(isPenaltyChargeable)
-                                .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
-                              const perDay = seesMoney ? lopPerDay(coach.coach_category,
-                                computeMonthlyPay(coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
-                                  { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []).basePay) : 0;
-                              const lopCost = perDay * lopDays;
-                              const unsettled = states.filter(x => x.st?.key === 'absent').length;
-                              if (pnlty.length === 0 && loggedDays === 0) return null;
-
-                              return (
-                                <div className="att-month-sum">
-                                  <div className="att-month-sum-head">
-                                    <strong>{monthLabel} so far</strong>
-                                    {unsettled > 0 && (
-                                      <span className="att-month-pending">
-                                        {unsettled} day{unsettled === 1 ? '' : 's'} not settled yet — not charged until they are
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="att-month-grid">
-                                    <div><span>Days logged</span><strong className="num">{loggedDays}</strong></div>
-                                    <div><span>Days with no login</span><strong className="num">{pnlty.length}</strong></div>
-                                    {[...coveredBy.entries()].map(([t, n]) => (
-                                      <div key={t}>
-                                        <span>Taken from {leaveType(t)?.label || t}</span>
-                                        <strong className="num">{n}</strong>
-                                      </div>
-                                    ))}
-                                    <div className={lopDays ? 'is-bad' : ''}>
-                                      <span>Loss of Pay</span>
-                                      <strong className="num">
-                                        {lopDays} day{lopDays === 1 ? '' : 's'}
-                                        {seesMoney && lopCost > 0 && <em> · −{rupees(lopCost)}</em>}
-                                      </strong>
-                                    </div>
-                                    <div className={monthVios.length ? 'is-bad' : ''}>
-                                      <span>Attendance incidents</span>
-                                      <strong className="num">
-                                        {monthVios.length}
-                                        {seesMoney && vioCharged > 0 && <em> · −{rupees(vioCharged)}</em>}
-                                      </strong>
-                                    </div>
-                                  </div>
-                                  {monthVios.length > 0 && (
-                                    <details className="att-month-vios">
-                                      <summary>How the penalty was worked out · {monthVios.length} incident{monthVios.length === 1 ? '' : 's'}</summary>
-                                      <table className="data-table">
-                                        <thead>
-                                          <tr><th>Day</th><th>What</th><th className="num-col">Occurrence</th><th>Consequence</th><th className="num-col">Charged</th></tr>
-                                        </thead>
-                                        <tbody>
-                                          {[...monthVios].sort((a, b) =>
-                                            a.incident_date.localeCompare(b.incident_date)).map(v => (
-                                            <tr key={v.id}>
-                                              <td className="num-col">{v.incident_date}</td>
-                                              <td>{v.type}</td>
-                                              <td className="num-col">#{v.occurrence_no}</td>
-                                              <td><small>{v.consequence}</small></td>
-                                              <td className="num-col">
-                                                {!isPenaltyChargeable(v)
-                                                  ? <small className="text-green">waived</small>
-                                                  : seesMoney ? rupees(v.penalty_amount) : '—'}
-                                              </td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                      <p className="text-muted scorecard-legend">
-                                        The occurrence number is counted over the coach's whole record, not the
-                                        month, so each one costs more than the last. A waived incident still
-                                        holds its place in that count.
-                                      </p>
-                                    </details>
-                                  )}
-                                </div>
-                              );
-                            })()}
-
-                            <div className="att-day-tiles">
-                              <div><span>Logged in</span><strong>{asClock(h)}</strong></div>
-                              <div><span>Expected</span><strong>{asClock(a.hours)}</strong></div>
-                              <div>
-                                <span>Difference</span>
-                                <strong className={diff < 0 ? 'text-red' : 'att-ok'}>
-                                  {diff < 0 ? '−' : '+'}{asClock(Math.abs(diff))}
-                                </strong>
-                              </div>
-                              <div><span>{monthLabel}, total</span><strong>{asClock(monthTotal)}</strong></div>
-                            </div>
-                            {shown !== todayWorkingDay && (
-                              <p className="calc-notes">
-                                Showing {new Date(`${shown}T12:00:00`).toLocaleDateString('en-IN',
-                                  { weekday: 'long', day: 'numeric', month: 'long' })}.
-                                The clock and the buttons above are still today's.
-                              </p>
-                            )}
-                            {logs.length === 0 && (
-                              <p className="calc-notes">Nothing was logged on this day.</p>
-                            )}
-
-                            {/* What the day actually cost, once it is settled.
-                                The figure and the incident behind it, rather
-                                than a bare "settled" the coach has to chase. */}
-                            {(() => {
-                              const row = attendanceDays.find(d =>
-                                d.coach_id === coach.id && d.working_day === shown);
-
-                              // Before anyone settles it, say what the day is
-                              // going to cost. Waiting for an approver to run
-                              // the sweep meant a coach saw nothing at all on a
-                              // day they had already lost — and the admin saw
-                              // nothing either until they happened to settle.
-                              if (!row) {
-                                if (shown >= todayWorkingDay) return null;
-                                if (logs.length > 0) return null;
-                                if (isWeeklyOffFor(coach, shown) || holidayOn(coach, shown)) return null;
-                                const covered = leaveApplications.some(x => x.coach_id === coach.id
-                                  && x.status === 'Approved' && x.from_date <= shown && x.to_date >= shown);
-                                if (covered) return null;
-                                const waiting = leaveApplications.some(x => x.coach_id === coach.id
-                                  && x.status === 'Pending' && x.from_date <= shown && x.to_date >= shown)
-                                  || regularisationFor(coach.id, shown)?.status === 'Pending';
-                                if (waiting) {
-                                  return (
-                                    <div className="hb-day-cost is-waiting">
-                                      <strong>Nothing is charged while this waits</strong>
-                                      <p className="hb-day-cost-total">
-                                        There is a request on this day with no decision yet. It cannot be
-                                        settled, and nothing comes off pay, until somebody answers it.
-                                      </p>
-                                    </div>
-                                  );
-                                }
-
-                                const willCover = coverAbsenceWith(coach);
-                                const occurrence = getViolationOccurrenceNumber(
-                                  coach.id, NO_SHOW_VIOLATION, shown, violations) + 1;
-                                const consequence = getPenaltyConsequence(
-                                  coach.variant_id, NO_SHOW_VIOLATION, occurrence, PENALTY_MATRIX);
-                                const lopCost = seesMoney ? lopPerDay(coach.coach_category,
-                                  computeMonthlyPay(coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
-                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []).basePay) : 0;
-                                return (
-                                  <div className="hb-day-cost is-forecast">
-                                    <strong>No login — what this day will cost</strong>
-                                    <ul>
-                                      <li>
-                                        <span>
-                                          {willCover
-                                            ? `1 day of ${leaveType(willCover)?.label || willCover} — there is balance left to cover it`
-                                            : 'No Holiday or Paid balance left, so 1 day of Loss of Pay'}
-                                        </span>
-                                        {!willCover && seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
-                                      </li>
-                                      <li>
-                                        <span>
-                                          {NO_SHOW_VIOLATION} · would be occurrence #{occurrence} — {consequence.consequence}
-                                        </span>
-                                        {seesMoney && consequence.amount > 0 && <em>−{rupees(consequence.amount)}</em>}
-                                      </li>
-                                    </ul>
-                                    <p className="hb-day-cost-total">
-                                      Not charged yet — it is applied when the day is settled. Raise a
-                                      regularisation below if you worked and did not log it.
-                                    </p>
-                                  </div>
-                                );
-                              }
-                              const dayVios = violations.filter(v =>
-                                v.coach_id === coach.id && v.incident_date === shown
-                                && isSystemAttendance(v));
-                              const charged = dayVios.filter(isPenaltyChargeable)
-                                .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
-                              const lopCost = Number(row.lop_days) > 0 && seesMoney
-                                ? lopPerDay(coach.coach_category, computeMonthlyPay(
-                                    coach, carryPay(currentMonth.find(r => r.coach_id === coach.id) || {}),
-                                    { hbScore: 0 }, [], findVariant(variants, coach.variant_id), []
-                                  ).basePay) * Number(row.lop_days)
-                                : 0;
-                              if (Number(row.lop_days) === 0 && dayVios.length === 0) return null;
-                              return (
-                                <div className="hb-day-cost">
-                                  <strong>What this day cost</strong>
-                                  <ul>
-                                    {Number(row.lop_days) > 0 && (
-                                      <li>
-                                        <span>{row.lop_days} day of Loss of Pay</span>
-                                        {seesMoney && lopCost > 0 && <em>−{rupees(lopCost)}</em>}
-                                      </li>
-                                    )}
-                                    {dayVios.map(v => (
-                                      <li key={v.id}>
-                                        <span>
-                                          {v.type} · occurrence #{v.occurrence_no} — {v.consequence}
-                                        </span>
-                                        {seesMoney && isPenaltyChargeable(v) && Number(v.penalty_amount) > 0 && (
-                                          <em>−{rupees(v.penalty_amount)}</em>
-                                        )}
-                                        {!isPenaltyChargeable(v) && <em className="hb-waived">not charged</em>}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                  {seesMoney && (charged > 0 || lopCost > 0) && (
-                                    <p className="hb-day-cost-total">
-                                      Comes off this cycle's pay: <strong>−{rupees(charged + lopCost)}</strong>
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })()}
-
-                            {/* A day with no login costs a day's pay once it is
-                                settled. This is the coach's chance to say what
-                                actually happened, before anyone settles it. */}
-                            {logs.length === 0 && (() => {
-                              const can = regularisableDay(coach, shown);
-                              const existing = regularisationFor(coach.id, shown);
-                              const types = applicableLeaveTypes(coach).filter(t => t.id !== 'LOP');
-                              if (existing) {
-                                return (
-                                  <div className={`hb-reg-note hb-reg-${existing.status.toLowerCase()}`}>
-                                    <strong>
-                                      {existing.status === 'Pending'
-                                        ? 'Raised — waiting on your approver'
-                                        : existing.status === 'Approved'
-                                          ? 'Approved — the day counts as worked, and what it took was given back'
-                                          : 'Refused — the day stands as it was'}
-                                    </strong>
-                                    <span>
-                                      “{existing.reason}”
-                                      {existing.decision_note ? ` · ${existing.decision_note}` : ''}
-                                    </span>
-                                  </div>
-                                );
-                              }
-                              if (currentRole !== 'Coach') {
-                                return (
-                                  <p className="calc-notes">
-                                    Only {coach.name.split(' ')[0]} can raise a regularisation for this day.
-                                  </p>
-                                );
-                              }
-                              if (!can.ok) return <p className="calc-notes">{can.why}</p>;
-                              return (
-                                <div className="hb-reg-form">
-                                  <strong>No login on this day — say what happened</strong>
-                                  <span>
-                                    If you worked and did not log it, say so here. Once it is approved the day
-                                    counts as worked and everything it took is given back — the leave day or
-                                    the pay, and the incident with it.
-                                    {(() => {
-                                      const al = regularisationAllowance(coach.id, shown);
-                                      return al ? ` You have ${al.left} of ${al.max} regularisations left for ${al.label}, and this cycle closes on ${al.lockInLabel}.` : '';
-                                    })()}
-                                  </span>
-                                  <div className="hb-reg-fields">
-                                    <label className="hb-f hb-f-grow">
-                                      <span>What happened</span>
-                                      <input
-                                        value={regDraft.reason}
-                                        placeholder="Worked but forgot to log in, unwell, travelling…"
-                                        onChange={(e) => setRegDraft(d => ({ ...d, reason: e.target.value }))}
-                                      />
-                                    </label>
-                                    <button
-                                      className="hb-btn hb-btn-primary"
-                                      disabled={!regDraft.reason.trim()}
-                                      onClick={() => {
-                                        const ok = raiseRegularisation(coach, shown, regDraft.reason);
-                                        if (ok) setRegDraft({ type: '', reason: '' });
-                                      }}
-                                    >Regularise this day</button>
-                                  </div>
-                                </div>
-                              );
-                            })()}
-                          </div>
-                        );
-                      })()}
-
-                      {shownLogs.length > 0 && (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead><tr><th>In</th><th>Out</th><th className="num-col">Minutes</th><th>Counted</th><th>Where</th><th>Photo</th></tr></thead>
-                            <tbody>
-                              {shownLogs.map(l => {
-                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick)) - new Date(l.logged_in_at)) / 60000;
-                                return (
-                                  <tr key={l.id}>
-                                    <td>{new Date(l.logged_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td>{l.logged_out_at
-                                      ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-                                      : <span className="badge badge-success">Open</span>}</td>
-                                    <td className="num-col">
-                                      {l.logged_out_at
-                                        ? Math.round(mins)
-                                        : <span className="att-ticking">{asClock(mins / 60)}</span>}
-                                    </td>
-                                    <td>{mins < MIN_LOGIN_MINUTES
-                                      ? <span className="text-muted">
-                                          under {MIN_LOGIN_MINUTES} min
-                                          {l.logged_out_at ? ' — not counted' : ' yet'}
-                                        </span>
-                                      : <span className="text-green">counted</span>}</td>
-                                    {/* Recorded on every login and logout, and until now
-                                        shown nowhere — so a centre coach logging in from
-                                        the wrong place was invisible. */}
-                                    <td>
-                                      {l.login_lat != null ? (
-                                        <a
-                                          href={`https://www.google.com/maps?q=${l.login_lat},${l.login_lng}`}
-                                          target="_blank" rel="noreferrer"
-                                          title={`In: ${l.login_lat}, ${l.login_lng}`}
-                                        >
-                                          in: {Number(l.login_lat).toFixed(4)}, {Number(l.login_lng).toFixed(4)}
-                                        </a>
-                                      ) : <small className="text-red">in: no location</small>}
-                                      <br />
-                                      {l.logout_lat != null ? (
-                                        <a
-                                          href={`https://www.google.com/maps?q=${l.logout_lat},${l.logout_lng}`}
-                                          target="_blank" rel="noreferrer"
-                                          title={`Out: ${l.logout_lat}, ${l.logout_lng}`}
-                                        >
-                                          out: {Number(l.logout_lat).toFixed(4)}, {Number(l.logout_lng).toFixed(4)}
-                                        </a>
-                                      ) : l.logged_out_at
-                                        ? <small className="text-red">out: no location</small>
-                                        : <small className="text-muted">out: still in</small>}
-                                      {l.within_centre === false && (
-                                        <><br /><small className="text-red">outside the centre</small></>
-                                      )}
-                                      {l.within_centre === null && coach.work_mode === 'Centre' && (
-                                        <><br /><small className="text-amber">not verified</small></>
-                                      )}
-                                    </td>
-                                    <td>
-                                      {l.photo_path
-                                        ? <button className="linklike" onClick={() => openPhoto(l)}
-                                            title="Open the photograph taken at this login">
-                                            view
-                                          </button>
-                                        : <span className="text-amber">none</span>}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Balances */}
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>Leave Balance</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          Leave year {leaveYearFor(new Date()).start} to {leaveYearFor(new Date()).end}
-                        </span>
-                      </div>
-                      <div className="table-container">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Leave type</th>
-                              <th className="num-col">Opening</th>
-                              <th className="num-col">Accrued</th>
-                              <th className="num-col">Used</th>
-                              <th className="num-col">Adjusted</th>
-                              <th className="num-col">Available</th>
-                              <th>Policy</th>
-                              <th className="actions-col"></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {leaveTypesFor(coach).filter(t => t.id !== 'LOP').map(t => {
-                              const b = leaveBalanceFor(coach, t.id);
-                              return (
-                                <tr key={t.id}>
-                                  <td><strong>{t.label}</strong></td>
-                                  <td className="num-col">{b.opening}</td>
-                                  <td className="num-col">{b.accrued}</td>
-                                  <td className="num-col">{b.used}</td>
-                                  <td className="num-col">
-                                    {b.adjusted
-                                      ? <span className={b.adjusted > 0 ? 'text-green' : 'text-red'}>
-                                          {b.adjusted > 0 ? '+' : ''}{b.adjusted}
-                                        </span>
-                                      : <span className="text-muted">—</span>}
-                                  </td>
-                                  <td className="num-col"><strong>{b.available}</strong></td>
-                                  <td><small className="text-muted">{t.note}</small></td>
-                                  <td className="actions-col">
-                                    {PROFILE_PAY_ROLES.includes(currentRole) && (
-                                      <button className="btn-row-icon icon-edit"
-                                        title="Adjust this balance by hand — a reason is required"
-                                        onClick={() => adjustLeaveBalance(coach, t.id)}>
-                                        <i className="bx bx-slider-alt"></i>
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      {!coach.gender && (
-                        <p className="calc-notes">
-                          No gender on this profile, so Period, Maternity and Paternity leave
-                          cannot be offered. It is set on the coach profile.
-                        </p>
-                      )}
-
-                      {(() => {
-                        const { year } = leaveYearFor(new Date());
-                        const mine = holidays
-                          .filter(h => h.leave_year === year
-                            && (!h.centre_name || h.centre_name === coach.centre_name))
-                          .sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
-                        const today = new Date().toISOString().slice(0, 10);
-                        const taken = new Set(leaveApplications
-                          .filter(a => a.coach_id === coach.id && a.type_id === 'HOLIDAY'
-                            && a.status !== 'Rejected' && a.status !== 'Cancelled')
-                          .flatMap(a => [a.from_date]));
-                        return (
-                          <details className="demographics" open={mine.length > 0}>
-                            <summary>
-                              Holidays you can claim — {mine.length} published for {year}
-                            </summary>
-                            {mine.length === 0 ? (
-                              <p className="calc-notes">
-                                Human Resources has not published the {year} list yet. Holiday
-                                Leave can only be taken on a day that is on it.
-                              </p>
-                            ) : (
-                              <div className="table-container">
-                                <table className="data-table">
-                                  <thead><tr><th>Date</th><th>Day</th><th>Holiday</th><th>Status</th></tr></thead>
-                                  <tbody>
-                                    {mine.map(h => (
-                                      <tr key={h.id} className={h.holiday_date < today ? 'text-muted' : ''}>
-                                        <td><strong>{h.holiday_date}</strong></td>
-                                        <td>{WEEKDAYS[new Date(`${h.holiday_date}T12:00:00`).getDay()]}</td>
-                                        <td>
-                                          {h.name}
-                                          {h.centre_name && <small className="text-muted"> · {h.centre_name} only</small>}
-                                        </td>
-                                        <td>
-                                          {taken.has(h.holiday_date)
-                                            ? <span className="text-green">claimed</span>
-                                            : h.holiday_date < today
-                                              ? <span className="text-muted">passed</span>
-                                              : <span className="text-amber">not claimed</span>}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-                            <p className="calc-notes">
-                              A published holiday is already not counted against you. Claiming it
-                              as Holiday Leave is the formal record of the day off, and half days
-                              are allowed.
-                            </p>
-                          </details>
-                        );
-                      })()}
-
-                      {/* The rules themselves, beside the balances they govern —
-                          a coach refused for notice should be able to see the
-                          notice rule without asking anyone. */}
-                      <details className="demographics">
-                        <summary>What the policy allows</summary>
-                        <div className="policy-list">
-                          {leaveTypesFor(coach).map(t => (
-                            <div key={t.id}>
-                              <strong>{t.label}</strong>
-                              <small>
-                                {[
-                                  t.accrual ? `${t.accrual} day${t.accrual === 1 ? '' : 's'} credited each pay cycle` : null,
-                                  t.annualDays ? `${t.annualDays} days a year` : null,
-                                  t.holidayOnly ? 'only on a published holiday' : null,
-                                  t.unlimited ? 'always available, and unpaid' : null,
-                                  t.noticeDays ? `${t.noticeDays} days' notice` : 'no notice needed',
-                                  t.sameDayAllowed ? `may be applied for on the day, or within ${t.backdateDays} days of returning` : null,
-                                  t.certificateAfterDays ? `a medical certificate past ${t.certificateAfterDays} days in a row` : null,
-                                  t.halfDayAllowed
-                                    ? (coach.coach_category === 'Flexi'
-                                        ? 'half days do not apply to Flexi'
-                                        : `half days allowed — ${halfDayHours(coach.coach_category)} hours`)
-                                    : 'full days only',
-                                  t.carryForwardMax
-                                    ? `up to ${t.carryForwardMax} days carry over${t.encashBeyondCarry ? ', the rest is encashed' : ''}`
-                                    : 'does not carry over',
-                                  t.splittable ? 'may be split' : null
-                                ].filter(Boolean).join(' · ')}
-                              </small>
-                            </div>
-                          ))}
-                          <div>
-                            <strong>Everyone</strong>
-                            <small>
-                              A reason is required on every application · a decision is due within
-                              3 working days · nothing is marked Loss of Pay while an application
-                              waits · a weekly off or published holiday inside a span is not
-                              charged as leave · the balance is debited when applied for and
-                              returned if refused
-                            </small>
-                          </div>
-                        </div>
-                      </details>
-                    </div>
-
-                    {/* Apply */}
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <h3>Apply for Leave</h3>
-                      <div className="form-grid">
-                        <div className="form-group">
-                          <label>Type</label>
-                          <select value={leaveForm.type}
-                            onChange={(e) => setLeaveForm(f => ({ ...f, type: e.target.value }))}>
-                            {applicableLeaveTypes(coach).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                          </select>
-                          <span className="field-hint">{leaveType(leaveForm.type)?.note}</span>
-                        </div>
-                        <div className="form-group">
-                          <label>From</label>
-                          <input type="date" value={leaveForm.from}
-                            onChange={(e) => setLeaveForm(f => ({ ...f, from: e.target.value, to: f.to || e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>To</label>
-                          <input type="date" value={leaveForm.to}
-                            onChange={(e) => setLeaveForm(f => ({ ...f, to: e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>Half day</label>
-                          <select
-                            value={leaveForm.halfDay ? 'yes' : 'no'}
-                            disabled={!leaveType(leaveForm.type)?.halfDayAllowed || coach.coach_category === 'Flexi'}
-                            onChange={(e) => setLeaveForm(f => ({ ...f, halfDay: e.target.value === 'yes' }))}
-                          >
-                            <option value="no">No</option>
-                            <option value="yes">Yes</option>
-                          </select>
-                          <span className="field-hint">
-                            {coach.coach_category === 'Flexi'
-                              ? 'Flexi coaches have no half day.'
-                              : `Half a day is ${halfDayHours(coach.coach_category)} hours.`}
-                          </span>
-                        </div>
-                        <div className="form-group w-full">
-                          <label>Reason <span className="required-star">*</span></label>
-                          <textarea rows="2" value={leaveForm.reason}
-                            className={leaveForm.reason.trim() ? '' : 'input-invalid'}
-                            onChange={(e) => setLeaveForm(f => ({ ...f, reason: e.target.value }))}
-                            placeholder="Required — the approver decides on this, and you see it back on the decision." />
-                        </div>
-                      </div>
-                      <div className="modal-footer">
-                        <span className="text-muted" style={{ fontSize: '0.8rem', marginRight: 'auto' }}>
-                          {leaveForm.from && leaveForm.to
-                            ? (() => {
-                                const c = leaveDaysFor(coach, leaveForm.from, leaveForm.to, leaveForm.type);
-                                const n = leaveForm.halfDay ? 0.5 : c.days;
-                                const span = daysBetween(leaveForm.from, leaveForm.to);
-                                return `${n} day(s) of leave` +
-                                  (c.skipped.length ? ` — ${span} day span, ${c.skipped.length} not counted (${c.skipped.join(', ')})` : '') +
-                                  ` · ${leaveBalanceFor(coach, leaveForm.type).available} available`;
-                              })()
-                            : 'Choose the dates.'}
-                        </span>
-                        <button className="btn btn-primary" onClick={() => handleLeaveApply(coach)}>Apply</button>
-                      </div>
-                    </div>
-
-                    {/* History */}
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <h3>Leave Applications</h3>
-                      {mine.length === 0 ? (
-                        <p className="text-muted">Nothing applied for yet.</p>
-                      ) : (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th className="actions-col">{canApprove ? 'Decide' : ''}</th></tr>
-                            </thead>
-                            <tbody>
-                              {mine.map(a => (
-                                <tr key={a.id}>
-                                  <td>{leaveType(a.type_id)?.label}</td>
-                                  <td>{a.from_date} → {a.to_date}</td>
-                                  <td className="num-col">{a.days}</td>
-                                  <td>
-                                    <span className={`badge ${
-                                      a.status === 'Approved' ? 'badge-success'
-                                        : a.status === 'Rejected' ? 'badge-danger'
-                                        : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
-                                      {a.status}
-                                    </span>
-                                  </td>
-                                  <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
-                                  {/* Deciding also belongs here. An approver reading a
-                                      row marked PENDING expects to act on it where they
-                                      are looking, not on a different card further up. */}
-                                  <td className="actions-col">
-                                    <div className="table-btn-group">
-                                      {canApprove && a.status === 'Pending' && (
-                                        <>
-                                          <button className="btn-row-icon icon-save" title="Approve this leave"
-                                            onClick={() => handleLeaveDecision(a, 'Approved')}>
-                                            <i className="bx bx-check"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
-                                            onClick={() => handlePartialApproval(a)}>
-                                            <i className="bx bx-slider-alt"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
-                                            onClick={() => handleLeaveTypeChange(a)}>
-                                            <i className="bx bx-transfer-alt"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
-                                            onClick={() => handleLeaveDecision(a, 'Rejected')}>
-                                            <i className="bx bx-x"></i>
-                                          </button>
-                                        </>
-                                      )}
-                                      {a.status === 'Rejected' && (
-                                        appealForLeave(a) ? (
-                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
-                                            Appealed
-                                          </span>
-                                        ) : currentRole === 'Coach' && a.coach_id === selfCoachId ? (
-                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
-                                            onClick={() => appealLeaveDecision(a)}>
-                                            <i className="bx bx-undo"></i>
-                                          </button>
-                                        ) : null
-                                      )}
-                                      {(a.status === 'Pending' || a.status === 'Approved') && (
-                                        <button className="btn-row-icon icon-reset" title="Cancel this leave"
-                                          onClick={() => handleLeaveCancel(a)}>
-                                          <i className="bx bx-trash"></i>
-                                        </button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
               </section>
             );
           })()}
@@ -19205,7 +20432,13 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                 const TABS = [
                   ['approval', 'Approval',  'Waiting on a decision. Nothing here is charged yet, and each one lands on the cycle its own date falls in — so every cycle is shown until you pick one.'],
-                  ['lop',      'LOP',       'Days the app recorded no login. The coach is marked absent, and can ask for the day to be regularised.'],
+                  // The Loss of Pay register — the days and what they cost —
+                  // moved to Attendance & Leave, where the days are settled.
+                  // What stays here is the incident the settler raised about
+                  // such a day: it climbs a ladder, it can be appealed, and
+                  // dropping it from this register would have left it with
+                  // nowhere to be read once it had been decided.
+                  ['lop',      'From attendance', 'Incidents the settler raised for a day with no login. The days themselves, and what they cost, are on Attendance & Leave.'],
                   ['manual',   'Manual',    'Recorded by a person who saw it.'],
                   ['api',      'API fetch', 'Measured from the HB+ app’s own session list.']
                 ];
@@ -19851,7 +21084,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                             {isSessionBound(v.type) && look.state === 'no-app-id' && (
                               <p className="hb-detail-gap">
                                 {c?.name || 'This coach'} has no App Coach ID on their profile,
-                                and the app keys its sessions by it. Set it under Details and
+                                and the app keys its sessions by it. Set it on the Profile tab and
                                 this panel will show the session, the client and the slot.
                               </p>
                             )}
@@ -20769,7 +22002,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         return (
                           <div className="card org-card" key={sc.id}>
                             <SquadTree
-                              squad={squadOf(sc.id)}
+                              squad={squadOf(sc.id).filter(c => c.status === 'Active')}
                               scope={sc}
                               managerName={mgr ? (mgr.full_name || mgr.email) : null}
                               managerUnknown={!isAccessAdmin}
@@ -20789,14 +22022,14 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         );
                       })}
 
-                      {orphans.length > 0 && (
+                      {activeOrphans.length > 0 && (
                         <div className="card org-card org-card-orphans">
                           {/* Not a squad, and deliberately not drawn as one.
                               These coaches have nobody to approve their leave,
                               decide a regularisation or agree to an incident
                               raised against them. */}
                           <SquadTree
-                            squad={orphans}
+                            squad={activeOrphans}
                             scope={{ id: 'none', label: 'No manager set' }}
                             managerName={null}
                             managerUnknown
@@ -20820,6 +22053,55 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </div>
                       )}
                     </div>
+
+                    {/* Out of the squads, not out of the system. A suspended
+                        or exited coach reports to nobody in practice, so
+                        drawing them inside a squad says they are being
+                        managed when they are not. */}
+                    {(() => {
+                      const gone = [...coaches]
+                        .filter(c => c.status !== 'Active')
+                        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+                      if (gone.length === 0) return null;
+                      return (
+                        <section className="card hb-inactive" aria-label="Coaches who are not active">
+                          <div className="hb-inactive-head">
+                            <div>
+                              <h3>Not active · {gone.length}</h3>
+                              <span>
+                                Suspended and exited coaches, kept out of the squads above.
+                                Where they were filed is shown so nothing is lost.
+                              </span>
+                            </div>
+                            <button type="button" className="hb-btn"
+                              aria-expanded={orgShowInactive}
+                              onClick={() => setOrgShowInactive(v => !v)}>
+                              {orgShowInactive ? 'Hide' : `Show ${gone.length}`}
+                            </button>
+                          </div>
+                          {orgShowInactive && (
+                            <ul className="org-inactive-list">
+                              {gone.map(c => (
+                                <li key={c.id}>
+                                  <span>
+                                    <strong>{c.name}</strong>
+                                    <small>{c.id}</small>
+                                  </span>
+                                  <span className="org-inactive-squad">
+                                    {c.reporting_manager_id
+                                      ? `was with ${squadShortName(c.reporting_manager_id) || c.reporting_manager_id}`
+                                      : 'no squad on the record'}
+                                  </span>
+                                  <span className={`badge ${c.status === 'Suspended' ? 'badge-danger' : 'badge-exited'}`}>
+                                    {c.status}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </section>
+                      );
+                    })()}
                   </>
                 );
               })()}
@@ -22357,141 +23639,206 @@ HB+_030,185,0,96`} />
       {raiseRegModal && raiseRegCoach && (() => {
         const tIn = raiseRegDate && raiseRegInTime ? new Date(`${raiseRegDate}T${raiseRegInTime}:00`) : null;
         const tOut = raiseRegDate && raiseRegOutTime ? new Date(`${raiseRegDate}T${raiseRegOutTime}:00`) : null;
-        let previewDiff = (tIn && tOut && tOut > tIn) ? Math.round(((tOut - tIn) / 3600000) * 10) / 10 : 0;
+        const previewDiff = (tIn && tOut && tOut > tIn) ? Math.round(((tOut - tIn) / 3600000) * 10) / 10 : 0;
         const byApprover = currentRole !== 'Coach'
           && REGULARIZATION_APPROVER_ROLES.includes(currentRole);
+        // An approver fills in hours on a coach's behalf. Only the coach may
+        // ask for a day to be let off, so only they are offered the choice.
+        const mode = byApprover ? 'hours' : raiseRegMode;
         // The allowance for the cycle the chosen day falls in, not today's, so
         // changing the date changes what it says.
         const allow = regularisationAllowance(raiseRegCoach.id, raiseRegDate);
+        const dayLabel = raiseRegDate
+          ? new Date(`${raiseRegDate}T12:00:00`).toLocaleDateString('en-IN',
+              { day: 'numeric', month: 'short', year: 'numeric' })
+          : '—';
+        // What the day costs if nothing is done. It is the reason the panel
+        // is open, so it is stated in it rather than left on the page behind.
+        const showMoney = !HIDES_PAY(currentRole) && currentRole !== 'Coach';
+        const forecast = (() => {
+          if (!raiseRegDate) return null;
+          const c = raiseRegCoach;
+          if (logsFor(c.id, raiseRegDate).length > 0) return null;
+          if (isWeeklyOffFor(c, raiseRegDate) || holidayOn(c, raiseRegDate)) return null;
+          const covered = leaveApplications.some(x => x.coach_id === c.id
+            && x.status === 'Approved' && x.from_date <= raiseRegDate && x.to_date >= raiseRegDate);
+          if (covered) return null;
+          const occurrence = getViolationOccurrenceNumber(
+            c.id, NO_SHOW_VIOLATION, raiseRegDate, violations) + 1;
+          return {
+            willCover: coverAbsenceWith(c),
+            occurrence,
+            consequence: getPenaltyConsequence(c.variant_id, NO_SHOW_VIOLATION, occurrence, PENALTY_MATRIX)
+          };
+        })();
+
+        const noteGiven = raiseRegNote.trim().length > 0;
+        const ready = !allow?.blocked && noteGiven
+          && (mode === 'exempt' || previewDiff > 0);
+
+        const submit = (e) => {
+          if (e) e.preventDefault();
+          if (mode === 'exempt') {
+            const ok = raiseRegularisation(raiseRegCoach, raiseRegDate, raiseRegNote);
+            if (ok) setRaiseRegModal(false);
+            return;
+          }
+          handleRaiseRegularizationSubmit(e);
+        };
 
         return (
-          <div className="modal-backdrop active-modal">
-            <div className="modal-card" style={{ maxWidth: '580px' }}>
-              <div className="modal-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <i className="bx bx-calendar-edit" style={{ fontSize: '1.5rem', color: '#16a34a' }}></i>
-                  <div>
-                    <h3 style={{ margin: 0 }}>
-                      {byApprover ? 'Regularise a day' : 'Raise Attendance Regularization'}
-                    </h3>
-                    <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>
-                      {byApprover
-                        ? `Record the hours ${raiseRegCoach.name.split(' ')[0]} worked on a day they did not log. Saved as decided, under your name.`
-                        : 'Forgot to log in or log out? Request attendance regularization for your shift hours.'}
-                    </div>
-                  </div>
-                </div>
-                <i className="bx bx-x modal-close-btn" onClick={() => setRaiseRegModal(false)}></i>
+          // From the side, over the day it is about, so the calendar and
+          // the cost stay where they were when it closes.
+          <div className="hb-drawer-back" role="dialog" aria-modal="true"
+               aria-label="Request attendance regularization"
+               onClick={(e) => { if (e.target === e.currentTarget) setRaiseRegModal(false); }}>
+            <div className="hb-drawer hb-rr">
+              <div className="hb-drawer-head">
+                <h3>Request attendance regularization</h3>
+                <button type="button" className="hb-drawer-x" aria-label="Close"
+                  onClick={() => setRaiseRegModal(false)}>
+                  <i className="bx bx-x"></i>
+                </button>
               </div>
 
-              <form onSubmit={handleRaiseRegularizationSubmit}>
-                <div className="modal-body" style={{ padding: '1.25rem 0' }}>
-                  {allow && (
-                    <div className={`hb-reg-allow${allow.blocked ? ' is-blocked' : ''}`}>
-                      {allow.blocked
-                        ? allow.why
-                        : `${allow.left} of ${allow.max} left for ${allow.label}. This cycle closes on ${allow.lockInLabel}.`}
+              <form onSubmit={submit} className="hb-rr-form">
+                <div className="hb-drawer-body hb-rr-body">
+                  {/* The day and the window it is judged against, before any
+                      of the asking: both were buried in the form before. */}
+                  <div className="hb-rr-top">
+                    <div>
+                      <span>Selected date</span>
+                      <strong>{dayLabel}</strong>
+                    </div>
+                    <div>
+                      <span>Working day runs</span>
+                      <strong>04:00 AM – 02:00 AM</strong>
+                    </div>
+                    {byApprover && (
+                      <div>
+                        <span>For</span>
+                        <strong>{raiseRegCoach.name}</strong>
+                      </div>
+                    )}
+                  </div>
+
+                  {forecast && (
+                    <div className="hb-rr-cost">
+                      <strong>Left as it is, this day costs</strong>
+                      <ul>
+                        <li>
+                          {forecast.willCover
+                            ? `1 day of ${leaveType(forecast.willCover)?.label || forecast.willCover} — there is balance left to cover it`
+                            : 'No Holiday or Paid balance left, so 1 day of Loss of Pay'}
+                        </li>
+                        <li>
+                          {NO_SHOW_VIOLATION} · would be occurrence #{forecast.occurrence}
+                          {showMoney || !/₹/.test(forecast.consequence.consequence)
+                            ? ` — ${forecast.consequence.consequence}`
+                            : ''}
+                        </li>
+                      </ul>
+                      <small>Not charged yet — it is applied when the day is settled.</small>
                     </div>
                   )}
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <label className="form-label">Coach</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={`${raiseRegCoach.name} (${raiseRegCoach.id})`}
-                      disabled
-                      style={{ background: '#f3f4f6', fontWeight: 600 }}
-                    />
-                  </div>
 
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <label className="form-label">Working Day *</label>
-                    <input
-                      type="date"
-                      className="form-control"
-                      value={raiseRegDate}
-                      onChange={(e) => setRaiseRegDate(e.target.value)}
-                      required
-                    />
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                    <div className="form-group">
-                      <label className="form-label">Log In Time *</label>
-                      <input
-                        type="time"
-                        className="form-control"
-                        value={raiseRegInTime}
-                        onChange={(e) => setRaiseRegInTime(e.target.value)}
-                        required
-                      />
+                  {!byApprover && (
+                    <div className="hb-rr-modes" role="radiogroup" aria-label="What are you asking for">
+                      <label className={mode === 'hours' ? 'is-on' : ''}>
+                        <input type="radio" name="rr-mode" checked={mode === 'hours'}
+                          onChange={() => setRaiseRegMode('hours')} />
+                        <span>
+                          <strong>I worked — add the times</strong>
+                          <small>The day was worked and the app missed it. The hours you enter become the record.</small>
+                        </span>
+                      </label>
+                      <label className={mode === 'exempt' ? 'is-on' : ''}>
+                        <input type="radio" name="rr-mode" checked={mode === 'exempt'}
+                          onChange={() => setRaiseRegMode('exempt')} />
+                        <span>
+                          <strong>Raise regularization request to exempt this day from penalization policy.</strong>
+                        </span>
+                      </label>
                     </div>
-                    <div className="form-group">
-                      <label className="form-label">Log Out Time *</label>
-                      <input
-                        type="time"
-                        className="form-control"
-                        value={raiseRegOutTime}
-                        onChange={(e) => setRaiseRegOutTime(e.target.value)}
-                        required
-                      />
+                  )}
+
+                  {allow && (
+                    <div className={`hb-rr-allow${allow.blocked ? ' is-blocked' : ''}`}>
+                      <i className="bx bx-info-circle"></i>
+                      <span>
+                        {allow.blocked
+                          ? allow.why
+                          : `${allow.left} of ${allow.max} requests left for ${allow.label}. This cycle closes on ${allow.lockInLabel}.`}
+                      </span>
                     </div>
+                  )}
+
+                  <div className="form-group">
+                    <label className="form-label">Working day</label>
+                    <input type="date" className="form-control" value={raiseRegDate}
+                      onChange={(e) => setRaiseRegDate(e.target.value)} required />
                   </div>
 
-                  <div style={{
-                    background: '#f0fdf4',
-                    border: '1px solid #bbf7d0',
-                    borderRadius: '6px',
-                    padding: '0.65rem 0.85rem',
-                    marginBottom: '1rem',
-                    fontSize: '0.875rem',
-                    color: '#166534',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}>
-                    <span>Calculated Working Hours:</span>
-                    <strong style={{ fontSize: '1rem' }}>{previewDiff > 0 ? `${previewDiff} hrs` : 'Invalid timings'}</strong>
-                  </div>
+                  {mode === 'hours' && (
+                    <>
+                      <div className="hb-rr-times">
+                        <div className="form-group">
+                          <label className="form-label">Logged in at</label>
+                          <input type="time" className="form-control" value={raiseRegInTime}
+                            onChange={(e) => setRaiseRegInTime(e.target.value)} required />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Logged out at</label>
+                          <input type="time" className="form-control" value={raiseRegOutTime}
+                            onChange={(e) => setRaiseRegOutTime(e.target.value)} required />
+                        </div>
+                        <div className="hb-rr-hours">
+                          <span>Comes to</span>
+                          <strong>{previewDiff > 0 ? `${previewDiff} h` : '—'}</strong>
+                        </div>
+                      </div>
 
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <label className="form-label">Reason Why Regularization Is Raised *</label>
-                    <select
-                      className="form-control"
-                      value={raiseRegReason}
-                      onChange={(e) => setRaiseRegReason(e.target.value)}
-                      required
-                    >
-                      <option value="Forgot to Log In & Log Out">Forgot to Log In &amp; Log Out</option>
-                      <option value="Forgot to Log In only">Forgot to Log In only</option>
-                      <option value="Forgot to Log Out only">Forgot to Log Out only</option>
-                      <option value="Mobile App / Biometric Glitch">Mobile App / Biometric Glitch</option>
-                      <option value="Device Battery / Network Issue">Device Battery / Network Issue</option>
-                      <option value="On Duty (Official Training / Outdoor Shift)">On Duty (Official Training / Outdoor Shift)</option>
-                      <option value="Emergency Duty Coverage">Emergency Duty Coverage</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </div>
+                      <div className="form-group">
+                        <label className="form-label">Why it was not logged</label>
+                        <select className="form-control" value={raiseRegReason}
+                          onChange={(e) => setRaiseRegReason(e.target.value)} required>
+                          <option value="Forgot to Log In & Log Out">Forgot to log in and log out</option>
+                          <option value="Forgot to Log In only">Forgot to log in only</option>
+                          <option value="Forgot to Log Out only">Forgot to log out only</option>
+                          <option value="Mobile App / Biometric Glitch">App or biometric glitch</option>
+                          <option value="Device Battery / Network Issue">Battery or network</option>
+                          <option value="On Duty (Official Training / Outdoor Shift)">On duty elsewhere</option>
+                          <option value="Emergency Duty Coverage">Covering an emergency</option>
+                          <option value="Other">Something else</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
 
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Detailed Explanation *</label>
-                    <textarea
-                      className="form-control"
-                      rows="3"
-                      placeholder="Please explain why you were unable to log in/out (e.g. conducted sessions at centre, phone uncharged)..."
-                      value={raiseRegNote}
+                    <label className="form-label">
+                      Note <span className="required-star">*</span>
+                    </label>
+                    <textarea className="form-control" rows="3" value={raiseRegNote}
                       onChange={(e) => setRaiseRegNote(e.target.value)}
-                      required
-                    />
+                      placeholder={mode === 'exempt'
+                        ? 'What happened that day? The approver decides on this alone.'
+                        : 'Where you were and what you were doing — the approver decides on this.'} />
                   </div>
                 </div>
 
-                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', borderTop: '1px solid #e5e7eb', paddingTop: '1rem' }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => setRaiseRegModal(false)}>
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary" disabled={previewDiff <= 0}>
-                    <i className="bx bx-send"></i> Submit Regularization Request
+                <div className="hb-drawer-foot hb-rr-foot">
+                  <span>
+                    {mode === 'exempt'
+                      ? 'Nothing is charged for the day while this waits.'
+                      : byApprover
+                        ? 'Saved as decided, under your name.'
+                        : 'Goes to your approver. Nothing is charged while it waits.'}
+                  </span>
+                  <button type="button" className="btn btn-secondary"
+                    onClick={() => setRaiseRegModal(false)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary" disabled={!ready}>
+                    Request
                   </button>
                 </div>
               </form>

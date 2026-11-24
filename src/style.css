@@ -3625,6 +3625,9 @@ form {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border-color);
 }
+/* The rule above it separates it from what it follows. First in the card it
+   separates it from nothing, and reads as an empty band with a line under it. */
+.attendance-pattern:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .attendance-pattern label {
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -5033,15 +5036,6 @@ form {
    another deduction — the sign is the whole point of the row. */
 .calc-waived-cell { color: #3b5a49; }
 
-/* The one editable cell in the computed column. Styled as an input so it does
-   not read as another figure the screen worked out for you. */
-.calc-waive-input {
-  width: 9rem; text-align: right; min-height: 34px;
-  border: 1px solid var(--brand-olive); border-radius: 8px;
-  background: var(--bg-surface); padding: 0 9px;
-  font: 600 0.9rem var(--font-body); font-variant-numeric: tabular-nums;
-}
-.calc-waive-input:focus { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
 
 /* Incident filters. "By month" and "by pay cycle" are different questions —
    a cycle runs the 16th to the 15th — and payroll asks the second. */
@@ -6247,3 +6241,815 @@ form {
   background: rgba(159, 64, 34, 0.07);
 }
 .hb-row-reject:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 1px; }
+
+/* Which pay cycle a figures-only table is showing, and how to change it.
+   The month alone is ambiguous when a cycle runs 16th to 15th, so the bar
+   carries the dates and the picker sits on the table, not in the toolbar. */
+.hb-cycle-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 0.95rem 1.1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.hb-cycle-bar > div { display: flex; flex-direction: column; gap: 2px; }
+.hb-cycle-bar strong { font-size: 0.95rem; }
+.hb-cycle-bar span { font-size: 0.8rem; color: var(--text-secondary); }
+.hb-cycle-pick { display: flex; align-items: center; gap: 0.5rem; }
+.hb-cycle-pick > span { font-size: 0.8rem; color: var(--text-secondary); }
+
+/* The figures-only pay table: a name, what reaches the coach, and their slip.
+   Three columns, so none of the eighteen-column run's width applies. */
+.hb-pay-slim {
+  min-width: 0;
+  width: 100%;
+  table-layout: fixed;
+  font-size: 0.88rem;
+}
+.hb-pay-slim th,
+.hb-pay-slim td { padding: 0.75rem 1.1rem; }
+.hb-pay-slim th.num-col,
+.hb-pay-slim td.num-col { width: 190px; text-align: right; font-variant-numeric: tabular-nums; }
+.hb-pay-slim td.num-col strong { font-size: 0.98rem; }
+.hb-pay-slim th:last-child:not(.num-col),
+.hb-pay-slim td:last-child:not(.num-col) { width: 130px; text-align: right; }
+/* The name column takes whatever is left, and a long one wraps rather than
+   widening the table past the card. */
+.hb-pay-slim th:first-child,
+.hb-pay-slim td:first-child { width: auto; white-space: normal; }
+/* Nothing scrolls sideways here, so the frozen-column divider only reads as
+   a stray rule down the middle of the card. */
+.hb-pay-slim .sticky-month { border-right: none; min-width: 0; }
+
+/* ===========================================================================
+   Coaches who are not active — their own section, on the directory and on
+   the org chart. Shut by default: the common question is who is coaching
+   now, and a leaver mixed into that list reads as one of them.
+   ======================================================================== */
+.hb-inactive { margin-top: 1rem; padding: 0; }
+.hb-inactive-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; padding: 1rem 1.1rem;
+}
+.hb-inactive-head h3 { margin: 0 0 2px; font-size: 1rem; }
+.hb-inactive-head span { font-size: 0.82rem; color: var(--text-secondary); }
+.hb-inactive-filter {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0 1.1rem 0.9rem;
+}
+.hb-inactive .table-container { border-top: 1px solid var(--border-color); }
+
+.org-inactive-list { list-style: none; margin: 0; padding: 0 1.1rem 1rem; }
+.org-inactive-list li {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.6rem 0; border-top: 1px solid var(--border-color);
+}
+.org-inactive-list li > span:first-child { display: flex; flex-direction: column; min-width: 190px; }
+.org-inactive-list small { color: var(--text-secondary); font-size: 0.75rem; }
+.org-inactive-squad { flex: 1; font-size: 0.82rem; color: var(--text-secondary); }
+
+/* The Score Tracker's full table is two tables: what the coach scored, and
+   what the month paid or cost. Each gets a line saying which it is, or the
+   second reads as more of the first. */
+.tracker-split-note { margin: 1.25rem 0 0.6rem; }
+.tracker-split-note h3 { margin: 0 0 2px; font-size: 1rem; }
+.tracker-split-note p { margin: 0; font-size: 0.82rem; color: var(--text-secondary); max-width: 68ch; }
+
+/* A coach's settled pay cycles. Finance locking a cycle is the one thing
+   worth picking out of the list, so it is marked on the row rather than
+   spelled out in a column that says "not settled" seven times. */
+.slip-settled > td { background-color: #f1f3ec; }
+.slip-settled > td:first-child { box-shadow: inset 3px 0 0 var(--brand-olive); }
+.slip-lock { margin-left: 6px; color: var(--brand-olive); vertical-align: middle; }
+
+/* ===========================================================================
+   Sessions milestone — a coach's own bar, for whichever cycle they pick.
+   The fill grows from nothing each time the cycle changes, and carries a
+   slow sheen while the cycle is open, so a cycle in progress reads as moving.
+   ======================================================================== */
+.ms-card .ms-figs {
+  display: flex; align-items: baseline; gap: 0.5rem; margin: 0.4rem 0 0.7rem;
+}
+.ms-card .ms-figs strong { font-size: 1.9rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.ms-card .ms-figs span { font-size: 0.85rem; color: var(--text-secondary); }
+
+.ms-bar {
+  position: relative; height: 14px; border-radius: 999px; overflow: hidden;
+  background-color: #e8e2d8;
+}
+.ms-bar-fill {
+  position: relative; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand-olive), #8c9a62);
+  animation: ms-grow 900ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  min-width: 0;
+}
+/* The sheen travels across the filled part only, so an empty bar is still. */
+.ms-bar-fill::after {
+  content: ''; position: absolute; inset: 0; border-radius: 999px;
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0) 100%);
+  transform: translateX(-100%);
+  animation: ms-sheen 2.4s ease-in-out 900ms infinite;
+}
+@keyframes ms-grow { from { width: 0; } to { width: var(--pct, 0%); } }
+@keyframes ms-sheen { 0% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ms-bar-fill { animation: none; }
+  .ms-bar-fill::after { animation: none; opacity: 0; }
+}
+
+/* ===========================================================================
+   The coach's four dials. A number on its own says where you are; a ring
+   says how far along, which is the thing a coach can act on. Each draws
+   itself once on arrival and then holds still.
+   ======================================================================== */
+.gm-row {
+  display: grid; gap: 1rem; margin-top: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+.gm-card {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 1.05rem 1.15rem 1.15rem;
+  border: 1px solid var(--border-color); border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(31, 23, 15, 0.04);
+}
+/* A wash of the card's own colour, so the four read as a set of different
+   things rather than four copies of one. */
+.gm-card::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--gm-tone, var(--brand-olive));
+}
+.gm-olive { --gm-tone: var(--brand-olive); }
+.gm-navy  { --gm-tone: var(--brand-navy); }
+.gm-amber { --gm-tone: var(--brand-terracotta); }
+.gm-rust  { --gm-tone: var(--brand-rust); }
+.gm-clean { --gm-tone: #5c7a68; }
+
+.gm-kicker {
+  font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.gm-card b { font-size: 0.92rem; margin-top: 0.55rem; }
+.gm-card small { font-size: 0.76rem; color: var(--text-secondary); line-height: 1.35; }
+
+.gm-dial { position: relative; width: 88px; height: 88px; margin: 0.5rem 0 0.1rem; }
+.gm-dial strong {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; font-variant-numeric: tabular-nums;
+}
+.gm-dial strong i { font-size: 0.85rem; font-style: normal; margin-left: 1px; }
+
+.gm-ring { width: 88px; height: 88px; transform: rotate(-90deg); }
+.gm-ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
+.gm-ring-bg { stroke: #ece6dc; }
+.gm-ring-fg {
+  stroke: var(--gm-tone, var(--brand-olive));
+  animation: gm-draw 1100ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.gm-ring-olive .gm-ring-fg { stroke: var(--brand-olive); }
+.gm-ring-navy  .gm-ring-fg { stroke: var(--brand-navy); }
+.gm-ring-amber .gm-ring-fg { stroke: var(--brand-terracotta); }
+@keyframes gm-draw { from { stroke-dashoffset: 119.38; } to { stroke-dashoffset: var(--off, 119.38); } }
+
+/* The flame and the shield sit behind their figure, large and faint: a
+   badge, not another thing to read. */
+.gm-flame, .gm-badge {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 3.4rem; color: var(--gm-tone, var(--brand-olive)); opacity: 0.14;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-ring-fg { animation: none; stroke-dashoffset: var(--off, 119.38); }
+}
+
+/* ===========================================================================
+   Regularisation standings. Four cards at the top of the tab, each one also
+   the filter for what it counts — the number and the way to act on it are
+   the same control, so nobody reads "3 pending" and then hunts for them.
+   ======================================================================== */
+.reg-tiles {
+  display: grid; gap: 0.85rem; margin-bottom: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.reg-tile {
+  position: relative; overflow: hidden; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--border-color); border-radius: 14px;
+  background: var(--bg-surface);
+  font: inherit; color: inherit;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.reg-tile::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--reg-tone); opacity: 0.55;
+}
+.reg-tile:hover { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(31, 23, 15, 0.07); }
+.reg-tile.is-on { border-color: var(--reg-tone); box-shadow: inset 0 0 0 1px var(--reg-tone); }
+.reg-tile.is-on::before { opacity: 1; }
+.reg-amber { --reg-tone: var(--brand-terracotta); }
+.reg-green { --reg-tone: #5c7a68; }
+.reg-rust  { --reg-tone: var(--brand-rust); }
+.reg-slate { --reg-tone: #6b5d52; }
+
+.reg-tile-label {
+  font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.reg-tile strong {
+  font-size: 1.75rem; line-height: 1.15; font-variant-numeric: tabular-nums;
+  color: var(--reg-tone);
+}
+.reg-tile small { font-size: 0.74rem; color: var(--text-secondary); line-height: 1.3; }
+
+/* The day's controls, sitting above the month. Nothing but the header row,
+   so it reads as a bar rather than a card with its contents missing. */
+.att-daybar { padding-top: 0.9rem; padding-bottom: 0.9rem; }
+.att-daybar .card-header-row { margin-bottom: 0; border-bottom: none; padding-bottom: 0; }
+
+/* ===========================================================================
+   Leave balances, one card a type. The ring is what is left of the year's
+   allowance; the figures under it are how that was arrived at. Applying for
+   leave sits in the same card, because choosing a type and reading what is
+   left of it are the same decision.
+   ======================================================================== */
+.lv-cards {
+  display: grid; gap: 1rem; margin: 0.4rem 0 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+.lv-card {
+  border: 1px solid var(--border-color); border-radius: 14px;
+  background: var(--bg-surface); overflow: hidden;
+}
+.lv-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.8rem 1rem 0;
+}
+.lv-card-head strong { font-size: 0.92rem; }
+
+.lv-dial { position: relative; width: 132px; height: 132px; margin: 0.5rem auto 0.8rem; }
+.lv-dial svg { width: 132px; height: 132px; transform: rotate(-90deg); }
+.lv-dial circle { fill: none; stroke-width: 4.5; stroke-linecap: round; }
+.lv-ring-bg { stroke: #ece6dc; }
+.lv-ring-fg {
+  stroke: var(--brand-olive);
+  animation: gm-draw 1000ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.lv-dial > span {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.lv-dial > span strong { font-size: 1.6rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.lv-dial > span small { font-size: 0.72rem; color: var(--text-secondary); margin-top: 3px; }
+
+.lv-figs {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 0;
+  border-top: 1px solid var(--border-color);
+}
+.lv-figs > div { padding: 0.55rem 1rem; border-bottom: 1px solid var(--border-color); }
+.lv-figs > div:nth-child(odd) { border-right: 1px solid var(--border-color); }
+.lv-figs dt {
+  font-size: 0.65rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.lv-figs dd { margin: 1px 0 0; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
+.lv-policy {
+  margin: 0; padding: 0.6rem 1rem 0.8rem;
+  font-size: 0.74rem; color: var(--text-secondary); line-height: 1.35;
+}
+.lv-sub { margin: 0 0 0.6rem; font-size: 1rem; }
+
+/* Applying for leave: a panel over the page rather than a form held open.
+   The balances are what the card is for; the fields arrive when asked for. */
+.lv-apply-row {
+  display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
+  padding-top: 0.2rem; margin-bottom: 1rem;
+}
+.lv-apply-row span { font-size: 0.8rem; color: var(--text-secondary); }
+
+.hb-drawer-back {
+  /* Over the sticky header and the sidebar, the way the app's other
+     overlays sit — at 60 the header was cutting the panel's own title off. */
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(31, 23, 15, 0.38);
+  display: flex; justify-content: flex-end;
+  animation: hb-fade 160ms ease both;
+}
+.hb-drawer {
+  width: min(460px, 100%); height: 100%;
+  display: flex; flex-direction: column;
+  background: var(--bg-surface);
+  box-shadow: -8px 0 28px rgba(31, 23, 15, 0.18);
+  animation: hb-slide 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes hb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes hb-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .hb-drawer-back, .hb-drawer { animation: none; }
+}
+
+.hb-drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color);
+}
+.hb-drawer-head h3 { margin: 0; font-size: 1.05rem; }
+.hb-drawer-x {
+  background: none; border: none; cursor: pointer; line-height: 1;
+  font-size: 1.5rem; color: var(--text-secondary); padding: 0 2px;
+}
+.hb-drawer-x:hover { color: var(--text-primary); }
+
+/* From — days — To, the way the span is actually read. */
+.hb-drawer-span {
+  display: grid; grid-template-columns: 1fr 76px 1fr; gap: 0.7rem; align-items: end;
+  margin: 1rem 1.25rem; padding: 0.9rem 1rem;
+  border: 1px solid var(--border-color); border-radius: 12px;
+}
+.hb-drawer-span label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.hb-drawer-span label > span {
+  font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+/* min-width: 0 — a date input carries its own intrinsic width and would
+   otherwise push the grid wider than the panel. */
+.hb-drawer-span input {
+  width: 100%; min-width: 0; height: 38px; padding: 0 0.55rem;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-surface); font: inherit;
+}
+.hb-drawer-days {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 38px; padding: 0 0.4rem;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--brand-cream);
+}
+.hb-drawer-days strong { font-size: 1.15rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.hb-drawer-days small { font-size: 0.68rem; color: var(--text-secondary); }
+
+.hb-drawer-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0 1.25rem 1rem; }
+.hb-drawer-body .form-group { display: flex; flex-direction: column; gap: 5px; margin-bottom: 1.15rem; }
+.hb-drawer-body .form-group > label {
+  font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary); margin: 0;
+}
+.hb-drawer-body select,
+.hb-drawer-body textarea {
+  width: 100%; font: inherit;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-surface);
+}
+.hb-drawer-body select { height: 38px; padding: 0 0.55rem; }
+.hb-drawer-body textarea { padding: 0.55rem; resize: vertical; }
+/* The hint is a note about the field, not a second label: it was reading at
+   body weight and competing with the value above it. */
+.hb-drawer-body .field-hint {
+  font-size: 0.78rem; color: var(--text-secondary); line-height: 1.35;
+}
+.hb-drawer-foot {
+  display: flex; justify-content: flex-end; gap: 0.6rem;
+  padding: 0.9rem 1.25rem; border-top: 1px solid var(--border-color);
+}
+
+/* Choosing a leave type, with what is left of each one on the row. A native
+   select can only put that in the label text; this keeps the figure in its
+   own column, where it reads as a balance rather than part of the name. */
+.lv-pick { position: relative; }
+.lv-pick-btn {
+  width: 100%; display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.55rem 0.7rem; cursor: pointer; text-align: left;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-input, var(--bg-surface)); font: inherit; color: inherit;
+}
+.lv-pick-btn > span { flex: 1; }
+.lv-pick-btn > small { font-size: 0.8rem; color: var(--text-secondary); }
+.lv-pick-btn > small.is-out { color: var(--brand-rust); }
+.lv-pick-btn > i { font-size: 1.15rem; color: var(--text-secondary); }
+.lv-pick-btn:hover { border-color: var(--brand-olive); }
+
+/* Sits under the list and over everything else, so a click anywhere closes
+   it without each row needing to know about the others. */
+.lv-pick-catch { position: fixed; inset: 0; z-index: 1; }
+
+.lv-pick-list {
+  position: absolute; z-index: 2; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 260px; overflow-y: auto; margin: 0; padding: 4px; list-style: none;
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 10px; box-shadow: 0 10px 24px rgba(31, 23, 15, 0.14);
+}
+.lv-pick-row {
+  width: 100%; display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.55rem 0.65rem; cursor: pointer; text-align: left;
+  background: none; border: none; border-radius: 7px; font: inherit; color: inherit;
+}
+.lv-pick-row > span { flex: 1; }
+.lv-pick-row > small { font-size: 0.8rem; color: var(--text-secondary); }
+.lv-pick-row:hover:not(:disabled) { background: var(--brand-cream); }
+.lv-pick-row.is-on { background: var(--brand-cream); font-weight: 600; }
+.lv-pick-row.is-out { cursor: not-allowed; color: var(--text-secondary); }
+.lv-pick-row.is-out > small { color: var(--brand-rust); }
+
+/* Where the year's leave went: one ring, a slice a type, with the figures
+   beside it. Loss of Pay is drawn in rust wherever it appears. */
+.lv-split {
+  display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;
+  padding: 0.3rem 0 1.1rem; border-bottom: 1px solid var(--border-color);
+  margin-bottom: 1.1rem;
+}
+.lv-donut { position: relative; width: 136px; height: 136px; flex: none; }
+.lv-donut svg { width: 136px; height: 136px; transform: rotate(-90deg); }
+.lv-donut circle {
+  fill: none; stroke-width: 5;
+  animation: hb-fade 500ms ease both;
+}
+.lv-donut > span {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.lv-donut > span strong { font-size: 1.5rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.lv-donut > span small { font-size: 0.72rem; color: var(--text-secondary); margin-top: 2px; }
+
+.lv-legend { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 200px; }
+.lv-legend li {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.3rem 0; font-size: 0.86rem;
+}
+.lv-legend i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.lv-legend span { flex: 1; }
+.lv-legend small { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.lv-none { padding-bottom: 0.9rem; }
+
+/* A type with nothing to run out of: the ring is the cost, not the balance. */
+.lv-dial.is-cost .lv-ring-fg { stroke: var(--brand-rust); opacity: 0.85; }
+
+/* Leave details: the type list on the left, its history or its policy on the
+   right. Wide, because a ledger row carries a sentence of reason. */
+.lv-more { font-size: 0.8rem; }
+.lv-detail {
+  width: min(1000px, 100%); max-height: 86vh;
+  display: flex; flex-direction: column;
+  background: var(--bg-surface); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 20px 48px rgba(31, 23, 15, 0.26);
+}
+.lv-detail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.95rem 1.25rem; border-bottom: 1px solid var(--border-color);
+}
+.lv-detail-head h3 { margin: 0; font-size: 1.05rem; }
+.lv-detail-body { display: flex; min-height: 0; flex: 1; }
+.lv-detail-nav {
+  width: 210px; flex: none; padding: 0.8rem; overflow-y: auto;
+  border-right: 1px solid var(--border-color);
+}
+.lv-detail-nav button {
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 0.55rem 0.7rem; margin-bottom: 2px;
+  background: none; border: none; border-radius: 8px;
+  font: inherit; color: var(--text-secondary);
+}
+.lv-detail-nav button:hover { background: var(--brand-cream); color: var(--text-primary); }
+.lv-detail-nav button.is-on {
+  background: var(--brand-cream); color: var(--text-primary); font-weight: 600;
+}
+.lv-detail-main { flex: 1; min-width: 0; overflow-y: auto; padding: 1rem 1.25rem 1.25rem; }
+.lv-detail-main .hb-seg { margin-bottom: 1rem; }
+.lv-ledger td { vertical-align: top; }
+.lv-ledger .badge { margin-left: 0.5rem; }
+.lv-chg {
+  display: inline-block; min-width: 46px; text-align: center;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 0.8rem; font-variant-numeric: tabular-nums;
+}
+.lv-chg.is-up { background: #e6efe7; color: #3b5a49; }
+.lv-chg.is-down { background: #f6e3dd; color: var(--brand-rust); }
+.lv-chg.is-flat { background: var(--brand-cream); color: var(--text-secondary); }
+
+@media (max-width: 760px) {
+  .lv-detail-body { flex-direction: column; }
+  .lv-detail-nav {
+    width: auto; display: flex; gap: 0.4rem; overflow-x: auto;
+    border-right: none; border-bottom: 1px solid var(--border-color);
+  }
+  .lv-detail-nav button { width: auto; white-space: nowrap; margin: 0; }
+}
+
+/* ===========================================================================
+   Request attendance regularization. Two different claims wear that name —
+   "I worked, add the times" and "let this day off" — and asking for them
+   through one undifferentiated form is what made it confusing. The choice
+   is made first, and the fields follow from it.
+   ======================================================================== */
+.hb-rr { max-width: 580px; }
+.hb-rr-body { padding: 1.1rem 0 0.25rem; display: flex; flex-direction: column; gap: 1rem; }
+.hb-rr-body .form-group { margin: 0; }
+
+.hb-rr-top {
+  display: flex; gap: 2rem; flex-wrap: wrap;
+  padding-bottom: 0.95rem; border-bottom: 1px solid var(--border-color);
+}
+.hb-rr-top > div { display: flex; flex-direction: column; gap: 2px; }
+.hb-rr-top span {
+  font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.hb-rr-top strong { font-size: 0.95rem; }
+
+.hb-rr-modes { display: grid; gap: 0.6rem; }
+.hb-rr-modes label {
+  display: flex; align-items: flex-start; gap: 0.7rem; cursor: pointer;
+  padding: 0.75rem 0.9rem; border: 1px solid var(--border-color); border-radius: 10px;
+}
+.hb-rr-modes label.is-on { border-color: var(--brand-olive); background: var(--brand-cream); }
+.hb-rr-modes input { margin-top: 3px; accent-color: var(--brand-olive); }
+/* min-width: 0 — without it the option's text sets the panel's width and
+   the whole form scrolls sideways behind a fixed-width drawer. */
+.hb-rr-modes span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hb-rr-modes label { min-width: 0; }
+.hb-rr-modes strong, .hb-rr-modes small { overflow-wrap: anywhere; }
+.hb-rr-modes strong { font-size: 0.92rem; }
+.hb-rr-modes small { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.35; }
+
+.hb-rr-allow {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.6rem 0.8rem; border-radius: 9px;
+  background: var(--brand-cream); font-size: 0.82rem; color: var(--text-secondary);
+}
+.hb-rr-allow.is-blocked {
+  background: #f6e3dd; color: var(--brand-rust);
+}
+.hb-rr-allow i { font-size: 1rem; line-height: 1.3; }
+
+/* min-width: 0 — a native time input carries its own intrinsic width, and
+   three of them side by side pushed the panel's content wider than the
+   panel, which scrolled the whole form sideways. */
+.hb-rr-times { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.7rem; align-items: end; }
+.hb-rr-times > .form-group { min-width: 0; }
+.hb-rr-body .form-control { width: 100%; min-width: 0; box-sizing: border-box; }
+.hb-rr-hours {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-width: 84px; height: 40px; padding: 0 0.7rem;
+  border: 1px solid var(--border-color); border-radius: 8px; background: var(--brand-cream);
+}
+.hb-rr-hours span { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+.hb-rr-hours strong { font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+
+.hb-rr-foot {
+  display: flex; align-items: center; gap: 0.7rem;
+  border-top: 1px solid var(--border-color); padding-top: 1rem;
+}
+.hb-rr-foot > span { margin-right: auto; font-size: 0.78rem; color: var(--text-secondary); }
+
+/* The regularisation request, as a side panel: it is about one day on the
+   calendar behind it, and a centred modal threw that day away. */
+.hb-drawer.hb-rr { width: min(520px, 100%); max-width: none; }
+.hb-rr-form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.hb-drawer-body.hb-rr-body { padding: 1.1rem 1.25rem 1.25rem; gap: 1.1rem; }
+/* The note shrinks; the two buttons never wrap under each other. */
+.hb-rr-foot { flex-wrap: nowrap; align-items: center; }
+.hb-rr-foot > span { min-width: 0; line-height: 1.3; }
+.hb-rr-foot .btn { flex: none; }
+
+/* What a day will cost, when clicking it is how you argue with it. */
+.hb-day-cost.is-askable { cursor: pointer; transition: box-shadow 120ms ease, transform 120ms ease; }
+.hb-day-cost.is-askable:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(31, 23, 15, 0.1); }
+.hb-day-cost.is-askable:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 2px; }
+.hb-day-cost-cta { display: block; margin-top: 4px; font-weight: 600; color: var(--brand-olive); }
+
+/* What the day costs if nothing is done, stated inside the request panel —
+   it is the reason the panel is open. */
+.hb-rr-cost {
+  padding: 0.8rem 0.95rem; border-radius: 10px;
+  background: #f6efe2; border-left: 3px solid var(--brand-terracotta);
+}
+.hb-rr-cost strong { display: block; font-size: 0.88rem; color: #6d4c2f; }
+.hb-rr-cost ul { margin: 0.45rem 0 0.45rem; padding-left: 1.1rem; }
+.hb-rr-cost li { font-size: 0.85rem; line-height: 1.45; }
+.hb-rr-cost small { font-size: 0.78rem; color: var(--text-secondary); }
+
+/* Closing the leave year: a deliberate act, so it is stated with what it
+   will do before the button that does it. */
+.hb-yearend {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin: 0.9rem 0;
+  padding: 0.85rem 1rem; border-radius: 10px;
+  background: var(--brand-cream); border-left: 3px solid var(--brand-olive);
+}
+.hb-yearend > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hb-yearend strong { font-size: 0.9rem; }
+.hb-yearend span { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+.hb-yearend.is-done { border-left-color: var(--border-color); opacity: 0.85; }
+
+/* A figure the policy decides, shown as decided, with a modelling override
+   beside it rather than an input that looks like the decision. */
+.calc-auto { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; justify-content: flex-end; }
+.calc-auto-verdict {
+  padding: 2px 10px; border-radius: 999px; font-size: 0.82rem; font-weight: 600;
+}
+.calc-auto-verdict.is-yes { background: #e6efe7; color: #3b5a49; }
+.calc-auto-verdict.is-no { background: var(--brand-cream); color: var(--text-secondary); }
+.calc-auto-model { display: flex; align-items: center; gap: 5px; font-size: 0.76rem; color: var(--text-secondary); }
+.calc-auto-model input { accent-color: var(--brand-olive); }
+
+/* The rate cards are reference, so their heading carries the control that
+   opens them and the page ends there until it is pressed. */
+.hb-ref-head { align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.hb-ref-head > div { flex: 1; min-width: 220px; }
+/* The coach's own cycle picker sits above the cards it drives. */
+.hb-cycle-own { margin-bottom: 1.1rem; border: 1px solid var(--border-color); border-radius: 14px; }
+
+/* ===========================================================================
+   PHONES — the coach's side of the app
+
+   A coach reads this on a phone between sessions, so everything they use
+   has to hold at 360px without one figure landing on another. The rules
+   are grouped by what breaks: rows that must stop being rows, fixed widths
+   that must stop being fixed, and text that must be allowed to wrap.
+   ======================================================================== */
+@media (max-width: 720px) {
+  /* The header is a fixed height on desktop. On a phone its contents wrap
+     onto three lines, and a fixed height meant those lines spilled out of
+     the bar and sat on top of the page title underneath. */
+  .top-header {
+    height: auto; min-height: var(--header-height);
+    flex-wrap: wrap; align-items: flex-start;
+    gap: 0.5rem 0.75rem; padding: 0.6rem 1rem;
+  }
+  .header-left { flex: 1 1 100%; gap: 0.6rem; align-items: flex-start; }
+  .header-title h1 { font-size: 1.1rem; line-height: 1.25; }
+  .header-title p { font-size: 0.74rem; line-height: 1.35; }
+  .header-right { flex: 1 1 100%; gap: 0.6rem; flex-wrap: wrap; align-items: flex-end; }
+  .header-right .control-group { flex: 1 1 140px; min-width: 0; }
+  .control-group label { font-size: 0.68rem; }
+  .header-signout { white-space: nowrap; }
+
+  /* Page gutters. 2rem a side leaves under 300px of content on a phone. */
+  .view-content-wrapper { padding: 1rem; gap: 1.25rem; }
+  /* A note set against a title on the right has no right to be on a phone:
+     it reads as a ragged column beside nothing. */
+  .view-purpose-side { align-items: flex-start; text-align: left; }
+  .view-purpose-side small { max-width: none; }
+  .content-view { gap: 1.1rem; }
+  .card { padding: 1rem; }
+
+  /* A header row is a row until the two halves stop fitting side by side,
+     at which point the right-hand control lands on the title. */
+  .card-header-row,
+  .page-header-row,
+  .hb-pay-head {
+    flex-direction: column; align-items: stretch; gap: 0.6rem;
+  }
+  .card-header-row > *, .page-header-row > * { min-width: 0; }
+  .tracker-toolbar-controls { flex-wrap: wrap; gap: 0.5rem; }
+  .tracker-toolbar-controls .header-select,
+  .tracker-toolbar-controls .btn { flex: 1 1 auto; }
+  .header-select { min-width: 0; width: 100%; }
+
+  /* The stat cards and the dials: one a row, closer together. */
+  .stats-row { grid-template-columns: 1fr; gap: 0.85rem; }
+  .gm-row { grid-template-columns: 1fr; gap: 0.85rem; }
+  .lv-cards { grid-template-columns: 1fr; }
+  /* The caption inside the ring ran under the stroke once the card was
+     full width: the ring did not shrink but the words got longer lines. */
+  .lv-dial > span { padding: 0 22px; text-align: center; }
+  .lv-dial > span small { font-size: 0.66rem; line-height: 1.2; }
+  .gm-dial strong { font-size: 1.35rem; }
+  .reg-tiles { grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+
+  /* Cycle pickers: the label above the control, both full width. */
+  .hb-cycle-bar, .hb-cycle-own { align-items: stretch; }
+  .hb-cycle-pick { flex-direction: column; align-items: stretch; gap: 3px; }
+  .hb-cycle-pick .header-select { width: 100%; }
+
+  /* The day bar. Three buttons across a phone is three half-words. */
+  .att-daybar .card-header-row { gap: 0.75rem; }
+  .att-daybar .table-btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .att-daybar .table-btn-group .btn { width: 100%; justify-content: center; }
+  .att-daybar .table-btn-group .btn:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .att-daybar h3 { font-size: 1rem; line-height: 1.3; }
+
+  /* The month grid has to stay seven columns — it is a calendar — so the
+     cells lose their words instead of their shape. The day's state stays
+     as the cell's own colour, and the detail is read underneath. */
+  .att-cal { gap: 3px; }
+  .att-cal-day, .att-cal-pad { min-height: 46px; }
+  .att-cal-day { padding: 4px; gap: 1px; align-items: center; }
+  .att-cal-n { font-size: 0.75rem; padding: 0; }
+  .att-cal-tag {
+    font-size: 0; padding: 0; width: 7px; height: 7px; border-radius: 99px;
+  }
+  .att-cal-h, .att-cal-note { display: none; }
+  .att-cal-dow { font-size: 0.6rem; text-align: center; padding: 0 0 2px; }
+
+  /* Figures-only pay table: the fixed 190px money column crowded the name
+     out at phone width. */
+  .hb-pay-slim th, .hb-pay-slim td { padding: 0.6rem 0.7rem; }
+  .hb-pay-slim th.num-col, .hb-pay-slim td.num-col { width: 110px; }
+  .hb-pay-slim th:last-child:not(.num-col),
+  .hb-pay-slim td:last-child:not(.num-col) { width: 86px; }
+  .hb-pay-slim .btn-sm { padding: 4px 8px; font-size: 0.75rem; }
+
+  /* Side panels take the whole screen; a 520px panel on a 390px phone is
+     a panel with its right-hand edge off the screen. */
+  .hb-drawer, .hb-drawer.hb-rr { width: 100%; }
+  .hb-drawer-span { grid-template-columns: 1fr; gap: 0.6rem; }
+  .hb-drawer-days { flex-direction: row; gap: 6px; justify-self: start; padding: 0 0.8rem; }
+  .hb-rr-times { grid-template-columns: 1fr 1fr; }
+  .hb-rr-times .hb-rr-hours { grid-column: 1 / -1; width: 100%; }
+  .hb-rr-top { gap: 1rem; }
+  .hb-rr-foot { flex-wrap: wrap; }
+  .hb-rr-foot > span { flex: 1 0 100%; margin: 0 0 0.4rem; }
+
+  /* Modals: a dialog with 24px of backdrop each side on a phone is wasted
+     width, and the leave-details nav is already horizontal below 760px. */
+  .modal-backdrop { padding: 0.75rem; }
+  .modal-card { max-width: 100%; }
+  .hb-detail-backdrop { padding: 0.75rem; }
+  .lv-detail { max-height: 92vh; }
+
+  /* Lists where a label and its figure sit on one line. */
+  .detail-cert-list li { flex-direction: column; align-items: flex-start; gap: 5px; }
+  .lv-apply-row { flex-direction: column; align-items: stretch; }
+  .lv-apply-row .btn { width: 100%; justify-content: center; }
+  .ms-card .card-header-row { align-items: stretch; }
+
+  /* Any table that cannot be reshaped scrolls inside its own box rather
+     than widening the page — a page that scrolls sideways takes the
+     headings with it. For that to work the box has to be allowed to be
+     narrower than its contents: a flex or grid child defaults to its
+     content's width, which is how one wide table pushed every card on the
+     page out past the screen. */
+  .card, .stat-card, .gm-card, .lv-card { min-width: 0; }
+  .table-container { -webkit-overflow-scrolling: touch; max-width: 100%; min-width: 0; }
+  .data-table { min-width: 520px; }
+  .hb-pay-slim, .hb-slip .slip-pairs { min-width: 0; }
+}
+
+/* Small phones. */
+@media (max-width: 400px) {
+  .view-content-wrapper { padding: 0.75rem; }
+  .reg-tiles { grid-template-columns: 1fr; }
+  .gm-dial, .gm-ring { width: 76px; height: 76px; }
+  .lv-dial { width: 112px; height: 112px; }
+  .lv-dial svg { width: 112px; height: 112px; }
+  .att-cal-day, .att-cal-pad { min-height: 40px; }
+  .hb-pay-slim th.num-col, .hb-pay-slim td.num-col { width: 92px; }
+  .hb-figs, .lv-figs { grid-template-columns: 1fr; }
+  .lv-figs > div:nth-child(odd) { border-right: none; }
+}
+
+/* Closing the menu on a phone. The drawer covers the page, so the way out
+   has to be on the drawer: a cross in its header, and the dimmed page
+   beside it. Neither exists on desktop, where the menu is just the page. */
+.sidebar-close { display: none; }
+.sidebar-scrim { display: none; }
+@media (max-width: 900px) {
+  .sidebar-scrim {
+    display: block; position: fixed; inset: 0; z-index: 99;
+    background: rgba(31, 23, 15, 0.45);
+    animation: hb-fade 160ms ease both;
+  }
+  .brand { position: relative; padding-right: 3.25rem; }
+  .sidebar-close {
+    display: flex; align-items: center; justify-content: center;
+    position: absolute; top: 1.1rem; right: 0.9rem;
+    width: 34px; height: 34px; padding: 0; cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 9px;
+    background: rgba(255, 255, 255, 0.08); color: #fff; font-size: 1.4rem;
+  }
+  .sidebar-close:hover { background: rgba(255, 255, 255, 0.16); }
+  .sidebar-close:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 2px; }
+}
+
+/* Reading the roster's month from the app, on Coach Master. */
+.hb-fetch-bar {
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  padding: 0.9rem 1.1rem; margin-bottom: 1rem;
+  border: 1px solid var(--border-color); border-left: 3px solid var(--brand-navy);
+  border-radius: 12px; background: var(--bg-surface);
+}
+.hb-fetch-bar > div:first-child { flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hb-fetch-bar strong { font-size: 0.95rem; }
+.hb-fetch-bar span { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+.hb-fetch-pick { display: flex; flex-direction: column; gap: 3px; }
+.hb-fetch-pick > span {
+  font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.hb-fetch-modal { width: min(880px, 100%); }
+.hb-fetch-sum {
+  display: flex; gap: 1.25rem; flex-wrap: wrap;
+  padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-color);
+  font-size: 0.82rem; color: var(--text-secondary);
+}
+.hb-fetch-sum strong { font-size: 1rem; color: var(--text-primary); }
+.hb-fetch-sum .is-bad strong { color: var(--brand-rust); }
+.hb-fetch-hit > td { background: #f6f3e9; }
+@media (max-width: 720px) {
+  .hb-fetch-bar { align-items: stretch; }
+  .hb-fetch-bar .btn { width: 100%; justify-content: center; }
+  .hb-fetch-sum { gap: 0.5rem 1rem; }
+}

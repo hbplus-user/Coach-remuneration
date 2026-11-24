@@ -229,6 +229,28 @@ export const LEAVE_TYPES = [
     note: '5 working days, paid, within 3 months of the birth. May be split.'
   },
   {
+    // Earned rather than accrued: a day worked that nobody was owed — a
+    // weekly off, or a published holiday. Human Resources credits it against
+    // the day it was earned for; nothing credits itself.
+    id: 'COMPOFF', label: 'Comp Off', accrual: 0, carryForwardMax: 0,
+    noticeDays: 1, halfDayAllowed: true, paid: true, credited: true,
+    note: 'Credited for a day worked that was not owed. Nothing accrues — it is granted, then spent.'
+  },
+  {
+    // Taken on the death of an immediate family member. Nobody gives notice
+    // for this, and nobody is asked to apply before they go.
+    id: 'BEREAVEMENT', label: 'Bereavement Leave', annualDays: 3, carryForwardMax: 0,
+    noticeDays: 0, sameDayAllowed: true, backdateDays: 7, halfDayAllowed: false,
+    paid: true, note: 'Three days on the death of an immediate family member. No notice needed.'
+  },
+  {
+    // Everything the policy did not foresee: a court summons, an exam, a
+    // posting. There is no entitlement, so it is credited when granted.
+    id: 'SPECIAL', label: 'Special Leave', accrual: 0, carryForwardMax: 0,
+    noticeDays: 3, halfDayAllowed: true, paid: true, credited: true,
+    note: 'Granted case by case by Human Resources. Days are credited when the request is agreed.'
+  },
+  {
     id: 'LOP', label: 'Loss of Pay', accrual: 0, carryForwardMax: 0,
     noticeDays: 0, halfDayAllowed: true, paid: false, unlimited: true,
     note: 'Always available. Deducted from pay, and shown as its own payslip line.'
