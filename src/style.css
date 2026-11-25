@@ -6396,6 +6396,74 @@ form {
 .gm-card b { font-size: 0.92rem; margin-top: 0.55rem; }
 .gm-card small { font-size: 0.76rem; color: var(--text-secondary); line-height: 1.35; }
 
+/* "View all incidents" on the Record card. A quiet text button that only
+   shows when there is something to open. */
+.gm-view-btn {
+  margin-top: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.7rem;
+  border: 1px solid var(--border-color, #d9d2c6);
+  border-radius: 999px;
+  background: var(--bg-surface, #fff);
+  color: var(--brand-brown, #7a4a1f);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.gm-view-btn:hover { background: var(--bg-muted, #f3efe8); border-color: var(--brand-brown, #7a4a1f); }
+.gm-view-btn i { font-size: 0.95rem; }
+
+/* Incidents-on-record panel, opened from the Record card. */
+.inc-view-stats {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.inc-view-stats > div {
+  flex: 1;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border-color, #e4ddd0);
+  border-radius: 12px;
+  background: var(--bg-muted, #f7f4ee);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.inc-view-stats strong { font-size: 1.45rem; line-height: 1; color: var(--text-primary); }
+.inc-view-stats span { font-size: 0.72rem; color: var(--text-secondary); }
+
+.inc-view-list { list-style: none; margin: 0 0 1rem; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.inc-view-list li {
+  border: 1px solid var(--border-color, #e4ddd0);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg-surface, #fff);
+}
+.inc-view-list li.is-cycle { border-left: 3px solid var(--brand-brown, #7a4a1f); }
+.inc-view-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.inc-view-top strong { font-size: 0.9rem; color: var(--text-primary); }
+.inc-view-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.inc-view-meta span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.inc-view-pill {
+  background: rgba(122, 74, 31, 0.1);
+  color: var(--brand-brown, #7a4a1f);
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.inc-view-cons { margin: 0.5rem 0 0; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4; }
+
 .gm-dial { position: relative; width: 88px; height: 88px; margin: 0.5rem 0 0.1rem; }
 .gm-dial strong {
   position: absolute; inset: 0;
@@ -6859,7 +6927,33 @@ form {
 .hb-ref-head { align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .hb-ref-head > div { flex: 1; min-width: 220px; }
 /* The coach's own cycle picker sits above the cards it drives. */
-.hb-cycle-own { margin-bottom: 1.1rem; border: 1px solid var(--border-color); border-radius: 14px; }
+.hb-cycle-own {
+  margin-bottom: 1.1rem; border: 1px solid var(--border-color);
+  border-radius: 14px; overflow: hidden; position: relative;
+}
+/* A flat cream panel read as empty space with the heading floating in it.
+   The cycle now carries its own colour — a graded wash and a left accent —
+   so a running cycle and a closed one are told apart at a glance, and the
+   heading sits on a surface rather than on nothing. */
+.hb-cycle-own::before {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 4px;
+}
+.hb-cycle-own.is-open {
+  background: linear-gradient(135deg, #eef1e4 0%, var(--bg-surface) 62%);
+  border-color: #cdd4b4;
+}
+.hb-cycle-own.is-open::before { background: var(--brand-olive); }
+.hb-cycle-own.is-open strong { color: #3f4a28; }
+.hb-cycle-own.is-closed {
+  background: linear-gradient(135deg, #efe8de 0%, var(--bg-surface) 62%);
+  border-color: var(--border-color);
+}
+.hb-cycle-own.is-closed::before { background: var(--brand-brown); }
+.hb-cycle-own.is-closed strong { color: var(--brand-brown); }
+/* The divider above the picker sits on a tinted surface now, so it is drawn
+   against that rather than the card's border colour. */
+.hb-cycle-own .hb-cycle-pick + span,
+.hb-cycle-own > div:last-child { border-color: rgba(31, 23, 15, 0.1) !important; }
 
 /* ===========================================================================
    PHONES — the coach's side of the app
@@ -7052,4 +7146,26 @@ form {
   .hb-fetch-bar { align-items: stretch; }
   .hb-fetch-bar .btn { width: 100%; justify-content: center; }
   .hb-fetch-sum { gap: 0.5rem 1rem; }
+}
+
+/* Who the attendance page is about, above the jobs that can be done with
+   them. The name was a tab, which made choosing a person look like a task. */
+.hb-who {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem;
+  padding: 0.8rem 1.1rem; border-radius: 12px;
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+}
+.hb-who > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.hb-who > div > span {
+  font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.hb-who strong { font-size: 1.05rem; }
+.hb-who small { font-size: 0.78rem; color: var(--text-secondary); }
+.hb-who-pick { display: flex; align-items: center; gap: 0.5rem; }
+.hb-who-pick > span { font-size: 0.78rem; color: var(--text-secondary); }
+@media (max-width: 720px) {
+  .hb-who { align-items: stretch; }
+  .hb-who-pick { flex-direction: column; align-items: stretch; gap: 3px; }
 }

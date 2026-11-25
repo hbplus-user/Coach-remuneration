@@ -2331,7 +2331,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // everyone off" wants the shape of the month, not to step through dates.
   const [awayView, setAwayView] = useState('month');
   const [awayMonth, setAwayMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [attendanceTab, setAttendanceTab] = useState('leave');
+  const [attendanceTab, setAttendanceTab] = useState('coach');
   // Attendance and leave are two jobs, not one screen: logging a day and
   // spending a balance have nothing to say to each other.
   const [coachSubTab, setCoachSubTab] = useState('attendance');
@@ -2387,7 +2387,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
       leave: LEAVE_APPROVER_ROLES,
       regularization: REGULARIZATION_APPROVER_ROLES
     }[attendanceTab];
-    if (gated && !gated.includes(currentRole)) setAttendanceTab('floor');
+    if (gated && !gated.includes(currentRole)) setAttendanceTab('coach');
   }, [currentRole, attendanceTab]);
   const [currentCoachContext, setCurrentCoachContext] = useState(profile?.coach_id ?? "");
   const [currentRmContext, setCurrentRmContext] = useState(profile?.rm_id ?? "RM_01");
@@ -2576,6 +2576,10 @@ export default function App({ session = null, profile = null, onSignOut = null }
   // charged, the dials and the milestone bar all follow it. Null means the
   // one running now, so it rolls over on its own.
   const [coachCycle, setCoachCycle] = useState(null);
+  // When the coach taps "View" on the Record card, this holds the scope to
+  // list — 'all' for everything on record, or a period_month to narrow to the
+  // cycle standing. Null keeps the panel shut.
+  const [myIncidentsView, setMyIncidentsView] = useState(null);
   // Bulk upload: the month/file dialog, then the preview that must be accepted.
   const [bulkDialog, setBulkDialog] = useState(null);   // { mode, tab, month }
   const [bulkPreview, setBulkPreview] = useState(null); // { tab, month, scope, fileName, changes, skipped, rejected }
@@ -2599,9 +2603,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
   const [changeLeaveNote, setChangeLeaveNote] = useState("");
 
   // Partial Leave Approval modal state
-  const [partialLeaveTarget, setPartialLeaveTarget] = useState(null);
-  const [partialApprovedDays, setPartialApprovedDays] = useState(0.5);
-  const [partialLeaveNote, setPartialLeaveNote] = useState("");
 
   // Attendance Regularization modal states
   const [raiseRegModal, setRaiseRegModal] = useState(false);
@@ -7443,65 +7444,9 @@ export default function App({ session = null, profile = null, onSignOut = null }
    * the reason more than one refused outright, because the decision looks
    * arbitrary without it.
    */
-  const handlePartialApproval = (application) => {
-    if (!LEAVE_APPROVER_ROLES.includes(currentRole)) {
-      showToast("Your role cannot decide leave applications.", "error");
-      return;
-    }
-    const totalDays = Number(application.days) || 1;
-    const defaultApproved = totalDays > 1 ? Math.floor(totalDays / 2) || 0.5 : 0.5;
-    setPartialLeaveTarget(application);
-    setPartialApprovedDays(defaultApproved);
-    setPartialLeaveNote("");
-    setActiveModal('partial-leave');
-  };
-
-  const handleConfirmPartialApproval = (e) => {
-    if (e) e.preventDefault();
-    if (!partialLeaveTarget) return;
-    const application = partialLeaveTarget;
-    const coach = coaches.find(c => c.id === application.coach_id);
-    const totalDays = Number(application.days);
-    const approved = Number(partialApprovedDays);
-
-    if (!Number.isFinite(approved) || approved <= 0 || approved > totalDays) {
-      showToast(`Enter an approved amount between 0.5 and ${totalDays}.`, "error");
-      return;
-    }
-
-    if (approved === totalDays) {
-      handleLeaveDecision(application, 'Approved');
-      setActiveModal(null);
-      setPartialLeaveTarget(null);
-      return;
-    }
-
-    if (!partialLeaveNote || !partialLeaveNote.trim()) {
-      showToast("Refusing part of an application requires a reason.", "error");
-      return;
-    }
-
-    const note = partialLeaveNote.trim();
-    const returned = Math.round((totalDays - approved) * 10) / 10;
-
-    setLeaveApplications(prev => prev.map(a => a.id === application.id
-      ? { ...a, status: 'Partially_Approved', approved_days: approved,
-          decided_by: actorName, decided_at: new Date().toISOString(), decision_note: note }
-      : a));
-    setLeaveBalances(prev => prev.map(b =>
-      (b.coach_id === application.coach_id && b.type_id === application.type_id)
-        ? { ...b, used: Math.max(0, (Number(b.used) || 0) - returned) }
-        : b));
-
-    logAudit("Leave Partially Approved",
-      `${approved} of ${application.days} day(s) ${leaveType(application.type_id)?.label} approved for ` +
-      `${coach?.name || application.coach_id}; ${returned} returned — ${note}`);
-    showToast(`${approved} day(s) approved, ${returned} returned to balance.`, "info");
-
-    setActiveModal(null);
-    setPartialLeaveTarget(null);
-    setPartialLeaveNote("");
-  };
+  // Partial approval — approve some days, refuse the rest — was taken out of
+  // the decision cards. Applications already decided that way keep their
+  // Partially_Approved status and still read correctly everywhere.
 
   /**
    * Change what kind of leave this is, which is how a refused Paid Leave
@@ -10969,6 +10914,50 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   new Date(v.incident_date) >= new Date(myRecord.period_start) &&
                   new Date(v.incident_date) <= new Date(myRecord.period_end)) : [];
 
+                // Score, attendance and streak metrics for the coach dials
+                let finalScore = 0, finalBand = "0-30 Non-Functional", isDraft = true, attendance = 0;
+                if (myRecord) {
+                  const calcObj = myRecord.hb_score != null ? myRecord : computeHBPlusScore(me, myRecord, vCfg);
+                  finalScore = Number(calcObj?.hbScore ?? calcObj?.hb_score ?? 0);
+                  finalBand = getPerformanceBand(finalScore).label;
+                  isDraft = myRecord.status === 'DRAFT';
+                  // The % field is only filled once the card is scored. Before
+                  // that it reads 0 even when the meeting counts for the cycle
+                  // are in, so the dial sat at 0 against real data. Derive it
+                  // from the counts when the stored % is absent.
+                  const sched = Number(myRecord.meetings_scheduled) || 0;
+                  const att = Number(myRecord.meetings_attended) || 0;
+                  attendance = Number(myRecord.attendance_pct) > 0
+                    ? Number(myRecord.attendance_pct)
+                    : (sched > 0 ? Math.round((att / sched) * 1000) / 10 : 0);
+                }
+                const scorePct = (Number(finalScore) || 0) / 90 * 100;
+                const attPct = Number(attendance) || 0;
+
+                const streakEvery = vCfg.id === 'V3' ? 15 : 10;
+                const streakPays = vCfg.id === 'V3' ? 500 : 200;
+                const streakHave = Number(myRecord?.five_star_streak) || 0;
+                const streakInto = streakHave % streakEvery;
+                const streakToGo = streakEvery - streakInto;
+                const streakWon = Math.floor(streakHave / streakEvery);
+
+                const fromAttendance = periodVios.filter(isSystemAttendance);
+                const charged = periodVios
+                  .filter(isPenaltyChargeable)
+                  .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
+                const lop = Number(myRecord?.lop_days) || 0;
+                const clean = periodVios.length === 0;
+
+                const RING = 119.38; // 2πr, r = 19
+                const off = (pct) => RING - (Math.max(0, Math.min(100, pct)) / 100) * RING;
+                const ring = (pct, tone) => (
+                  <svg className={`gm-ring gm-ring-${tone}`} viewBox="0 0 44 44" aria-hidden="true">
+                    <circle className="gm-ring-bg" cx="22" cy="22" r="19" />
+                    <circle className="gm-ring-fg" cx="22" cy="22" r="19"
+                      style={{ '--off': off(pct), strokeDasharray: RING }} />
+                  </svg>
+                );
+
                 return (
                   <>
                     {isPreviewingCoach && (
@@ -10984,7 +10973,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </span>
                       </div>
                     )}
-                    <div className="page-header-row">
+                    <div className="page-header-row" style={{ marginBottom: '1rem' }}>
                       <div>
                         <h2>{me.name}</h2>
                         <p className="text-secondary" style={{ fontSize: '0.85rem', marginTop: '4px' }}>
@@ -10992,95 +10981,230 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           {me.employment_stage ? ` · ${me.employment_stage}` : ''}
                         </p>
                       </div>
-                      <button
-                        className={open ? 'btn btn-secondary' : 'btn btn-primary'}
-                        onClick={() => open ? handleAttendanceLogout(me) : handleAttendanceLogin(me)}
-                      >
-                        <i className={`bx ${open ? 'bx-log-out' : 'bx-log-in'}`}></i>
-                        {open ? ' Log out' : ' Log in'}
-                      </button>
                     </div>
 
-                    {/* One picker for the whole dashboard: the score, what
-                        was charged, the dials and the milestone bar all read
-                        the cycle chosen here. Today's clock is the exception
-                        — it is today whichever month is being looked at. */}
-                    {myCycles.length > 0 && (
-                      <div className="hb-cycle-bar hb-cycle-own">
-                        <div>
-                          <strong>Pay cycle · {shownCycle}</strong>
-                          <span>
-                            {myRecord?.period_start
-                              ? `${new Date(myRecord.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(myRecord.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
-                              : ''}
-                            {isOpenCycle ? ' · running now' : ' · a closed cycle'}
+                    {/* Top row: Left side Today tracking card with Logged in status & Log in/Log out button;
+                        Right side: Pay cycle bar with cycle selector */}
+                    <div className="coach-top-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem', alignItems: 'stretch', marginBottom: '1.25rem' }}>
+                      <div className="stat-card stat-teal" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '0.85rem', padding: '1.15rem 1.25rem', borderLeft: '4px solid var(--brand-olive, #5d6f46)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div className="stat-icon" style={{ margin: 0, width: '38px', height: '38px', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <i className="bx bxs-time-five" style={{ fontSize: '1.25rem' }}></i>
+                            </div>
+                            <span className="gm-kicker" style={{ fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.08em' }}>Today</span>
+                          </div>
+                          <span className={`badge ${open ? 'badge-success' : 'badge-secondary'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', padding: '4px 10px', borderRadius: '999px' }}>
+                            {open ? (
+                              <>
+                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2e7d32', display: 'inline-block' }}></span>
+                                Logged in
+                              </>
+                            ) : (
+                              'Logged out'
+                            )}
                           </span>
                         </div>
-                        <label className="hb-cycle-pick">
-                          <span>Show cycle</span>
-                          <select className="header-select" value={shownCycle}
-                                  onChange={(e) => setCoachCycle(e.target.value)}>
-                            {myCycles.map(r => (
-                              <option key={r.period_month} value={r.period_month}>
-                                {r.period_month}{r.period_month === currentPeriodMonth ? ' · running now' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                    )}
 
-                    <div className="stats-row">
-                      <div className="stat-card stat-teal">
-                        <div className="stat-icon"><i className="bx bxs-time-five"></i></div>
-                        <div className="stat-info">
-                          <h3>Today</h3>
-                          <h2 className={open ? 'att-ticking' : ''}>{asClock(hoursToday)}</h2>
-                          <p>
+                        <div style={{ margin: '0.15rem 0' }}>
+                          <h2 className={open ? 'att-ticking' : ''} style={{ fontSize: '2.1rem', fontWeight: 700, margin: 0, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>
+                            {asClock(hoursToday)}
+                          </h2>
+                          <p style={{ margin: '6px 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                             {hoursToday >= expected
                               ? `Done — ${asClock(hoursToday - expected)} beyond ${expected} h`
                               : `${asClock(expected - hoursToday)} still to log of ${expected} h`}
                           </p>
                         </div>
+
+                        <button
+                          className={open ? 'btn btn-secondary' : 'btn btn-primary'}
+                          style={{ width: '100%', justifyContent: 'center', marginTop: 'auto', padding: '0.6rem 1rem' }}
+                          onClick={() => open ? handleAttendanceLogout(me) : handleAttendanceLogin(me)}
+                        >
+                          <i className={`bx ${open ? 'bx-log-out' : 'bx-log-in'}`}></i>
+                          {open ? ' Log out' : ' Log in'}
+                        </button>
                       </div>
-                      <div className="stat-card stat-violet">
-                        <div className="stat-icon"><i className="bx bxs-medal"></i></div>
-                        <div className="stat-info">
-                          <h3>HB+ Score</h3>
-                          <h2>{myScore?.score != null ? Number(myScore.score).toFixed(2) : '—'}</h2>
-                          <p>{myScore?.band || 'Not scored yet'} · {shownCycle}</p>
+
+                      {myCycles.length > 0 && (
+                        <div className={`hb-cycle-bar hb-cycle-own ${isOpenCycle ? 'is-open' : 'is-closed'}`} style={{ margin: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '1.15rem 1.25rem' }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                              <strong style={{ fontSize: '1.1rem' }}>Pay cycle · {shownCycle}</strong>
+                              <span className={`badge ${isOpenCycle ? 'badge-info' : 'badge-secondary'}`}>
+                                {isOpenCycle ? 'Running now' : 'Closed cycle'}
+                              </span>
+                            </div>
+                            <p className="text-secondary" style={{ fontSize: '0.85rem', margin: '0.4rem 0 0' }}>
+                              {myRecord?.period_start
+                                ? `${new Date(myRecord.period_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(myRecord.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                                : ''}
+                              {isOpenCycle ? ' · active payroll cycle' : ' · historical cycle'}
+                            </p>
+                          </div>
+
+                          <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
+                            <label className="hb-cycle-pick" style={{ margin: 0 }}>
+                              <span>Show cycle</span>
+                              <select className="header-select" value={shownCycle}
+                                      onChange={(e) => setCoachCycle(e.target.value)}>
+                                {myCycles.map(r => (
+                                  <option key={r.period_month} value={r.period_month}>
+                                    {r.period_month}{r.period_month === currentPeriodMonth ? ' · running now' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <span className="text-secondary" style={{ fontSize: '0.8rem' }}>
+                              {myRecord?.status ? `Status: ${myRecord.status}` : ''}
+                            </span>
+                          </div>
                         </div>
+                      )}
+                    </div>
+
+                    {/* Merged metric dials & cards: HB+ score, Elevate+ attendance, 5-star streak, Charged, Record */}
+                    <div className="gm-row" style={{ marginTop: '0', marginBottom: '1.25rem' }}>
+                      <div className="gm-card gm-olive">
+                        <span className="gm-kicker">HB+ score</span>
+                        <div className="gm-dial">
+                          {ring(isDraft ? 0 : scorePct, 'olive')}
+                          <strong>{isDraft ? '—' : finalScore.toFixed(1)}</strong>
+                        </div>
+                        <b>{isDraft ? 'Being scored' : finalBand.replace(/^[\d–\-\s]+/, '')}</b>
+                        <small>{isDraft ? `${shownCycle} is not scored yet` : 'out of 90'}</small>
                       </div>
-                      {(() => {
-                        const fromAttendance = periodVios.filter(isSystemAttendance);
-                        const charged = periodVios
-                          .filter(isPenaltyChargeable)
-                          .reduce((n, v) => n + (Number(v.penalty_amount) || 0), 0);
-                        const lop = Number(myRecord?.lop_days) || 0;
-                        return (
-                          <div className={`stat-card ${charged || lop ? 'stat-red' : 'stat-amber'}`}>
-                            <div className="stat-icon"><i className="bx bxs-receipt"></i></div>
-                            <div className="stat-info">
-                              <h3>Charged · {shownCycle}</h3>
-                              <h2>{rupees(charged)}</h2>
-                              <p>
-                                {periodVios.length} incident{periodVios.length === 1 ? '' : 's'}
-                                {fromAttendance.length ? `, ${fromAttendance.length} from attendance` : ''}
-                                {lop ? ` · ${lop} day(s) Loss of Pay` : ''}
+
+                      <div className="gm-card gm-navy">
+                        <span className="gm-kicker">Elevate+ attendance</span>
+                        <div className="gm-dial">
+                          {ring(attPct, 'navy')}
+                          <strong>{Math.round(attPct)}<i>%</i></strong>
+                        </div>
+                        <b>{attPct >= 95 ? 'On track' : attPct >= 75 ? 'Keep it up' : 'Needs attention'}</b>
+                        <small>{attPct >= 95
+                          ? 'at or above the 95% the consistency bonus asks for'
+                          : `${Math.max(0, 95 - Math.round(attPct))}% short of the bonus threshold`}</small>
+                      </div>
+
+                      <div className="gm-card gm-amber">
+                        <span className="gm-kicker">5-star streak</span>
+                        <div className="gm-dial">
+                          {ring(streakInto / streakEvery * 100, 'amber')}
+                          <strong>{streakHave}</strong>
+                          <i className="bx bxs-hot gm-flame" aria-hidden="true"></i>
+                        </div>
+                        <b>{streakToGo === streakEvery && streakHave === 0
+                          ? `${streakEvery} in a row pays ₹${streakPays}`
+                          : `${streakToGo} more to ₹${streakPays}`}</b>
+                        <small>
+                          {streakWon > 0
+                            ? `${streakWon} reward${streakWon === 1 ? '' : 's'} earned so far`
+                            : 'consecutive 5-star reviews'}
+                        </small>
+                      </div>
+
+                      <div className={`gm-card ${charged || lop ? 'gm-rust' : 'gm-clean'}`}>
+                        <span className="gm-kicker">Charged · {shownCycle}</span>
+                        <div className="gm-dial">
+                          <i className={`bx ${charged || lop ? 'bxs-receipt' : 'bx-badge-check'} gm-badge`} aria-hidden="true"></i>
+                          <strong style={{ fontSize: '1.25rem' }}>{rupees(charged)}</strong>
+                        </div>
+                        <b>{charged > 0 ? `${rupees(charged)} deducted` : lop > 0 ? `${lop} day(s) Loss of Pay` : '₹0 deductions'}</b>
+                        <small>
+                          {periodVios.length} incident{periodVios.length === 1 ? '' : 's'}
+                          {fromAttendance.length ? `, ${fromAttendance.length} attendance` : ''}
+                          {lop ? ` · ${lop} d LOP` : ' · clean pay'}
+                        </small>
+                      </div>
+
+                      <div className={`gm-card ${clean ? 'gm-clean' : 'gm-rust'}`}>
+                        <span className="gm-kicker">Record · {shownCycle}</span>
+                        <div className="gm-dial">
+                          <i className={`bx ${clean ? 'bxs-shield-plus' : 'bxs-error'} gm-badge`} aria-hidden="true"></i>
+                          <strong>{clean ? '0' : periodVios.length}</strong>
+                        </div>
+                        <b>{clean ? 'Clean record' : `${periodVios.length} incident${periodVios.length === 1 ? '' : 's'} standing`}</b>
+                        <small>{clean
+                          ? `${myVios.length === 0 ? 'No incidents on record' : `${myVios.length} total on record`} — consistency bonus stays in reach`
+                          : `${myVios.length} total on record · can be appealed`}</small>
+                        {myVios.length > 0 && (
+                          <button
+                            type="button"
+                            className="gm-view-btn"
+                            onClick={() => setMyIncidentsView('all')}
+                          >
+                            <i className="bx bx-list-ul" aria-hidden="true"></i> View all incidents
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Every incident on the coach's own record, opened from
+                        the Record card. Read-only and newest first — it is the
+                        detail behind the two figures on that card, so a coach
+                        can see what the "standing" and "total" numbers are made
+                        of without asking anyone. */}
+                    {myIncidentsView && (() => {
+                      const fmt = (d) => d
+                        ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                        : '—';
+                      const list = [...myVios].sort(
+                        (a, b) => new Date(b.incident_date) - new Date(a.incident_date));
+                      const standing = myRecord ? periodVios.length : 0;
+                      return (
+                        <div className="hb-detail-backdrop"
+                             role="dialog" aria-modal="true" aria-label="Incidents on record"
+                             onClick={(e) => { if (e.target === e.currentTarget) setMyIncidentsView(null); }}>
+                          <div className="lv-detail">
+                            <div className="lv-detail-head">
+                              <h3>Incidents on record</h3>
+                              <button type="button" className="hb-drawer-x" aria-label="Close"
+                                onClick={() => setMyIncidentsView(null)}>
+                                <i className="bx bx-x"></i>
+                              </button>
+                            </div>
+
+                            <div className="lv-detail-main">
+                              <div className="inc-view-stats">
+                                <div><strong>{standing}</strong><span>standing · {shownCycle}</span></div>
+                                <div><strong>{myVios.length}</strong><span>total on record</span></div>
+                              </div>
+
+                              {list.length === 0 ? (
+                                <p className="calc-notes">Nothing on record. A clean sheet keeps the consistency bonus in reach.</p>
+                              ) : (
+                                <ul className="inc-view-list">
+                                  {list.map(v => {
+                                    const inCycle = myRecord
+                                      && new Date(v.incident_date) >= new Date(myRecord.period_start)
+                                      && new Date(v.incident_date) <= new Date(myRecord.period_end);
+                                    return (
+                                      <li key={v.id} className={inCycle ? 'is-cycle' : ''}>
+                                        <div className="inc-view-top">
+                                          <strong>{v.type}</strong>
+                                        </div>
+                                        <div className="inc-view-meta">
+                                          <span><i className="bx bx-calendar" aria-hidden="true"></i> {fmt(v.incident_date)}</span>
+                                          <span><i className="bx bx-layer" aria-hidden="true"></i> Occurrence #{v.occurrence_no}</span>
+                                          {inCycle && <span className="inc-view-pill">this cycle</span>}
+                                        </div>
+                                        {v.consequence && <p className="inc-view-cons">{v.consequence}</p>}
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )}
+                              <p className="calc-notes">
+                                An incident you believe is wrong can be appealed — raise it from
+                                Attendance &amp; Leave and a reviewer will look at it.
                               </p>
                             </div>
                           </div>
-                        );
-                      })()}
-                      <div className="stat-card stat-red">
-                        <div className="stat-icon"><i className="bx bxs-error-circle"></i></div>
-                        <div className="stat-info">
-                          <h3>Incidents · {shownCycle}</h3>
-                          <h2>{periodVios.length}</h2>
-                          <p>{myVios.length} on record overall</p>
                         </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* How far through the session target this cycle is.
                         Above the settlement table because it is the thing
@@ -11745,133 +11869,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   </div>
                 </div>
               )}
-
-              {/* Coach Dashboard View */}
-              {currentRole === "Coach" && (() => {
-                if (!currentSelectedCoach) {
-                  return <div className="card"><p>Please select a coach from the header context to view the dashboard.</p></div>;
-                }
-
-                const vConfig = findVariant(variants, currentSelectedCoach.variant_id);
-                const histList = historicMonths.filter(h => h.coach_id === currentSelectedCoach.id);
-                // The cycle picked at the top of the dashboard, so the dials
-                // and the row of figures above them never disagree.
-                const curr = [...historicMonths, ...currentMonth]
-                  .filter(e => e.coach_id === currentSelectedCoach.id)
-                  .find(e => e.period_month === coachCycle)
-                  || currentMonth.find(e => e.coach_id === currentSelectedCoach.id);
-                
-                let finalScore = 0, finalBand = "0-30 Non-Functional", isDraft = true, attendance = 0, sessions = 0;
-                if (curr) {
-                  const calcObj = curr.hb_score != null ? curr : computeHBPlusScore(currentSelectedCoach, curr, vConfig);
-                  finalScore = calcObj.hbScore || calcObj.hb_score;
-                  finalBand = getPerformanceBand(finalScore).label;
-                  isDraft = curr.status === 'DRAFT';
-                  attendance = curr.attendance_pct;
-                  sessions = curr.sessions_completed;
-                }
-
-                const milestoneTarget = currentSelectedCoach.coach_category === 'Fixed' ? (vConfig.discipline === 'Yoga' ? 117 : 156) : 96;
-                const progressPct = Math.min(100, ((Number(sessions) || 0) / milestoneTarget) * 100);
-                // Incidents inside the cycle being read. It counted every
-                // incident the coach had ever had, so a clean month still
-                // showed a record that was not clean.
-                const activeVio = violations.filter(v => v.coach_id === currentSelectedCoach.id
-                  && isPenaltyCounted(v)
-                  && (!curr || (new Date(v.incident_date) >= new Date(curr.period_start)
-                    && new Date(v.incident_date) <= new Date(curr.period_end))));
-
-                const allRuns = [...histList, curr].filter(Boolean);
-
-                return (
-                  <>
-                    {/* The month as four things to move, not four numbers
-                        to read: how far up the score is, how much of the
-                        attendance is in, how close the next streak reward
-                        is, and whether the record is still clean. Each ring
-                        draws itself on arrival, so progress is watched
-                        rather than announced. */}
-                    {(() => {
-                      const RING = 119.38;             // 2πr, r = 19
-                      const off = (pct) => RING - (Math.max(0, Math.min(100, pct)) / 100) * RING;
-                      const ring = (pct, tone) => (
-                        <svg className={`gm-ring gm-ring-${tone}`} viewBox="0 0 44 44" aria-hidden="true">
-                          <circle className="gm-ring-bg" cx="22" cy="22" r="19" />
-                          <circle className="gm-ring-fg" cx="22" cy="22" r="19"
-                            style={{ '--off': off(pct), strokeDasharray: RING }} />
-                        </svg>
-                      );
-
-                      const scorePct = (Number(finalScore) || 0) / 90 * 100;
-                      const attPct = Number(attendance) || 0;
-
-                      const streakEvery = vConfig.id === 'V3' ? 15 : 10;
-                      const streakPays = vConfig.id === 'V3' ? 500 : 200;
-                      const streakHave = Number(curr?.five_star_streak) || 0;
-                      const streakInto = streakHave % streakEvery;
-                      const streakToGo = streakEvery - streakInto;
-                      const streakWon = Math.floor(streakHave / streakEvery);
-
-                      const clean = activeVio.length === 0;
-
-                      return (
-                        <div className="gm-row">
-                          <div className="gm-card gm-olive">
-                            <span className="gm-kicker">HB+ score</span>
-                            <div className="gm-dial">
-                              {ring(isDraft ? 0 : scorePct, 'olive')}
-                              <strong>{isDraft ? '—' : finalScore.toFixed(1)}</strong>
-                            </div>
-                            <b>{isDraft ? 'Being scored' : finalBand.replace(/^[\d–\-\s]+/, '')}</b>
-                            <small>{isDraft ? `${currentPeriodMonth} is not scored yet` : 'out of 90'}</small>
-                          </div>
-
-                          <div className="gm-card gm-navy">
-                            <span className="gm-kicker">Elevate+ attendance</span>
-                            <div className="gm-dial">
-                              {ring(attPct, 'navy')}
-                              <strong>{Math.round(attPct)}<i>%</i></strong>
-                            </div>
-                            <b>{attPct >= 95 ? 'On track' : attPct >= 75 ? 'Keep it up' : 'Needs attention'}</b>
-                            <small>{attPct >= 95
-                              ? 'at or above the 95% the consistency bonus asks for'
-                              : `${Math.max(0, 95 - Math.round(attPct))}% short of the bonus threshold`}</small>
-                          </div>
-
-                          <div className="gm-card gm-amber">
-                            <span className="gm-kicker">5-star streak</span>
-                            <div className="gm-dial">
-                              {ring(streakInto / streakEvery * 100, 'amber')}
-                              <strong>{streakHave}</strong>
-                              <i className="bx bxs-hot gm-flame" aria-hidden="true"></i>
-                            </div>
-                            <b>{streakToGo === streakEvery && streakHave === 0
-                              ? `${streakEvery} in a row pays ₹${streakPays}`
-                              : `${streakToGo} more to ₹${streakPays}`}</b>
-                            <small>
-                              {streakWon > 0
-                                ? `${streakWon} reward${streakWon === 1 ? '' : 's'} earned so far`
-                                : 'consecutive 5-star reviews'}
-                            </small>
-                          </div>
-
-                          <div className={`gm-card ${clean ? 'gm-clean' : 'gm-rust'}`}>
-                            <span className="gm-kicker">Record</span>
-                            <div className="gm-dial">
-                              <i className={`bx ${clean ? 'bxs-shield-plus' : 'bxs-error'} gm-badge`} aria-hidden="true"></i>
-                              <strong>{clean ? '0' : activeVio.length}</strong>
-                            </div>
-                            <b>{clean ? 'Clean record' : `${activeVio.length} incident${activeVio.length === 1 ? '' : 's'} standing`}</b>
-                            <small>{clean
-                              ? 'nothing on record — the consistency bonus stays in reach'
-                              : 'an incident you disagree with can be appealed'}</small>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </>
-                );
-              })()}
             </section>
           )}
 
@@ -16264,8 +16261,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                 {!isOwn && (() => {
                   const waiting = leaveApplications.filter(a => a.status === 'Pending'
                     && inAttendanceScope(a.coach_id)).length;
-                  const onFloor = attendanceLogs.filter(l => !l.logged_out_at
-                    && inAttendanceScope(l.coach_id)).length;
                   // Both registers. A coach raising one from their day strip
                   // writes to `regularisations`; the modal writes to
                   // `attendanceRegularizations`. Counting one of them left the
@@ -16276,23 +16271,39 @@ export default function App({ session = null, profile = null, onSignOut = null }
                     + regularisations.filter(r => r.status === 'Pending'
                       && inAttendanceScope(r.coach_id)).length;
                   const tabs = [
+                    { key: 'coach', label: 'Attendance', icon: 'bx-time-five' },
                     ...(LEAVE_APPROVER_ROLES.includes(currentRole)
-                      ? [{ key: 'leave', label: 'Leave requests', icon: 'bx-calendar-check', count: waiting }] : []),
+                      ? [{ key: 'leave', label: 'Leave', icon: 'bx-calendar-check', count: waiting }] : []),
                     ...(REGULARIZATION_APPROVER_ROLES.includes(currentRole)
-                      ? [{ key: 'regularization', label: 'Regularizations', icon: 'bx-time', count: regWaiting }] : []),
-                    { key: 'floor', label: 'On the floor now', icon: 'bx-time-five', count: onFloor },
-                    // Loss of Pay is what settling attendance produces, so the
-                    // register for it belongs beside the days it came from
-                    // rather than in with the incidents.
-                    ...(LEAVE_APPROVER_ROLES.includes(currentRole) || PROFILE_PAY_ROLES.includes(currentRole)
-                      ? [{ key: 'lop', label: 'Loss of Pay', icon: 'bx-rupee',
-                           count: attendanceDays.filter(d => inAttendanceScope(d.coach_id)
-                             && Number(d.lop_days) > 0).length }] : []),
-                    { key: 'coach', label: coach ? coach.name : 'A coach', icon: 'bx-user' },
+                      ? [{ key: 'regularization', label: 'Regularisations', icon: 'bx-time', count: regWaiting }] : []),
                     ...(PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager'
                       ? [{ key: 'admin', label: 'Setup & reports', icon: 'bx-cog' }] : [])
                   ];
                   return (
+                    <>
+                    {/* Who this is about, above the jobs that can be done
+                        with them. The strip used to carry the coach's name
+                        as one of its tabs, which read as though choosing a
+                        person were a task of its own. */}
+                    {!isOwn && (
+                      <div className="hb-who">
+                        <div>
+                          <span>Showing</span>
+                          <strong>{coach ? coach.name : 'nobody yet'}</strong>
+                          {coach && <small>{coach.id} · {coach.coach_category}</small>}
+                        </div>
+                        <label className="hb-who-pick">
+                          <span>Coach</span>
+                          <select className="header-select" value={coach?.id || ''}
+                                  onChange={(e) => setAttendanceCoachId(e.target.value)}>
+                            <option value="">— choose a coach —</option>
+                            {attendanceRoster.filter(c => c.status === 'Active').map(c => (
+                              <option key={c.id} value={c.id}>{c.id} — {c.name}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
                     <TaskTabs
                       tabs={tabs}
                       active={attendanceTab}
@@ -16305,28 +16316,36 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         }
                       }}
                     />
+                    </>
                   );
                 })()}
 
-                {!onTab('coach') ? null : !coach ? (
+                {onTab('coach') && !coach && (
                   <div className="card">
                     <p className="text-muted">
-                      No coach open. Pick one from the list at the top right, or click a name
-                      in the Leave tab — their attendance, balances and leave history appear here.
+                      No coach open. Pick one from the list at the top right — their attendance, calendar and logins appear here.
                     </p>
                   </div>
-                ) : (
-                  <>
-                    <TaskTabs
-                      tabs={[
-                        { key: 'attendance', label: 'Attendance', icon: 'bx-time-five' },
-                        { key: 'leave', label: 'Leave', icon: 'bx-calendar-check' }
-                      ]}
-                      active={coachSubTab}
-                      onChange={setCoachSubTab}
-                    />
+                )}
 
-                    {coachSubTab === 'attendance' && (<>
+                {((onTab('coach') && coach) || onTab('leave') || isOwn) && (
+                  <>
+                    {/* A coach gets these two as their own strip, because
+                        their page has nothing else on it. A manager already
+                        chose between them on the strip above, so showing a
+                        second pair would be the same choice twice. */}
+                    {isOwn && (
+                      <TaskTabs
+                        tabs={[
+                          { key: 'attendance', label: 'Attendance', icon: 'bx-time-five' },
+                          { key: 'leave', label: 'Leave', icon: 'bx-calendar-check' }
+                        ]}
+                        active={coachSubTab}
+                        onChange={setCoachSubTab}
+                      />
+                    )}
+
+                    {(isOwn ? coachSubTab === 'attendance' : onTab('coach')) && (<>
                     {/* Logging in and out, and raising a regularisation,
                         sit above the month: they are what a coach comes here
                         to do, and the calendar below is what they come here
@@ -16834,14 +16853,21 @@ export default function App({ session = null, profile = null, onSignOut = null }
 
                     </>)}
 
-                    {coachSubTab === 'leave' && (<>
+                    {(isOwn ? coachSubTab === 'leave' : onTab('leave')) && (<>
                     {/* Balances */}
+                    {coach && (
                     <div className="card" style={{ marginTop: '1.25rem' }}>
                       <div className="card-header-row">
-                        <h3>Leave</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          Leave year {leaveYearFor(new Date()).start} to {leaveYearFor(new Date()).end}
-                        </span>
+                        <div>
+                          <h3 style={{ margin: 0 }}>Leave</h3>
+                          <span className="text-muted" style={{ fontSize: '0.82rem' }}>
+                            Leave year {leaveYearFor(new Date()).start} to {leaveYearFor(new Date()).end}
+                          </span>
+                        </div>
+                        <button className="btn btn-primary"
+                          onClick={() => setLeaveApplyOpen(true)}>
+                          <i className="bx bx-plus"></i> Apply for leave
+                        </button>
                       </div>
                       {/* One card a type: what is left, against what the
                           year allows. The ring is the share still unspent —
@@ -16981,22 +17007,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         })}
                       </div>
 
-                      {/* Applying sits with the balance it spends:
-                          choosing a type and reading what is left of it are
-                          one decision, and they were two cards apart. */}
-                      {/* Applying is one action, not a form sitting open.
-                          The button is what the card offers; the fields open
-                          over it when they are wanted, so the balances stay
-                          the thing this card shows. */}
-                      <div className="lv-apply-row">
-                        <button className="btn btn-primary"
-                          onClick={() => setLeaveApplyOpen(true)}>
-                          <i className="bx bx-plus"></i> Apply for leave
-                        </button>
-                        <span>
-                          A reason is required, and a decision is due within 3 working days.
-                        </span>
-                      </div>
 
                       {/* Leave details: every movement on one type, and
                           the policy that governs it. A balance is four stored
@@ -17412,294 +17422,240 @@ export default function App({ session = null, profile = null, onSignOut = null }
                         </div>
                       </details>
                     </div>
+                    )}
 
-                    {/* History */}
-                    <div className="card" style={{ marginTop: '1.25rem' }}>
-                      <h3>Leave Applications</h3>
-                      {mine.length === 0 ? (
-                        <p className="text-muted">Nothing applied for yet.</p>
-                      ) : (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr><th>Type</th><th>Dates</th><th className="num-col">Days</th><th>Status</th><th>Note</th><th className="actions-col">{canApprove ? 'Decide' : ''}</th></tr>
-                            </thead>
-                            <tbody>
-                              {mine.map(a => (
-                                <tr key={a.id}>
-                                  <td>{leaveType(a.type_id)?.label}</td>
-                                  <td>{a.from_date} → {a.to_date}</td>
-                                  <td className="num-col">{a.days}</td>
-                                  <td>
-                                    <span className={`badge ${
-                                      a.status === 'Approved' ? 'badge-success'
-                                        : a.status === 'Rejected' ? 'badge-danger'
-                                        : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
-                                      {a.status}
-                                    </span>
-                                  </td>
-                                  <td><small className="text-muted">{a.decision_note || a.cancel_note || '—'}</small></td>
-                                  {/* Deciding also belongs here. An approver reading a
-                                      row marked PENDING expects to act on it where they
-                                      are looking, not on a different card further up. */}
-                                  <td className="actions-col">
-                                    <div className="table-btn-group">
-                                      {canApprove && a.status === 'Pending' && (
-                                        <>
-                                          <button className="btn-row-icon icon-save" title="Approve this leave"
-                                            onClick={() => handleLeaveDecision(a, 'Approved')}>
-                                            <i className="bx bx-check"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-edit" title="Approve some days and refuse the rest"
-                                            onClick={() => handlePartialApproval(a)}>
-                                            <i className="bx bx-slider-alt"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
-                                            onClick={() => handleLeaveTypeChange(a)}>
-                                            <i className="bx bx-transfer-alt"></i>
-                                          </button>
-                                          <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
-                                            onClick={() => handleLeaveDecision(a, 'Rejected')}>
-                                            <i className="bx bx-x"></i>
-                                          </button>
-                                        </>
-                                      )}
-                                      {a.status === 'Rejected' && (
-                                        appealForLeave(a) ? (
-                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
-                                            Appealed
+                    {/* Leave Applications */}
+                    {(() => {
+                      const scopedApps = (coach
+                        ? leaveApplications.filter(a => a.coach_id === coach.id)
+                        : leaveApplications.filter(a => inAttendanceScope(a.coach_id))
+                      ).sort((a, b) => (b.from_date || '').localeCompare(a.from_date || ''));
+
+                      const filteredApps = leaveRegister.status === 'All'
+                        ? scopedApps
+                        : scopedApps.filter(a => a.status === leaveRegister.status);
+
+                      return (
+                        <div className="card" style={{ marginTop: '1.25rem' }}>
+                          <div className="card-header-row" style={{ flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
+                            <div>
+                              <h3 style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                                Leave Applications
+                                {coach && <span className="text-muted" style={{ fontWeight: 400, fontSize: '0.9rem' }}>· {coach.name} ({coach.id})</span>}
+                              </h3>
+                              {coach && !isOwn && (
+                                <button
+                                  type="button"
+                                  className="linklike"
+                                  style={{ fontSize: '0.82rem', marginLeft: '0.75rem' }}
+                                  onClick={() => setAttendanceCoachId('')}
+                                >
+                                  Show all coaches
+                                </button>
+                              )}
+                            </div>
+                            <div className="table-btn-group" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {['All', 'Pending', 'Approved', 'Rejected', 'Cancelled'].map(st => {
+                                const count = st === 'All' ? scopedApps.length : scopedApps.filter(a => a.status === st).length;
+                                const active = leaveRegister.status === st;
+                                return (
+                                  <button
+                                    key={st}
+                                    type="button"
+                                    className={`btn btn-sm ${active ? 'btn-primary' : 'btn-secondary'}`}
+                                    style={{ padding: '0.3rem 0.65rem', fontSize: '0.78rem' }}
+                                    onClick={() => setLeaveRegister(f => ({ ...f, status: st }))}
+                                  >
+                                    {st} {count > 0 ? `(${count})` : ''}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {filteredApps.length === 0 ? (
+                            <p className="text-muted" style={{ padding: '1rem 0' }}>
+                              {leaveRegister.status !== 'All'
+                                ? `No leave applications with status "${leaveRegister.status}".`
+                                : 'Nothing applied for yet.'}
+                            </p>
+                          ) : (
+                            <div className="table-container">
+                              <table className="data-table">
+                                <thead>
+                                  <tr>
+                                    {!coach && <th>Coach</th>}
+                                    <th>Type</th>
+                                    <th>Dates</th>
+                                    <th className="num-col">Days</th>
+                                    <th>Reason / Details</th>
+                                    <th>Status</th>
+                                    <th>Note</th>
+                                    <th className="actions-col" style={{ minWidth: '180px' }}>Decide</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {filteredApps.map(a => {
+                                    const c = coaches.find(x => x.id === a.coach_id);
+                                    const waited = a.applied_at
+                                      ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : 0;
+                                    const overdue = a.status === 'Pending' && waited >= 3;
+                                    const appeal = appealForLeave(a);
+
+                                    return (
+                                      <tr key={a.id} className={overdue ? 'leave-overdue' : a.status === 'Pending' ? 'leave-pending' : ''}>
+                                        {!coach && (
+                                          <td>
+                                            <button
+                                              type="button"
+                                              className="linklike"
+                                              title="Open this coach's attendance and balances"
+                                              onClick={() => setAttendanceCoachId(a.coach_id)}
+                                            >
+                                              <strong>{c?.name || a.coach_id}</strong>
+                                            </button>
+                                            <br />
+                                            <small className="text-muted">{a.coach_id}{c?.coach_category ? ` · ${c.coach_category}` : ''}</small>
+                                          </td>
+                                        )}
+                                        <td>
+                                          <strong>{leaveType(a.type_id)?.label || a.type_id}</strong>
+                                        </td>
+                                        <td>
+                                          {a.from_date === a.to_date ? a.from_date : `${a.from_date} → ${a.to_date}`}
+                                        </td>
+                                        <td className="num-col">
+                                          <strong>{a.approved_days != null && a.approved_days !== a.days ? `${a.approved_days} of ${a.days}` : a.days}</strong>
+                                          {a.half_day && <><br /><small className="badge badge-info" style={{ fontSize: '0.7rem' }}>Half day</small></>}
+                                        </td>
+                                        <td>
+                                          <div style={{ maxWidth: '280px', wordBreak: 'break-word' }}>
+                                            {a.reason ? (
+                                              <span style={{ fontWeight: 500 }}>“{a.reason}”</span>
+                                            ) : (
+                                              <span className="text-muted">—</span>
+                                            )}
+                                            <div style={{ fontSize: '0.75rem', marginTop: '3px' }}>
+                                              <span className={overdue ? 'text-red' : 'text-muted'}>
+                                                {waited === 0 ? 'Applied today' : `Applied ${waited}d ago`}
+                                              </span>
+                                              {overdue && (
+                                                <span className="badge badge-danger" style={{ marginLeft: '6px', fontSize: '0.68rem', padding: '1px 5px' }}>
+                                                  Overdue
+                                                </span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </td>
+                                        <td>
+                                          <span className={`badge ${
+                                            a.status === 'Approved' ? 'badge-success'
+                                              : a.status === 'Rejected' ? 'badge-danger'
+                                              : a.status === 'Cancelled' ? 'badge-muted'
+                                              : a.status === 'Partially_Approved' ? 'badge-info' : 'badge-warning'}`}>
+                                            {a.status.replace(/_/g, ' ')}
                                           </span>
-                                        ) : currentRole === 'Coach' && a.coach_id === selfCoachId ? (
-                                          <button className="btn-row-icon icon-edit" title="Appeal this decision"
-                                            onClick={() => appealLeaveDecision(a)}>
-                                            <i className="bx bx-undo"></i>
-                                          </button>
-                                        ) : null
-                                      )}
-                                      {(a.status === 'Pending' || a.status === 'Approved') && (
-                                        <button className="btn-row-icon icon-reset" title="Cancel this leave"
-                                          onClick={() => handleLeaveCancel(a)}>
-                                          <i className="bx bx-trash"></i>
-                                        </button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                                        </td>
+                                        <td>
+                                          <small className="text-muted">
+                                            {a.decision_note || a.cancel_note || '—'}
+                                            {a.decided_by && <div style={{ fontSize: '0.72rem' }}>by {a.decided_by}</div>}
+                                          </small>
+                                        </td>
+                                        <td className="actions-col">
+                                          <div className="table-btn-group" style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            {canApprove && a.status === 'Pending' && (
+                                              <>
+                                                <button
+                                                  type="button"
+                                                  className="btn btn-sm btn-primary"
+                                                  title="Approve this leave"
+                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '0.3rem 0.65rem' }}
+                                                  onClick={() => handleLeaveDecision(a, 'Approved')}
+                                                >
+                                                  <i className="bx bx-check"></i> Approve
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="btn btn-sm btn-danger"
+                                                  title="Reject — a reason is required"
+                                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '0.3rem 0.65rem' }}
+                                                  onClick={() => handleLeaveDecision(a, 'Rejected')}
+                                                >
+                                                  <i className="bx bx-x"></i> Reject
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="btn-row-icon icon-reset"
+                                                  title="Approve as a different leave type"
+                                                  onClick={() => handleLeaveTypeChange(a)}
+                                                >
+                                                  <i className="bx bx-transfer-alt"></i>
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className="btn-row-icon icon-cancel"
+                                                  title="Cancel this leave"
+                                                  onClick={() => handleLeaveCancel(a)}
+                                                >
+                                                  <i className="bx bx-trash"></i>
+                                                </button>
+                                              </>
+                                            )}
+                                            {a.status === 'Rejected' && (
+                                              appeal ? (
+                                                <span className="badge badge-info" title={appeal.reason}>
+                                                  Appealed
+                                                </span>
+                                              ) : currentRole === 'Coach' && a.coach_id === selfCoachId ? (
+                                                <button
+                                                  type="button"
+                                                  className="btn btn-sm btn-secondary"
+                                                  title="Appeal this decision"
+                                                  onClick={() => appealLeaveDecision(a)}
+                                                >
+                                                  <i className="bx bx-undo"></i> Appeal
+                                                </button>
+                                              ) : null
+                                            )}
+                                            {a.status === 'Approved' && (
+                                              <button
+                                                type="button"
+                                                className="btn-row-icon icon-cancel"
+                                                title="Cancel this leave"
+                                                onClick={() => handleLeaveCancel(a)}
+                                              >
+                                                <i className="bx bx-trash"></i>
+                                              </button>
+                                            )}
+                                            {!canApprove && a.status === 'Pending' && (
+                                              <button
+                                                type="button"
+                                                className="btn-row-icon icon-cancel"
+                                                title="Cancel this leave"
+                                                onClick={() => handleLeaveCancel(a)}
+                                              >
+                                                <i className="bx bx-trash"></i>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
+                      );
+                    })()}
                     </>)}
                   </>
                 )}
 
-                {onTab('lop') && (LEAVE_APPROVER_ROLES.includes(currentRole)
-                  || PROFILE_PAY_ROLES.includes(currentRole)) && (() => {
-                  // Every day settled with pay lost, read off the attendance
-                  // record itself rather than off the incidents raised about
-                  // it: the day is the fact, the incident is a note on it.
-                  const periods = [...new Set([...historicMonths, ...currentMonth]
-                    .map(r => r.period_month))];
-                  const period = periods.includes(lopRegCycle) ? lopRegCycle
-                    : (periods.includes(currentPeriodMonth) ? currentPeriodMonth : periods[periods.length - 1]);
-                  const bounds = [...currentMonth, ...historicMonths].find(r => r.period_month === period);
-                  const inCycle = (d) => bounds
-                    && d >= bounds.period_start && d <= bounds.period_end;
 
-                  const rows = attendanceDays
-                    .filter(d => inAttendanceScope(d.coach_id) && inCycle(d.working_day)
-                      && (Number(d.lop_days) > 0 || d.cover_type_id))
-                    .sort((x, y) => String(y.working_day).localeCompare(String(x.working_day)));
-                  const lost = rows.reduce((n, d) => n + (Number(d.lop_days) || 0), 0);
-                  const covered = rows.filter(d => d.cover_type_id).length;
 
-                  return (
-                    <div style={{ marginBottom: '1.5rem' }}>
-                      <div className="hb-fetch-bar">
-                        <div>
-                          <strong>Days settled with no login · {period}</strong>
-                          <span>
-                            {rows.length === 0
-                              ? 'Nothing lost or covered in this cycle.'
-                              : `${lost} day(s) of pay lost${covered ? `, ${covered} covered by leave instead` : ''}. ` +
-                                'A day here is settled attendance — the incident raised about it is on the Incidents register.'}
-                          </span>
-                        </div>
-                        <label className="hb-fetch-pick">
-                          <span>Pay cycle</span>
-                          <select className="header-select" value={period}
-                                  onChange={(e) => setLopRegCycle(e.target.value)}>
-                            {periods.map(m => (
-                              <option key={m} value={m}>
-                                {m}{m === currentPeriodMonth ? ' · running now' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-
-                      <div className="card">
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>Day</th>
-                                <th>Coach</th>
-                                <th className="num-col">Days lost</th>
-                                <th>Covered by</th>
-                                <th>Settled</th>
-                                <th>Regularisation</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rows.length === 0 && (
-                                <tr><td colSpan={6} className="text-muted">
-                                  No day in {period} was settled with pay lost.
-                                </td></tr>
-                              )}
-                              {rows.map(d => {
-                                const c = coaches.find(x => x.id === d.coach_id);
-                                const reg = regularisationFor(d.coach_id, d.working_day);
-                                return (
-                                  <tr key={`${d.coach_id}-${d.working_day}`}>
-                                    <td><strong>{d.working_day}</strong></td>
-                                    <td>
-                                      <button type="button" className="linklike"
-                                        onClick={() => { setAttendanceCoachId(d.coach_id); setAttendanceTab('coach'); }}>
-                                        {c?.name || d.coach_id}
-                                      </button>
-                                      <div className="hb-sub">{d.coach_id}</div>
-                                    </td>
-                                    <td className="num-col">{Number(d.lop_days) || 0}</td>
-                                    <td>{d.cover_type_id
-                                      ? <span className="badge badge-info">{leaveType(d.cover_type_id)?.label || d.cover_type_id}</span>
-                                      : <span className="text-muted">—</span>}</td>
-                                    <td><small className="text-muted">{d.settled_by || '—'}</small></td>
-                                    <td>
-                                      {reg
-                                        ? <span className={`badge ${reg.status === 'Approved' ? 'badge-success'
-                                            : reg.status === 'Rejected' ? 'badge-danger' : 'badge-warning'}`}>
-                                            {reg.status}
-                                          </span>
-                                        : <span className="text-muted">none raised</span>}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                        <p className="calc-notes">
-                          The switch above decides whether these days cost pay at all. A day the
-                          coach regularised and had approved is given back — it leaves this list
-                          when that happens.
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* Appeals against a leave decision. They are listed on the
-                    Incidents view with the penalty appeals, but a refused leave
-                    is argued about here, beside the register that refused it —
-                    so the decision can be made where the context is. */}
-                {onTab('leave') && LEAVE_APPROVER_ROLES.includes(currentRole) && (() => {
-                  const open = appeals.filter(a => {
-                    if (a.target_type !== 'Leave') return false;
-                    if (a.status !== 'PENDING_RM' && a.status !== 'PENDING_HR') return false;
-                    if (!inAttendanceScope(a.coach_id)) return false;
-                    return true;
-                  }).sort((a, b) => new Date(a.raised_at) - new Date(b.raised_at));
-                  if (open.length === 0) return null;
-
-                  const isHR = currentRole === 'HR Manager' || currentRole === 'Super Admin';
-                  return (
-                    <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>Appeals · {open.length}</h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          A coach disputing a refused leave
-                        </span>
-                      </div>
-                      <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                        Upholding one does not grant the leave by itself — it says the refusal should be
-                        looked at again. Decide the application underneath once you have.
-                      </p>
-                      <section className="hb-queue">
-                        {open.map(a => {
-                          const c = coaches.find(x => x.id === a.coach_id);
-                          const app = leaveApplications.find(x => x.id === a.target_id);
-                          const waited = a.raised_at
-                            ? Math.floor((Date.now() - new Date(a.raised_at)) / 86400000) : 0;
-                          const ui = APPEAL_UI[a.status] || [a.status, 'badge-muted'];
-                          return (
-                            <article className="card hb-qcard" key={a.id}>
-                              <div className="hb-qmain">
-                                <div className="hb-qwho">
-                                  <button className="linklike hb-qname"
-                                    onClick={() => openCoachOnAttendance(a.coach_id)}>
-                                    {c?.name || a.coach_id}
-                                  </button>
-                                  <span className="hb-qid">{a.coach_id}</span>
-                                  <span className={`hb-qage ${waited >= 3 ? 'is-late' : 'is-soon'}`}>
-                                    {waited === 0 ? 'raised today' : `raised ${waited} day${waited === 1 ? '' : 's'} ago`}
-                                  </span>
-                                  <span className={`badge ${ui[1]}`}>{ui[0]}</span>
-                                </div>
-                                {app && (
-                                  <p className="hb-qwhat">
-                                    <strong>{leaveType(app.type_id)?.label || app.type_id}</strong>
-                                    {' · '}{app.from_date}{app.to_date !== app.from_date ? ` – ${app.to_date}` : ''}
-                                    {' · '}{app.days} day{Number(app.days) === 1 ? '' : 's'}
-                                  </p>
-                                )}
-                                {app?.decision_note && (
-                                  <p className="hb-qcover">Refused because: {app.decision_note}</p>
-                                )}
-                                <p className="hb-qreason">“{a.reason}”</p>
-                              </div>
-                              <div className="hb-qacts">
-                                {a.status === 'PENDING_RM' ? (
-                                  <>
-                                    <button className="hb-btn hb-btn-primary"
-                                      onClick={() => handleRMAppealDecision(a.id, 'Approve')}>
-                                      Uphold the appeal
-                                    </button>
-                                    <button className="hb-btn hb-btn-danger"
-                                      onClick={() => handleRMAppealDecision(a.id, 'Reject')}>
-                                      Refuse it
-                                    </button>
-                                    <button className="hb-btn"
-                                      onClick={() => handleRMEscalateAppeal(a.id)}>
-                                      Send to HR
-                                    </button>
-                                  </>
-                                ) : isHR ? (
-                                  <>
-                                    <button className="hb-btn hb-btn-primary"
-                                      onClick={() => handleHRAppealDecision(a.id, 'Approve')}>
-                                      Uphold — final
-                                    </button>
-                                    <button className="hb-btn hb-btn-danger"
-                                      onClick={() => handleHRAppealDecision(a.id, 'Reject')}>
-                                      Refuse — final
-                                    </button>
-                                  </>
-                                ) : (
-                                  <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                                    With HR
-                                  </span>
-                                )}
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </section>
-                    </div>
-                  );
-                })()}
 
                 {/* Regularisations. Raised only by the coach, decided only by
                     Super Admin, HR, or that coach's own Reporting Manager. The
@@ -17782,349 +17738,6 @@ export default function App({ session = null, profile = null, onSignOut = null }
                           );
                         })}
                       </section>
-                    </div>
-                  );
-                })()}
-
-                {/* Every application across every coach, which is the view the
-                    per-coach history cannot give and the pending queue only half
-                    gives. A Reporting Manager sees their squad; HR and Super
-                    Admin see all of them. */}
-                {onTab('leave') && canApprove && (() => {
-                  const scoped = leaveApplications.filter(a => {
-                    if (!inAttendanceScope(a.coach_id)) return false;
-                    // The picker at the top of the screen is the coach filter:
-                    // one control, so the two cannot disagree about who is
-                    // being looked at.
-                    if (coach && a.coach_id !== coach.id) return false;
-                    if (leaveRegister.status !== 'All' && a.status !== leaveRegister.status) return false;
-                    // Overlap, not containment: a leave running across the window
-                    // is in it, even if neither end falls inside.
-                    if (leaveRegister.from && a.to_date < leaveRegister.from) return false;
-                    if (leaveRegister.to && a.from_date > leaveRegister.to) return false;
-                    if (leaveRegister.overdueOnly
-                      && Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) < 3) return false;
-                    return true;
-                  }).sort((a, b) => b.from_date.localeCompare(a.from_date));
-
-                  // Waiting and decided are two different jobs, so they are
-                  // shown two different ways off one filtered set: the ones
-                  // needing a decision as cards, oldest first, and the rest as
-                  // the table. Both honour every filter above.
-                  const scopedWaiting = scoped
-                    .filter(a => a.status === 'Pending')
-                    .sort((x, y) => new Date(x.applied_at) - new Date(y.applied_at));
-                  const scopedDecided = scoped.filter(a => a.status !== 'Pending');
-
-                  const totalDays = scoped
-                    .filter(a => a.status === 'Approved' || a.status === 'Partially_Approved')
-                    .reduce((n, a) => n + Number(a.approved_days ?? a.days), 0);
-
-                  return (
-                    <div className="card card-feature" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>
-                          Leave Register
-                          {coach && <span className="text-muted" style={{ fontWeight: 400 }}> · {coach.name}</span>}
-                        </h3>
-                        <div className="table-btn-group">
-                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
-                            {scoped.length} application{scoped.length === 1 ? '' : 's'} · {totalDays} day(s) approved
-                          </span>
-                          {pending.length > 0 && leaveRegister.status !== 'Pending' && (
-                            <button
-                              className="btn btn-primary btn-sm"
-                              onClick={() => setLeaveRegister(f => ({ ...f, status: 'Pending' }))}
-                            >
-                              {pending.length} waiting on you
-                            </button>
-                          )}
-                          {leaveRegister.status === 'Pending' && (
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setLeaveRegister(f => ({ ...f, status: 'All' }))}
-                            >
-                              Show all
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {/* The questions actually asked of this table, as one click
-                          each, and a line saying what the chosen one shows. The
-                          filters below still do anything these do not. */}
-                      {(() => {
-                        const today = new Date().toISOString().slice(0, 10);
-                        // Each preset says what it is actually showing. The
-                        // wording follows the filter beneath it rather than the
-                        // name on the chip: "upcoming" is anything not yet
-                        // finished, not anything not yet started, because the
-                        // date test is on to_date.
-                        const views = [
-                          { id: 'all',      label: 'Everything',            f: { status: 'All', from: '', to: '' },
-                            blurb: 'Every application from every coach you can see — any status, any date, decided or not.' },
-                          { id: 'waiting',  label: 'Waiting on a decision', f: { status: 'Pending', from: '', to: '' },
-                            blurb: 'Everything with no decision yet, whatever date it falls on — including leave that has already been and gone.' },
-                          { id: 'upcoming', label: 'Upcoming — undecided',  f: { status: 'Pending', from: today, to: '' },
-                            blurb: 'Undecided leave that has not finished yet, so there is still time to answer before it matters.' },
-                          { id: 'future',   label: 'All future leave',      f: { status: 'All', from: today, to: '' },
-                            blurb: 'Every application running today or later, whatever its status — what the floor looks like from here on.' },
-                          { id: 'approved', label: 'Approved',              f: { status: 'Approved', from: '', to: '' },
-                            blurb: 'Granted in full. These are the days counted in the approved total above, and taken off the balance.' },
-                          { id: 'rejected', label: 'Rejected',              f: { status: 'Rejected', from: '', to: '' },
-                            blurb: 'Refused, with the reason the coach was given. Refused days go back to their balance, and they may appeal.' },
-                          { id: 'overdue',  label: 'Past the 3-day deadline', f: { status: 'Pending', from: '', to: '' },
-                            extra: (a) => Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) >= 3,
-                            blurb: 'Undecided more than 3 days after it was applied for. Nobody is charged Loss of Pay while they wait — but those days cannot be settled, so the cycle cannot close until these are answered.' }
-                        ];
-                        const active = views.find(v =>
-                          v.f.status === leaveRegister.status &&
-                          v.f.from === leaveRegister.from &&
-                          v.f.to === leaveRegister.to &&
-                          Boolean(v.extra) === Boolean(leaveRegister.overdueOnly));
-
-                        return (
-                          <>
-                          <p className="text-secondary" style={{ fontSize: '0.84rem', marginTop: 0 }}>
-                            {active
-                              ? <><strong>{active.label}:</strong> {active.blurb}</>
-                              : <><strong>Your own filter:</strong> the status, dates and deadline below are
-                                  set by hand, so none of the presets describes it. Pick one to go back to a
-                                  named view.</>}
-                          </p>
-                          <div className="filter-chips">
-                            {views.map(v => {
-                              const n = leaveApplications.filter(a => {
-                                if (!inAttendanceScope(a.coach_id)) return false;
-                                if (coach && a.coach_id !== coach.id) return false;
-                                if (v.f.status !== 'All' && a.status !== v.f.status) return false;
-                                if (v.f.from && a.to_date < v.f.from) return false;
-                                if (v.extra && !v.extra(a)) return false;
-                                return true;
-                              }).length;
-                              return (
-                                <button
-                                  key={v.id}
-                                  className={`filter-chip ${active?.id === v.id ? 'filter-chip-on' : ''}`}
-                                  onClick={() => setLeaveRegister(f => ({
-                                    ...f, ...v.f, overdueOnly: Boolean(v.extra)
-                                  }))}
-                                >
-                                  {v.label}
-                                  <span className="filter-chip-count">{n}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                          </>
-                        );
-                      })()}
-                      <div className="form-grid">
-                        <div className="form-group">
-                          <label>Status</label>
-                          <select value={leaveRegister.status}
-                            onChange={(e) => setLeaveRegister(f => ({ ...f, status: e.target.value }))}>
-                            <option value="All">All statuses</option>
-                            {['Pending', 'Approved', 'Partially_Approved', 'Rejected', 'Cancelled']
-                              .map(st => <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>)}
-                          </select>
-                        </div>
-                        <div className="form-group">
-                          <label>Leave on or after</label>
-                          <input type="date" value={leaveRegister.from}
-                            onChange={(e) => setLeaveRegister(f => ({ ...f, from: e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>Leave on or before</label>
-                          <input type="date" value={leaveRegister.to}
-                            onChange={(e) => setLeaveRegister(f => ({ ...f, to: e.target.value }))} />
-                        </div>
-                      </div>
-
-                      {scoped.length === 0 && (
-                        <p className="text-muted">Nothing matches those filters.</p>
-                      )}
-
-                      {/* Waiting on you, as cards: the four decisions named
-                          rather than four row icons, with how long it has sat
-                          and what the cover looks like on the first day off. */}
-                      {scopedWaiting.length > 0 && (
-                        <section className="hb-queue" aria-label="Leave waiting on you">
-                          <div className="hb-queue-head">
-                            <h4>Waiting on you · {scopedWaiting.length}</h4>
-                            <span>Oldest first. Decisions are due within 3 working days.</span>
-                          </div>
-                          {scopedWaiting.map(a => {
-                            const c = coaches.find(x => x.id === a.coach_id);
-                            const waited = a.applied_at
-                              ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : 0;
-                            const overdue = waited >= 3;
-                            const dayFmt = (d) => new Date(`${d}T12:00:00`)
-                              .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-                            const todayISO = new Date().toISOString().slice(0, 10);
-                            const span = a.from_date === a.to_date
-                              ? `${dayFmt(a.from_date)}${a.from_date === todayISO ? ' (today)' : ''}`
-                              : `${dayFmt(a.from_date)} – ${dayFmt(a.to_date)}`;
-                            const days = Number(a.approved_days ?? a.days ?? 0);
-                            const thin = coverCheck(a.from_date)
-                              .find(x => x.off > 0 && x.working > 0 && x.working < x.total);
-                            return (
-                              <article className="card hb-qcard" key={a.id}>
-                                <div className="hb-qmain">
-                                  <div className="hb-qwho">
-                                    <button className="linklike hb-qname"
-                                      title="Open this coach below — attendance, balances and history"
-                                      onClick={() => openCoachOnAttendance(a.coach_id)}>
-                                      {c?.name || a.coach_id}
-                                    </button>
-                                    {c && <em>{c.coach_type || findVariant(variants, c.variant_id).discipline}</em>}
-                                    <span className="hb-qid">{a.coach_id}</span>
-                                    <span className={`hb-qage ${overdue ? 'is-late' : 'is-soon'}`}>
-                                      {overdue
-                                        ? `${waited} day${waited === 1 ? '' : 's'} overdue`
-                                        : waited === 0 ? 'applied today'
-                                          : `applied ${waited} day${waited === 1 ? '' : 's'} ago`}
-                                    </span>
-                                  </div>
-                                  <p className="hb-qwhat">
-                                    <strong>{leaveType(a.type_id)?.label || a.type_id}</strong>
-                                    {' · '}{span}{' · '}{days} day{days === 1 ? '' : 's'}
-                                    {a.half_day ? ' · half day' : ''}
-                                  </p>
-                                  <p className="hb-qreason">{a.reason ? `“${a.reason}”` : '“No reason given”'}</p>
-                                  {thin && (
-                                    <p className="hb-qcover">
-                                      {thin.discipline} is down to {thin.working} of {thin.total} on {dayFmt(a.from_date)}
-                                    </p>
-                                  )}
-                                </div>
-                                <div className="hb-qacts">
-                                  <button className="hb-btn hb-btn-primary"
-                                    onClick={() => handleLeaveDecision(a, 'Approved')}>Approve</button>
-                                  <button className="hb-btn"
-                                    onClick={() => handlePartialApproval(a)}>Part of it</button>
-                                  <button className="hb-btn"
-                                    onClick={() => handleLeaveTypeChange(a)}>As another type</button>
-                                  <button className="hb-btn hb-btn-danger"
-                                    onClick={() => handleLeaveDecision(a, 'Rejected')}>Reject</button>
-                                </div>
-                              </article>
-                            );
-                          })}
-                          <p className="hb-foot">
-                            Approving part of it, or as another type, needs a comment. Rejecting needs a
-                            reason, and the coach can appeal. Unused days go back to their balance.
-                          </p>
-                        </section>
-                      )}
-
-                      {scopedDecided.length > 0 && (
-                        <div className="table-container hb-decided">
-                          {scopedWaiting.length > 0 && (
-                            <h4 className="hb-decided-head">
-                              Already decided · {scopedDecided.length}
-                            </h4>
-                          )}
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                {!coach && <th>Coach</th>}
-                                <th>Type</th><th>Dates</th>
-                                <th className="num-col">Days</th><th>Status</th>
-                                <th>Waiting</th><th>Note</th>
-                                <th className="actions-col">Decide</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {scopedDecided.map(a => {
-                                const c = coaches.find(x => x.id === a.coach_id);
-                                const waited = a.applied_at
-                                  ? Math.floor((Date.now() - new Date(a.applied_at)) / 86400000) : null;
-                                const overdue = a.status === 'Pending' && waited >= 3;
-                                return (
-                                  <tr key={a.id} className={
-                                    overdue ? 'leave-overdue'
-                                      : a.status === 'Pending' ? 'leave-pending' : ''}>
-                                    {!coach && (
-                                      <td>
-                                        {/* The name is the way into the coach: a decision
-                                            often needs the attendance behind it. */}
-                                        <button
-                                          className="linklike"
-                                          title="Open this coach below — attendance, balances and history"
-                                          onClick={() => openCoachOnAttendance(a.coach_id)}
-                                        >
-                                          <strong>{c?.name || a.coach_id}</strong>
-                                        </button><br />
-                                        <small className="text-muted">{a.coach_id}</small>
-                                      </td>
-                                    )}
-                                    <td>{leaveType(a.type_id)?.label}</td>
-                                    <td>{a.from_date}{a.to_date !== a.from_date ? ` → ${a.to_date}` : ''}</td>
-                                    <td className="num-col">
-                                      {a.approved_days != null && a.approved_days !== a.days
-                                        ? <>{a.approved_days}<br /><small className="text-muted">of {a.days}</small></>
-                                        : a.days}
-                                    </td>
-                                    <td>
-                                      <span className={`badge ${
-                                        a.status === 'Approved' ? 'badge-success'
-                                          : a.status === 'Partially_Approved' ? 'badge-info'
-                                          : a.status === 'Rejected' ? 'badge-danger'
-                                          : a.status === 'Cancelled' ? 'badge-muted' : 'badge-warning'}`}>
-                                        {a.status.replace(/_/g, ' ')}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <small className={overdue ? 'text-red' : 'text-muted'}>
-                                        {a.status !== 'Pending'
-                                          ? (a.decided_by ? `by ${a.decided_by}` : '—')
-                                          : waited === 0 ? 'applied today'
-                                            : `${waited} day${waited === 1 ? '' : 's'}`}
-                                      </small>
-                                      {overdue && <><br /><small className="text-red">past the deadline</small></>}
-                                    </td>
-                                    <td><small className="text-muted">
-                                      {a.decision_note || a.cancel_note || a.reason || '—'}
-                                    </small></td>
-                                    <td className="actions-col">
-                                      <div className="table-btn-group">
-                                        {a.status === 'Pending' && (
-                                          <>
-                                            <button className="btn-row-icon icon-save" title="Approve"
-                                              onClick={() => handleLeaveDecision(a, 'Approved')}>
-                                              <i className="bx bx-check"></i>
-                                            </button>
-                                            <button className="btn-row-icon icon-edit" title="Approve some days, refuse the rest"
-                                              onClick={() => handlePartialApproval(a)}>
-                                              <i className="bx bx-slider-alt"></i>
-                                            </button>
-                                            <button className="btn-row-icon icon-reset" title="Approve as a different leave type"
-                                              onClick={() => handleLeaveTypeChange(a)}>
-                                              <i className="bx bx-transfer-alt"></i>
-                                            </button>
-                                            <button className="btn-row-icon icon-cancel" title="Reject — a reason is required"
-                                              onClick={() => handleLeaveDecision(a, 'Rejected')}>
-                                              <i className="bx bx-x"></i>
-                                            </button>
-                                          </>
-                                        )}
-                                        {/* Appealing is the coach's to do, not
-                                            yours. What you see is whether they
-                                            have. */}
-                                        {a.status === 'Rejected' && appealForLeave(a) && (
-                                          <span className="badge badge-info" title={appealForLeave(a).reason}>
-                                            Appealed
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
                     </div>
                   );
                 })()}
@@ -18522,352 +18135,7 @@ export default function App({ session = null, profile = null, onSignOut = null }
                   );
                 })()}
 
-                {/* Where people logged in from, across everyone. The same facts
-                    are on each coach's own card, but checking a day meant opening
-                    every coach in turn — which is not checking. */}
-                {onTab('floor') && (PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
-                  const day = loginLog.day || todayWorkingDay;
-                  const inScope = (l) => {
-                    if (loginLog.coach !== 'All' && l.coach_id !== loginLog.coach) return false;
-                    return inAttendanceScope(l.coach_id);
-                  };
 
-                  // Who is in right now is not a property of a day — somebody who
-                  // started before midnight is still in, and the day picker would
-                  // hide them. So it is counted across every open period, and the
-                  // day only narrows the finished ones.
-                  const openNow = attendanceLogs.filter(l => !l.logged_out_at).filter(inScope);
-                  const onDay = attendanceLogs.filter(l => l.working_day === day).filter(inScope);
-
-                  const rows = (loginLog.show === 'in' ? openNow
-                    : loginLog.show === 'out' ? onDay.filter(l => l.logged_out_at)
-                    : onDay)
-                    .sort((a, b) => new Date(b.logged_in_at) - new Date(a.logged_in_at));
-
-                  const noLocation = rows.filter(l => l.login_lat == null).length;
-                  const offSite = rows.filter(l => l.within_centre === false).length;
-
-                  return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>
-                          Logins — Where and When
-                          {(() => {
-                            const everyoneIn = attendanceLogs
-                              .filter(l => !l.logged_out_at)
-                              .filter(l => inAttendanceScope(l.coach_id));
-                            return everyoneIn.length > 0 ? (
-                              <span className="badge badge-success" style={{ marginLeft: '0.6rem' }}>
-                                {everyoneIn.length} logged in now
-                              </span>
-                            ) : null;
-                          })()}
-                        </h3>
-                        <span className="text-muted" style={{ fontSize: '0.82rem' }}>
-                          {rows.length} shown
-                          {(() => {
-                            // Gross time across every period on view, which is what
-                            // a manager is actually totting up by eye otherwise.
-                            const mins = rows.reduce((n, l) => n +
-                              (((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick))
-                                - new Date(l.logged_in_at)) / 60000), 0);
-                            return mins > 0 ? ` · ${asClock(mins / 60)} gross` : '';
-                          })()}
-                          {noLocation ? ` · ${noLocation} without a location` : ''}
-                          {offSite ? ` · ${offSite} off site` : ''}
-                        </span>
-                      </div>
-                      <div className="form-grid">
-                        <div className="form-group">
-                          <label>Show</label>
-                          <select value={loginLog.show}
-                            onChange={(e) => setLoginLog(f => ({ ...f, show: e.target.value }))}>
-                            <option value="all">Everyone on the chosen day</option>
-                            <option value="in">Logged in right now</option>
-                            <option value="out">Finished for the day</option>
-                          </select>
-                          <span className="field-hint">
-                            {loginLog.show === 'in'
-                              ? 'Across every day — a period running past midnight is still open.'
-                              : 'Narrowed by the day beside this.'}
-                          </span>
-                        </div>
-                        <div className="form-group">
-                          <label>Day</label>
-                          <input type="date" value={loginLog.day || todayWorkingDay}
-                            onChange={(e) => setLoginLog(f => ({ ...f, day: e.target.value }))} />
-                        </div>
-                        <div className="form-group">
-                          <label>Coach</label>
-                          <select value={loginLog.coach}
-                            onChange={(e) => setLoginLog(f => ({ ...f, coach: e.target.value }))}>
-                            <option value="All">All coaches</option>
-                            {attendanceRoster.map(c => <option key={c.id} value={c.id}>{c.id} — {c.name}</option>)}
-                          </select>
-                        </div>
-                      </div>
-
-                      {rows.length === 0 ? (
-                        <p className="text-muted">
-                          {loginLog.show === 'in'
-                            ? (loginLog.coach === 'All'
-                                ? 'Nobody is logged in right now.'
-                                : `${coaches.find(c => c.id === loginLog.coach)?.name || loginLog.coach} is not logged in right now — others may be.`)
-                            : (loginLog.coach === 'All'
-                                ? `Nobody logged in on ${day}.`
-                                : `${coaches.find(c => c.id === loginLog.coach)?.name || loginLog.coach} did not log in on ${day}.`)}
-                        </p>
-                      ) : (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>Coach</th><th>In</th><th>Out</th>
-                                <th className="num-col">{loginLog.show === 'in' ? 'In for' : 'Minutes'}</th>
-                                <th>Logged in from</th><th>Logged out from</th><th>Photo</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {rows.map(l => {
-                                const c = coaches.find(x => x.id === l.coach_id);
-                                const mins = ((l.logged_out_at ? new Date(l.logged_out_at) : new Date(nowTick))
-                                  - new Date(l.logged_in_at)) / 60000;
-                                const place = (lat, lng, label) => lat != null
-                                  ? <a href={`https://www.google.com/maps?q=${lat},${lng}`}
-                                       target="_blank" rel="noreferrer" title={`${lat}, ${lng}`}>
-                                      {Number(lat).toFixed(5)}, {Number(lng).toFixed(5)}
-                                    </a>
-                                  : <span className="text-red">{label}</span>;
-                                return (
-                                  <tr key={l.id} className={l.within_centre === false ? 'leave-overdue' : ''}>
-                                    <td>
-                                      <button className="linklike" onClick={() => openCoachOnAttendance(l.coach_id)}>
-                                        <strong>{c?.name || l.coach_id}</strong>
-                                      </button><br />
-                                      <small className="text-muted">{l.coach_id}</small>
-                                    </td>
-                                    <td>{new Date(l.logged_in_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td>{l.logged_out_at
-                                      ? new Date(l.logged_out_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-                                      : <span className="badge badge-success">still in</span>}</td>
-                                    <td className="num-col">
-                                      {l.logged_out_at
-                                        ? Math.round(mins)
-                                        : <span className="att-ticking">{asClock(mins / 60)}</span>}
-                                    </td>
-                                    <td>
-                                      {place(l.login_lat, l.login_lng, 'no location')}
-                                      {l.within_centre === false && (
-                                        <><br /><small className="text-red">outside the centre</small></>
-                                      )}
-                                    </td>
-                                    <td>{l.logged_out_at
-                                      ? place(l.logout_lat, l.logout_lng, 'no location')
-                                      : <span className="text-muted">—</span>}</td>
-                                    <td>{l.photo_path
-                                      ? <button className="linklike" onClick={() => openPhoto(l)}
-                                          title="Open the photograph taken at this login">
-                                          view
-                                        </button>
-                                      : <span className="text-amber">none</span>}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Who is away, and whether that leaves enough on the floor. Shown
-                    before the approval queue, since it is the context a decision
-                    needs rather than something to look up afterwards. */}
-                {onTab('leave') && canApprove && (() => {
-                  const iso = (d) =>
-                    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-                  const monthMode = !awayDay && awayView === 'month';
-
-                  // Every day of the chosen month, so the grid can show the empty
-                  // ones too — an empty week is the answer to "can anyone go?".
-                  const [my, mm] = awayMonth.split('-').map(Number);
-                  const monthDays = monthMode
-                    ? Array.from({ length: new Date(my, mm, 0).getDate() },
-                        (_, i) => iso(new Date(my, mm - 1, i + 1)))
-                    : [];
-
-                  const days = awayDay
-                    ? [awayDay]
-                    : monthMode
-                      ? monthDays
-                      : Array.from({ length: 14 }, (_, i) => {
-                          const d = new Date();
-                          d.setDate(d.getDate() + i);
-                          return iso(d);
-                        });
-                  const busy = days.map(d => ({ day: d, away: awayOn(d) })).filter(x => x.away.length > 0);
-                  const monthLabel = new Date(my, mm - 1, 1)
-                    .toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-                  const shiftMonth = (by) => {
-                    const d = new Date(my, mm - 1 + by, 1);
-                    setAwayMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-                  };
-                  const todayIso = iso(new Date());
-                  return (
-                    <div className="card" style={{ marginBottom: '1.25rem' }}>
-                      <div className="card-header-row">
-                        <h3>
-                          Who Is Away{awayDay ? ` — ${awayDay}`
-                            : monthMode ? ` — ${monthLabel}` : ' — Next 14 Days'}
-                        </h3>
-                        <div className="table-btn-group">
-                          <span className="text-muted" style={{ fontSize: '0.82rem', marginRight: '0.5rem' }}>
-                            approved and pending
-                          </span>
-                          {monthMode && (
-                            <>
-                              <button className="btn btn-secondary btn-sm" aria-label="Previous month"
-                                onClick={() => shiftMonth(-1)}>←</button>
-                              <input type="month" className="header-select" value={awayMonth}
-                                aria-label="Month" onChange={(e) => setAwayMonth(e.target.value)} />
-                              <button className="btn btn-secondary btn-sm" aria-label="Next month"
-                                onClick={() => shiftMonth(1)}>→</button>
-                            </>
-                          )}
-                          <div className="hb-seg" role="group" aria-label="How much to show">
-                            <button type="button" aria-pressed={monthMode}
-                              className={monthMode ? 'is-on' : ''}
-                              onClick={() => { setAwayDay(''); setAwayView('month'); }}>Month</button>
-                            <button type="button" aria-pressed={!awayDay && awayView === 'next14'}
-                              className={!awayDay && awayView === 'next14' ? 'is-on' : ''}
-                              onClick={() => { setAwayDay(''); setAwayView('next14'); }}>Next 14 days</button>
-                          </div>
-                          <input type="date" className="header-select" value={awayDay}
-                            aria-label="One day" onChange={(e) => setAwayDay(e.target.value)} />
-                          {awayDay && (
-                            <button className="btn btn-secondary btn-sm" onClick={() => setAwayDay('')}>
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {monthMode ? (
-                        <>
-                          <div className="away-cal" role="grid" aria-label={`Leave in ${monthLabel}`}>
-                            {WEEKDAYS.map(w => (
-                              <div className="away-cal-dow" key={w} role="columnheader">{w.slice(0, 3)}</div>
-                            ))}
-                            {/* Blanks before the 1st, so the month starts on its
-                                real weekday rather than on Sunday. */}
-                            {Array.from({ length: new Date(my, mm - 1, 1).getDay() }, (_, i) => (
-                              <div className="away-cal-pad" key={`pad-${i}`} aria-hidden="true" />
-                            ))}
-                            {monthDays.map(d => {
-                              const away = awayOn(d);
-                              const thin = away.length
-                                ? coverCheck(d).find(c => c.off > 0 && c.working < c.total) : null;
-                              const short = thin && thin.working <= Math.ceil(thin.total / 2);
-                              const pending = away.filter(a => a.app.status === 'Pending').length;
-                              const dow = new Date(`${d}T12:00:00`).getDay();
-                              return (
-                                <button
-                                  type="button"
-                                  key={d}
-                                  className={[
-                                    'away-cal-day',
-                                    away.length ? 'has-away' : '',
-                                    short ? 'is-thin' : '',
-                                    d === todayIso ? 'is-today' : '',
-                                    (dow === 0 || dow === 6) ? 'is-weekend' : ''
-                                  ].join(' ')}
-                                  title={away.length
-                                    ? `${away.length} away on ${d}${thin ? ` · ${thin.discipline} down to ${thin.working} of ${thin.total}` : ''}`
-                                    : `Nobody away on ${d}`}
-                                  onClick={() => setAwayDay(d)}
-                                >
-                                  <span className="away-cal-n">{Number(d.slice(8))}</span>
-                                  {away.length > 0 && (
-                                    <>
-                                      <span className="away-cal-count">
-                                        {away.length}{pending ? ` · ${pending} waiting` : ''}
-                                      </span>
-                                      <span className="away-cal-who">
-                                        {away.slice(0, 3).map(a => (
-                                          <em key={a.app.id} className={a.app.status === 'Pending' ? 'is-pending' : ''}>
-                                            {a.coach.name.split(' ')[0]}
-                                          </em>
-                                        ))}
-                                        {away.length > 3 && <em>+{away.length - 3}</em>}
-                                      </span>
-                                      {thin && (
-                                        <span className="away-cal-cover">
-                                          {thin.discipline} {thin.working}/{thin.total}
-                                        </span>
-                                      )}
-                                    </>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <p className="text-muted scorecard-legend">
-                            Every day of {monthLabel}, approved and waiting together. A day is marked
-                            when half the discipline or fewer are left working. Click one to open it on
-                            its own.{' '}
-                            {busy.length === 0
-                              ? 'Nobody is away this month.'
-                              : `${busy.length} day${busy.length === 1 ? ' has' : 's have'} somebody off.`}
-                          </p>
-                        </>
-                      ) : (
-                      <div className="table-container">
-                        <table className="data-table">
-                          <thead><tr><th>Day</th><th>Away</th><th>Cover left</th></tr></thead>
-                          <tbody>
-                            {busy.length === 0 && (
-                              <tr><td colSpan={3} className="text-muted">
-                                Nobody is away {awayDay ? `on ${awayDay}` : 'in the next 14 days'}.
-                              </td></tr>
-                            )}
-                            {busy.map(({ day, away }) => {
-                              const cover = coverCheck(day).filter(c => c.off > 0);
-                              return (
-                                <tr key={day}>
-                                  <td>
-                                    <strong>{day}</strong><br />
-                                    <small className="text-muted">
-                                      {WEEKDAYS[new Date(`${day}T12:00:00`).getDay()]}
-                                    </small>
-                                  </td>
-                                  <td>
-                                    {away.map(a => (
-                                      <div key={a.app.id}>
-                                        {a.coach.name}
-                                        <small className="text-muted"> · {leaveType(a.app.type_id)?.label}
-                                          {a.app.status === 'Pending' ? ' (pending)' : ''}</small>
-                                      </div>
-                                    ))}
-                                  </td>
-                                  <td>
-                                    {cover.map(c => (
-                                      <div key={c.discipline}>
-                                        <small className={c.working === 0 ? 'text-red' : 'text-muted'}>
-                                          {c.discipline}: {c.working} of {c.total} working
-                                        </small>
-                                      </div>
-                                    ))}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      )}
-                    </div>
-                  );
-                })()}
 
                 {onTab('admin') && (PROFILE_PAY_ROLES.includes(currentRole) || currentRole === 'Reporting Manager') && (() => {
                   const batch = photoBatchLogs();
@@ -22829,148 +22097,6 @@ HB+_030,185,0,96`} />
       })()}
 
       {/* Modal: Approve Part of Leave */}
-      {activeModal === 'partial-leave' && partialLeaveTarget && (() => {
-        const app = partialLeaveTarget;
-        const coach = coaches.find(c => c.id === app.coach_id);
-        const currentType = leaveType(app.type_id);
-        const totalDays = Number(app.days) || 1;
-        const approved = Number(partialApprovedDays);
-        const returned = Math.max(0, Math.round((totalDays - approved) * 10) / 10);
-        const dayFmt = (d) => d ? new Date(`${d}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-        const spanText = app.from_date === app.to_date
-          ? dayFmt(app.from_date)
-          : `${dayFmt(app.from_date)} – ${dayFmt(app.to_date)}`;
-
-        const dayOptions = [];
-        for (let d = 0.5; d < totalDays; d += 0.5) {
-          dayOptions.push(Math.round(d * 10) / 10);
-        }
-
-        return (
-          <div className="modal-backdrop active-modal">
-            <div className="modal-card" style={{ maxWidth: '520px' }}>
-              <div className="modal-header">
-                <h3><i className="bx bx-slider-alt"></i> Approve Part of Leave</h3>
-                <i className="bx bx-x modal-close-btn" onClick={() => { setActiveModal(null); setPartialLeaveTarget(null); }}></i>
-              </div>
-              <form onSubmit={handleConfirmPartialApproval}>
-                <div style={{
-                  padding: '12px 14px',
-                  backgroundColor: 'var(--wash)',
-                  borderRadius: 'var(--radius-sm)',
-                  marginBottom: '1.25rem',
-                  border: '1px solid var(--border-color)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong style={{ fontSize: '0.95rem' }}>{coach?.name || app.coach_id}</strong>
-                    <span className="text-muted" style={{ fontSize: '0.8rem' }}>{app.coach_id}</span>
-                  </div>
-                  <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)' }}>
-                    <span>{spanText}</span>
-                    <span> · </span>
-                    <strong>{totalDays} day{totalDays === 1 ? '' : 's'} total</strong>
-                  </div>
-                  <div style={{ fontSize: '0.84rem', marginTop: '2px' }}>
-                    <span className="text-muted">Applied as: </span>
-                    <span className="badge badge-info" style={{ fontWeight: 600 }}>{currentType?.label || app.type_id}</span>
-                    {app.reason && <span className="text-muted" style={{ marginLeft: '6px' }}>“{app.reason}”</span>}
-                  </div>
-                </div>
-
-                <div className="form-group" style={{ marginBottom: '1.2rem' }}>
-                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
-                    How many days are you approving? <span className="required-star">*</span>
-                  </label>
-                  {dayOptions.length > 0 ? (
-                    <select
-                      className="detail-input"
-                      value={partialApprovedDays}
-                      onChange={(e) => setPartialApprovedDays(Number(e.target.value))}
-                      required
-                      style={{ width: '100%', padding: '8px 10px', fontSize: '0.9rem' }}
-                    >
-                      {dayOptions.map(opt => {
-                        const rem = Math.round((totalDays - opt) * 10) / 10;
-                        return (
-                          <option key={opt} value={opt}>
-                            Approve {opt} day{opt === 1 ? '' : 's'} (refuse {rem} day{rem === 1 ? '' : 's'})
-                          </option>
-                        );
-                      })}
-                    </select>
-                  ) : (
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      max={totalDays}
-                      className="detail-input"
-                      value={partialApprovedDays}
-                      onChange={(e) => setPartialApprovedDays(Number(e.target.value))}
-                      required
-                      style={{ width: '100%', padding: '8px 10px', fontSize: '0.9rem' }}
-                    />
-                  )}
-                  <div style={{
-                    marginTop: '8px',
-                    padding: '8px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    backgroundColor: 'rgba(201, 157, 93, 0.12)',
-                    border: '1px solid rgba(201, 157, 93, 0.35)',
-                    fontSize: '0.82rem',
-                    color: 'var(--text-primary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                  }}>
-                    <i className="bx bx-info-circle" style={{ color: 'var(--brand-rust, #9f4022)', fontSize: '1rem' }}></i>
-                    <span>
-                      Approving <strong>{approved} day(s)</strong>. The remaining <strong>{returned} day(s)</strong> will be returned to the coach's balance.
-                    </span>
-                  </div>
-                </div>
-
-                <div className="form-group" style={{ marginBottom: '1.5rem' }}>
-                  <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.85rem' }}>
-                    Reason for refusing the remaining {returned} day{returned === 1 ? '' : 's'} <span className="required-star">*</span>
-                  </label>
-                  <textarea
-                    rows="3"
-                    className="detail-input"
-                    placeholder={`Why are the other ${returned} day(s) refused? The coach sees this explanation.`}
-                    value={partialLeaveNote}
-                    onChange={(e) => setPartialLeaveNote(e.target.value)}
-                    required
-                    style={{ width: '100%', padding: '8px 10px', fontSize: '0.88rem', resize: 'vertical' }}
-                  />
-                  <small className="text-muted" style={{ display: 'block', marginTop: '4px' }}>
-                    The coach receives this explanation on their application record.
-                  </small>
-                </div>
-
-                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => { setActiveModal(null); setPartialLeaveTarget(null); }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                  >
-                    <i className="bx bx-check"></i> Approve {approved} Day{approved === 1 ? '' : 's'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        );
-      })()}
 
       {/* Modal: Payslip print layout preview */}
       {/* Bulk: choose the month (and the file), then review before anything lands. */}
